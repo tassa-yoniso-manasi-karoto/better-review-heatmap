@@ -158,7 +158,7 @@ class RevHmOptions(OptionsDialog):
         # TODO: find a better solution
         if PLATFORM == "win":
             default_size = QApplication.font().pointSize()
-            for label in [self.form.fmtLabContrib, self.form.labHeading]:
+            for label in [self.form.labHeading]:
                 font = label.font()
                 font.setPointSize(int(default_size * 1.5))
                 label.setFont(font)

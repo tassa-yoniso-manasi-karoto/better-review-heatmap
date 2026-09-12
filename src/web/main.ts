@@ -289,13 +289,6 @@ class ReviewHeatmap {
     bridgeCommand("revhm_gradient");
   }
 
-  public onHmContrib(event, button) {
-    if (event.shiftKey) {
-      bridgeCommand("revhm_snanki");
-    } else {
-      bridgeCommand("revhm_contrib");
-    }
-  }
 }
 
 // return "zero"-ed local datetime (workaround for lack of UTC time support
