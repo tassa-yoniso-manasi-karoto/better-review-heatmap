@@ -3,6 +3,7 @@
     "version": "1.0.2",
     "main": "main.ts",
     "scripts": {
+        "test": "node --test tests/web.test.cjs",
         "build": "esbuild src/web/main.ts --bundle --minify --outfile=${ANKI_REVIEW_HEATMAP_OUTFILE:-build/dist/src/review_heatmap/web/anki-review-heatmap.js} --target=es2015 --loader:.css=text"
     },
     "author": "",
@@ -10,5 +11,8 @@
     "description": "",
     "dependencies": {
         "esbuild": "^0.25.5"
+    },
+    "allowScripts": {
+        "esbuild@0.25.5": true
     }
 }

@@ -39,12 +39,13 @@ document.head.appendChild(__vite_style__);
 import { CalHeatMap } from "./_vendor/cal-heatmap.js";
 import { ReviewHeatmapOptions, ReviewHeatmapData } from "./types";
 import { bridgeCommand } from "./bridge";
+import { calendarDayKey, reviewSummary } from "./activity";
 
 interface CalHeatmapFormatData {
   count: string | undefined;
   name: string;
   connector: string;
-  date: Date;
+  date: string;
 }
 
 interface CalHeatmapCellData {
@@ -122,13 +123,18 @@ class ReviewHeatmap {
         // format tooltips
         let tooltip: string;
 
+        const recorded = this.options.history[calendarDayKey(new Date(cellData.t))];
+        if (recorded && cellData.v >= 0) {
+          return `${reviewSummary(recorded[0], recorded[1])} on ${formatData.date}`;
+        }
+
         let count = formatData.count;
         if (count !== undefined && count.startsWith("-")) {
           count = count.substring(1);
         }
 
         if (isEmpty) {
-          tooltip = `<b>No</b> ${Date.now() < cellData.t ? "cards due" : "reviews"
+          tooltip = `<b>No</b> ${cellData.t > calTodayDate.getTime() ? "cards due" : "reviews"
             } on ${formatData.date}`;
         } else {
           const label = Math.abs(cellData.v) == 1 ? "card" : "cards";
@@ -185,7 +191,7 @@ class ReviewHeatmap {
         // Update date highlight to include clicked on date AND today
         heatmap.highlight([calTodayDate, date]);
       },
-      afterLoadData: function afterLoadData(timestamps: string[]) {
+      afterLoadData: function afterLoadData(timestamps: ReviewHeatmapData) {
         // Cal-heatmap always uses the local timezone, which is problematic
         // when supplying UTC start-of-day times.
         //
@@ -202,9 +208,9 @@ class ReviewHeatmap {
         //
         // cf.: https://github.com/wa0x6e/cal-heatmap/issues/122
         //      https://github.com/wa0x6e/cal-heatmap/issues/126
-        let results = {};
+        let results: ReviewHeatmapData = {};
         for (let timestamp_string in timestamps) {
-          // `value` is in ms
+          // Values are activity measures; keys represent UTC calendar days.
           let value = timestamps[timestamp_string];
           let epochSeconds = parseInt(timestamp_string, 10) * 1000;
 

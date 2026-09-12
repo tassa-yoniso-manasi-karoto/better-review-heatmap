@@ -108,6 +108,7 @@ class ActivityReport(NamedTuple):
     today: int
     offset: int
     stats: StatsReport
+    review_time: Dict[int, int]
 
 
 class ActivityReporter:
@@ -132,7 +133,7 @@ class ActivityReporter:
         history_start, forecast_stop = self._get_time_limits(limhist, limfcst)
 
         if activity_type == ActivityType.reviews:
-            history = self._cards_done(
+            history_rows = self._cards_done(
                 start=history_start,
                 current_deck_only=current_deck_only,
             )
@@ -142,16 +143,32 @@ class ActivityReporter:
                 current_deck_only=current_deck_only,
             )
 
-            if not history:
+            if not history_rows:
                 return None
 
-            activity_report = self._get_activity(history=history, forecast=forecast)
+            activity_report = self._get_activity(
+                history=[(day, count) for day, count, _ in history_rows],
+                forecast=forecast,
+                review_time={day: milliseconds for day, _, milliseconds in history_rows},
+            )
         else:
             raise NotImplementedError(
                 "activity type {} not implemented".format(activity_type)
             )
 
         return activity_report
+
+    def reference_history(self, day: Optional[int] = None) -> List[Sequence[int]]:
+        """Read reference candidates independently of the displayed calendar range.
+
+        All configured history/deck filters still apply. A reference is shared
+        across views so a given amount of work has the same shade in each deck.
+        """
+        conf = self._config["synced"]
+        history_limit = self._get_conf_history_limit(conf["limhist"], conf["limdate"])
+        start = day if day is not None else self._today - 60 * 86400
+        stop = day + 86400 if day is not None else self._today
+        return self._cards_done(start=max(start, history_limit or 0), stop=stop)
 
     def set_collection(self, col: "Collection"):
         # NOTE: Binding the collection is dangerous if we ever persist ActivityReporter
@@ -173,10 +190,11 @@ class ActivityReporter:
         self,
         history: List[Sequence[int]],
         forecast: Optional[List[Sequence[int]]] = None,
+        review_time: Optional[Dict[int, int]] = None,
     ) -> ActivityReport:
 
         first_day = history[0][0] if history else 0
-        last_day = forecast[-1][0] if forecast else 0
+        last_day = forecast[-1][0] if forecast else self._today
 
         # Stats: cumulative activity and streaks
 
@@ -232,7 +250,7 @@ class ActivityReporter:
             pdays = int(round((days_learned / days_total) * 100))
 
         # Compose activity data
-        activity_dict: Dict[int, int] = dict(history + forecast)  # type: ignore
+        activity_dict: Dict[int, int] = dict(history + (forecast or []))
         if history[-1][0] == today:  # history takes precedence for today
             activity_dict[today] = history[-1][1]
 
@@ -250,6 +268,7 @@ class ActivityReporter:
                 pct_days_active=StatsEntryPercentage(value=pdays),
                 activity_daily_avg=StatsEntryCards(value=avg_cur),
             ),
+            review_time=review_time or {},
         )
 
     # Collection properties
@@ -460,6 +479,7 @@ GROUP BY day ORDER BY day""".format(
         self,
         start: Optional[int] = None,
         current_deck_only: bool = False,
+        stop: Optional[int] = None,
     ) -> List[Sequence[int]]:
         """
         start: timestamp in seconds to start reporting from
@@ -478,13 +498,15 @@ GROUP BY day ORDER BY day""".format(
         performance penalty
 
         Returns:
-            [[int, int]**]
+            [[day, review count, recorded milliseconds], ...]
         """
         offset = self._offset * 3600
 
         lims = []
         if start is not None:
             lims.append("day >= {}".format(start))
+        if stop is not None:
+            lims.append("day < {}".format(stop))
 
         if self._ignore_rescheduled_entries:
             lims.append("ease >= 1")
@@ -498,7 +520,7 @@ GROUP BY day ORDER BY day""".format(
         cmd = """\
 SELECT CAST(STRFTIME('%s', id / 1000 - {}, 'unixepoch',
                      'localtime', 'start of day') AS int)
-AS day, COUNT()
+AS day, COUNT(), COALESCE(SUM(time), 0)
 FROM revlog {}
 GROUP BY day ORDER BY day""".format(
             offset, lim

@@ -34,15 +34,26 @@ Options dialog and associated components
 """
 
 import time
+from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Optional
 
-from aqt.qt import QAction, QApplication, QWidget
+from aqt.qt import (
+    QAction, QApplication, QComboBox, QDate, QDateEdit, QFormLayout,
+    QGroupBox, QHBoxLayout, QLabel, QPushButton, QTimer, QVBoxLayout, QWidget,
+)
 
 from anki.lang import _
 from aqt import mw
 from aqt.studydeck import StudyDeck
+from aqt.utils import showInfo
 
-from ..config import config, heatmap_colors, heatmap_modes
+from ..activity import ActivityReporter
+from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_modes
+from ..metrics import (
+    METRICS, SCALES, automatic_reference, baseline_key, metric_name,
+    reference_from_day, saved_reference,
+)
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
 from ..times import daystart_epoch
@@ -56,6 +67,20 @@ class RevHmOptions(OptionsDialog):
     """
 
     _mapped_widgets = (
+        (
+            "selActivityMetric",
+            (
+                ("items", {"setter": "_setActivityMetricItems"}),
+                ("value", {"dataPath": "synced/activity_metric"}),
+            ),
+        ),
+        (
+            "selActivityScale",
+            (
+                ("items", {"setter": "_setActivityScaleItems"}),
+                ("value", {"dataPath": "synced/activity_scale"}),
+            ),
+        ),
         (
             "form.selHmColor",
             (
@@ -105,6 +130,8 @@ class RevHmOptions(OptionsDialog):
         # beforehand:
         self.parent = parent or mw
         self.mw = mw
+        self._activity_ready = False
+        ensure_activity_defaults(config)
         super(RevHmOptions, self).__init__(
             self._mapped_widgets,
             config,
@@ -112,6 +139,10 @@ class RevHmOptions(OptionsDialog):
             parent=self.parent,
             **kwargs
         )
+        # Reference selection and recalibration are tentative until OK is used.
+        self._data = deepcopy(self._data)
+        self._activity_ready = True
+        self._refreshActivitySettings()
         # Instance methods that modify the initialized UI should either be
         # called from self._setupUI or from here
 
@@ -119,6 +150,7 @@ class RevHmOptions(OptionsDialog):
 
     def _setupUI(self):
         super(RevHmOptions, self)._setupUI()
+        self._setupActivityTab()
 
         # manually adjust title label font sizes on Windows
         # gap between default windows font sizes and sizes that work well
@@ -131,12 +163,142 @@ class RevHmOptions(OptionsDialog):
                 font.setPointSize(int(default_size * 1.5))
                 label.setFont(font)
 
+    def _setupActivityTab(self):
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        choices = QFormLayout()
+        self.selActivityMetric = QComboBox(tab)
+        self.selActivityScale = QComboBox(tab)
+        choices.addRow("Color by", self.selActivityMetric)
+        choices.addRow("Color scale", self.selActivityScale)
+        layout.addLayout(choices)
+
+        self.labActivityDescription = QLabel(tab)
+        self.labActivityDescription.setWordWrap(True)
+        layout.addWidget(self.labActivityDescription)
+
+        self.referenceGroup = QGroupBox("Automatic baseline", tab)
+        reference_layout = QVBoxLayout(self.referenceGroup)
+        explanation = QLabel(
+            "Choose a strong day automatically from the last 60 days, or select "
+            "a reference day below. The reference stays fixed until you "
+            "recalculate it. It uses all included decks, so colors are "
+            "comparable across views.",
+            self.referenceGroup,
+        )
+        explanation.setWordWrap(True)
+        reference_layout.addWidget(explanation)
+        self.labReference = QLabel(self.referenceGroup)
+        self.labReference.setWordWrap(True)
+        reference_layout.addWidget(self.labReference)
+        self.btnRecalculate = QPushButton("Recalculate from recent activity", self.referenceGroup)
+        reference_layout.addWidget(self.btnRecalculate)
+
+        day_layout = QHBoxLayout()
+        self.dateReference = QDateEdit(self.referenceGroup)
+        self.dateReference.setCalendarPopup(True)
+        self.dateReference.setDisplayFormat("yyyy-MM-dd")
+        self.dateReference.setMaximumDate(QDate.currentDate())
+        self.dateReference.setDate(QDate.currentDate().addDays(-1))
+        self.btnUseReferenceDay = QPushButton("Use this day as reference", self.referenceGroup)
+        day_layout.addWidget(self.dateReference)
+        day_layout.addWidget(self.btnUseReferenceDay)
+        reference_layout.addLayout(day_layout)
+        layout.addWidget(self.referenceGroup)
+
+        timing = QLabel(
+            "Hover over a past day to see recorded study time and reviews. "
+            "Anki limits recorded time using Deck Options → Timers → Maximum "
+            "answer seconds. Choose a limit appropriate for your study habits. "
+            "Streaks count any day with reviews. Future days show cards due.", tab,
+        )
+        timing.setWordWrap(True)
+        layout.addWidget(timing)
+        layout.addStretch()
+        self.form.tabWidget.insertTab(1, tab, "Activity")
+
+    def _refreshActivitySettings(self, *args):
+        if not self._activity_ready:
+            return
+        conf = self.getData()["synced"]
+        metric = metric_name(conf)
+        classic = metric == "reviews"
+        self.selActivityScale.setEnabled(not classic)
+        use_baseline = not classic and conf.get("activity_scale") == "baseline"
+        self.referenceGroup.setVisible(use_baseline)
+        descriptions = {
+            "reviews": "Classic uses the original review counts and average-based color scale.",
+            "time": "Study time colors days by Anki's recorded review duration.",
+            "workload": (
+                "Workload balances review count and recorded time. At the same "
+                "duration, more reviews produce a stronger shade. Long reading "
+                "sessions and interruptions have less influence than in Study time."
+            ),
+        }
+        description = descriptions[metric]
+        if not classic and not use_baseline:
+            description += " Fixed scale uses stable thresholds, independent of your history."
+        self.labActivityDescription.setText(description)
+        reference = saved_reference(conf)
+        if reference:
+            day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
+            source = "Selected" if reference.get("source") == "selected" else "Automatic"
+            self.labReference.setText(f"{source} reference: {day}. Saved when you press OK.")
+        else:
+            self.labReference.setText(
+                "No saved reference. Automatic selection needs at least 7 completed "
+                "study days with recorded time in the last 60 days. Until then, "
+                "the fixed scale is used."
+            )
+
+    def _onRecalculateReference(self):
+        data = self.getData()
+        conf = data["synced"]
+        rows = ActivityReporter(self.mw.col, data).reference_history()
+        reference = automatic_reference(rows, metric_name(conf))
+        if reference is None:
+            showInfo("Not enough recent study days with recorded time to choose a reference.", parent=self)
+            return
+        self._setReference(conf, reference)
+
+    def _onUseReferenceDay(self):
+        data = self.getData()
+        conf = data["synced"]
+        date = self.dateReference.date()
+        day = int(datetime(date.year(), date.month(), date.day(), tzinfo=timezone.utc).timestamp())
+        rows = ActivityReporter(self.mw.col, data).reference_history(day)
+        reference = reference_from_day(rows[0], metric_name(conf), "selected") if rows else None
+        if reference is None:
+            showInfo("No included reviews with recorded time for that day. Check the date and history filters.", parent=self)
+            return
+        self._setReference(conf, reference)
+
+    def _setReference(self, conf, reference):
+        if not isinstance(conf.get("activity_baselines"), dict):
+            conf["activity_baselines"] = {}
+        conf["activity_baselines"][baseline_key(conf)] = reference
+        self._refreshActivitySettings()
+
+    def _onAccept(self):
+        for storage, values in self.getData().items():
+            self.config[storage] = values
+        self.config.save()
+
+    def restoreData(self):
+        super().restoreData()
+        self._refreshActivitySettings()
+
     # Events:
 
     def _setupEvents(self):
         super(RevHmOptions, self)._setupEvents()
         self.form.btnDeckAdd.clicked.connect(self._onAddIgnoredDeck)
         self.form.btnDeckDel.clicked.connect(self._onDeleteIgnoredDeck)
+        self.selActivityMetric.currentIndexChanged.connect(self._refreshActivitySettings)
+        self.selActivityScale.currentIndexChanged.connect(self._refreshActivitySettings)
+        self.form.tabWidget.currentChanged.connect(self._refreshActivitySettings)
+        self.btnRecalculate.clicked.connect(self._onRecalculateReference)
+        self.btnUseReferenceDay.clicked.connect(self._onUseReferenceDay)
 
     # Actions:
 
@@ -186,6 +348,12 @@ class RevHmOptions(OptionsDialog):
     def _setSelHmCalModeItems(self, data_val):
         return self._getComboItems(heatmap_modes)
 
+    def _setActivityMetricItems(self, data_val):
+        return self._getComboItems(METRICS)
+
+    def _setActivityScaleItems(self, data_val):
+        return self._getComboItems(SCALES)
+
     def _setListDecksValue(self, dids):
         item_tuples = []
         for did in dids:
@@ -221,3 +389,38 @@ def initialize_options():
     options_action = QAction("Review &Heatmap Options...", mw)
     options_action.triggered.connect(lambda _: invoke_options_dialog())
     mw.form.menuTools.addAction(options_action)
+
+    from aqt.gui_hooks import profile_did_open
+
+    profile_did_open.append(_on_profile_open)
+
+
+def _on_profile_open():
+    config.load()
+    ensure_activity_defaults(config)
+    collection = mw.col
+    if config["profile"]["time_notice_seen"]:
+        return
+
+    def remind_about_timing():
+        if not collection or mw.col is not collection:
+            return
+        profile = config["profile"]
+        if profile["time_notice_seen"]:
+            return
+        profile["time_notice_seen"] = True
+        config["profile"] = profile
+        config.save("profile", profile_unload=True)
+        showInfo(
+            "Review Heatmap offers Study time and Workload color modes in "
+            "Review Heatmap Options → Activity.\n\n"
+            "Both use Anki's recorded review time. Please check Deck Options → "
+            "Timers → Maximum answer seconds and choose a limit that suits "
+            "your cards. Time beyond that limit is not recorded. Changing it "
+            "affects future reviews.\n\n"
+            "Review Heatmap leaves this setting under your control.",
+            parent=mw,
+            title="Review Heatmap — recorded study time",
+        )
+
+    QTimer.singleShot(0, remind_about_timing)

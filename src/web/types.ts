@@ -40,6 +40,7 @@ export interface ReviewHeatmapOptions {
   offset: number;
   legend: number[];
   whole: boolean;
+  history: { [timestamp: number]: [reviews: number, milliseconds: number] };
 }
 
-export type ReviewHeatmapData = { [timestamp: number]: [cards: number] };
+export type ReviewHeatmapData = { [timestamp: number]: number };

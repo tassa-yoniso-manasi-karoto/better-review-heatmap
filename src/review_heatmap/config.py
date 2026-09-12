@@ -33,6 +33,7 @@
 Handles add-on configuration
 """
 
+from copy import deepcopy
 from typing import Dict
 
 from aqt import mw
@@ -82,12 +83,16 @@ config_defaults: Dict[str, Dict] = {
         "limcdel": False,
         "limresched": True,
         "limdecks": [],
+        "activity_metric": "reviews",
+        "activity_scale": "fixed",
+        "activity_baselines": {},
         "version": ADDON.VERSION,
     },
     "profile": {
         "display": {"deckbrowser": True, "overview": True, "stats": True},
         "statsvis": True,
         "hotkeys": {},
+        "time_notice_seen": False,
         "version": ADDON.VERSION,
     },
 }
@@ -95,3 +100,23 @@ config_defaults: Dict[str, Dict] = {
 config: ConfigManager = ConfigManager(
     mw, config_dict=config_defaults, conf_key="heatmap", reset_req=True
 )
+
+
+def ensure_activity_defaults(manager: ConfigManager) -> None:
+    """Add new settings without replacing existing configuration or history.
+
+    Older installations may carry the same version string, so this additive
+    migration intentionally does not depend on the add-on version.
+    """
+    for storage, keys in (
+        ("synced", ("activity_metric", "activity_scale", "activity_baselines")),
+        ("profile", ("time_notice_seen",)),
+    ):
+        values = manager[storage]
+        changed = False
+        for key in keys:
+            if key not in values:
+                values[key] = deepcopy(config_defaults[storage][key])
+                changed = True
+        if changed:
+            manager[storage] = values

@@ -42,6 +42,14 @@ from aqt.main import AnkiQt
 from .activity import ActivityReport, ActivityReporter, StatsEntry, StatsType
 from .config import heatmap_modes
 from .libaddon.platform import PLATFORM
+from .metrics import (
+    activity_levels,
+    activity_value,
+    automatic_reference,
+    baseline_key,
+    metric_name,
+    saved_reference,
+)
 from .web_content import (
     CSS_DISABLE_HEATMAP,
     CSS_DISABLE_STATS,
@@ -80,6 +88,8 @@ class _RenderCache(NamedTuple):
     arguments: Tuple[HeatmapView, Optional[int], Optional[int], bool]
     deck: int
     col_mod: int
+    settings: str
+    today: int
 
 
 class HeatmapRenderer:
@@ -155,9 +165,10 @@ class HeatmapRenderer:
         if report is None:
             return HTML_MAIN_ELEMENT.format(content=HTML_INFO_NODATA, classes="")
 
-        dynamic_legend = self._dynamic_legend(report.stats.activity_daily_avg.value)
-        stats_legend = self._stats_legend(dynamic_legend)
-        heatmap_legend = self._heatmap_legend(dynamic_legend)
+        count_legend = self._dynamic_legend(report.stats.activity_daily_avg.value)
+        history_legend = self._activity_legend(count_legend)
+        stats_legend = self._stats_legend(count_legend)
+        heatmap_legend = self._heatmap_legend(history_legend, count_legend)
 
         classes = self._get_css_classes(view)
 
@@ -185,8 +196,10 @@ class HeatmapRenderer:
         self._render_cache = _RenderCache(
             html=render,
             arguments=(view, limhist, limfcst, current_deck_only),
-            deck=self._mw.col.decks.current(),
+            deck=self._mw.col.decks.current()["id"],
             col_mod=self._mw.col.mod,
+            settings=self._settings_signature(),
+            today=report.today,
         )
 
         return render
@@ -205,9 +218,35 @@ class HeatmapRenderer:
         col_unchanged = self._mw.col.mod == cache.col_mod  # type: ignore
         return (
             col_unchanged
+            and cache.settings == self._settings_signature()
+            and cache.today == self._reporter._today * 1000
             and (view, limhist, limfcst, current_deck_only) == cache.arguments  # type: ignore
-            and (not current_deck_only or cache.deck == self._mw.col.decks.current())
+            and (not current_deck_only or cache.deck == self._mw.col.decks.current()["id"])
         )
+
+    def _settings_signature(self) -> str:
+        return repr((self._config["synced"], self._config["profile"]))
+
+    def _activity_legend(self, count_legend: List[float]) -> List[float]:
+        conf = self._config["synced"]
+        metric = metric_name(conf)
+        if metric == "reviews":
+            return count_legend
+        reference = None
+        if conf.get("activity_scale") == "baseline":
+            reference = saved_reference(conf)
+            if reference is None:
+                reference = automatic_reference(self._reporter.reference_history(), metric)
+                if reference is not None:
+                    references = conf.get("activity_baselines")
+                    if not isinstance(references, dict):
+                        references = {}
+                    references[baseline_key(conf)] = reference
+                    conf["activity_baselines"] = references
+                    self._config["synced"] = conf
+                    # Persist only the reference/settings. Avoid a recursive UI reset.
+                    self._config.save("synced", profile_unload=True)
+        return activity_levels(metric, reference)
 
     def _get_css_classes(self, view: HeatmapView) -> List[str]:
         conf = self._config["synced"]
@@ -236,10 +275,24 @@ class HeatmapRenderer:
             "offset": report.offset,
             "legend": dynamic_legend,
             "whole": not current_deck_only,
+            "history": {
+                day: [report.activity[day], milliseconds]
+                for day, milliseconds in report.review_time.items()
+            },
+        }
+
+        metric = metric_name(self._config["synced"])
+        activity = {
+            day: (
+                count if count <= 0 or metric == "reviews" else
+                # A reviewed day with zero recorded time remains visible/clickable.
+                max(1e-9, activity_value(count, report.review_time.get(day, 0), metric))
+            )
+            for day, count in report.activity.items()
         }
 
         return HTML_HEATMAP.format(
-            options=json.dumps(options), data=json.dumps(report.activity)
+            options=json.dumps(options), data=json.dumps(activity)
         )
 
     def _generate_stats_elm(self, data: ActivityReport, dynamic_legend) -> str:
@@ -274,11 +327,13 @@ class HeatmapRenderer:
     def _get_dynamic_levels(self, dynamic_legend) -> List[Tuple[int, str]]:
         return list(zip(dynamic_legend, self._css_colors))
 
-    def _heatmap_legend(self, legend: List[float]) -> List[float]:
+    def _heatmap_legend(
+        self, legend: List[float], forecast_legend: Optional[List[float]] = None
+    ) -> List[float]:
         # Inverted negative legend for future dates. Allows us to
         # implement different color schemes for past and future without
         # having to modify cal-heatmap:
-        return [-i for i in legend[::-1]] + [0.0] + legend
+        return [-i for i in (forecast_legend or legend)[::-1]] + [0.0] + legend
 
     def _stats_legend(self, legend: List[float]) -> List[float]:
         return [0.0] + legend

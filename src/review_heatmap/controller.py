@@ -41,6 +41,7 @@ from .activity import ActivityReporter
 from .renderer import HeatmapRenderer, HeatmapView
 from .web_bridge import HeatmapBridge
 from .errors import CollectionError
+from .config import ensure_activity_defaults
 
 if TYPE_CHECKING:
     from .libaddon.anki.configmanager import ConfigManager
@@ -55,6 +56,23 @@ class HeatmapController:
         self._bridge.register()
 
         self._renderer: Optional[HeatmapRenderer] = None
+        self._collection = None
+
+        from anki.hooks import addHook
+        from aqt.gui_hooks import profile_will_close, reviewer_did_answer_card, sync_did_finish
+
+        addHook("reset", self.invalidate_cache)
+        reviewer_did_answer_card.append(self.invalidate_cache)
+        sync_did_finish.append(self.invalidate_cache)
+        profile_will_close.append(self.clear_collection)
+
+    def invalidate_cache(self, *args):
+        if self._renderer:
+            self._renderer.invalidate_cache()
+
+    def clear_collection(self):
+        self._renderer = None
+        self._collection = None
 
     def render_for_view(
         self,
@@ -67,12 +85,17 @@ class HeatmapController:
         if not col:
             raise CollectionError("Anki collection and/or database is not ready")
 
+        if col is not self._collection:
+            # Profile switches and collection replacement must not reuse another
+            # collection's reporter, settings, or rendered heatmap.
+            self.clear_collection()
+            self._config.load()
+            ensure_activity_defaults(self._config)
+            self._collection = col
+
         if not self._renderer:
             reporter = ActivityReporter(col, self._config)
             self._renderer = HeatmapRenderer(self._mw, reporter, self._config)
-        else:
-            pass
-            # self._renderer.set_activity_reporter(reporter)
 
         return self._renderer.render(view, limhist, limfcst, current_deck_only)
 

@@ -1,3 +1,4 @@
 # Please note that these are only build dependencies. They are not
 # required to run compiled builds of the add-on within Anki
-aab
+PyQt5>=5.15,<6
+PyQt6>=6.6,<7
