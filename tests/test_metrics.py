@@ -4,6 +4,7 @@ import pytest
 
 from review_heatmap.metrics import (
     activity_levels, activity_value, automatic_reference, baseline_key,
+    baseline_color, baseline_color_level, baseline_value,
     reference_from_day, saved_reference,
 )
 
@@ -35,10 +36,40 @@ def test_reference_requires_positive_time_and_applies_only_when_supplied():
     assert reference_from_day((1, 100, 0), "time", "selected") is None
     reference = reference_from_day((1, 120, 2700000), "time", "selected")
     assert activity_levels("time")[5] == 45
-    assert activity_levels("time", reference)[5] == 45
+    assert activity_levels("time", reference) == list(range(1, 10))
+    assert baseline_value(reference) == pytest.approx(38.25)
     reference["value"] = 90
-    assert activity_levels("time", reference)[5] == 90
+    assert baseline_value(reference) == pytest.approx(76.5)
+    assert reference["value"] == 90  # applying the discount never compounds it
     assert activity_levels("time")[5] == 45
+
+
+def test_baseline_palette_has_a_white_reference_and_gentler_threshold():
+    reference = reference_from_day((1, 100, 100 * 60000), "workload", "selected")
+    assert baseline_value(reference) == 85
+    assert baseline_color_level(100, reference, reference_day=True) == 5
+    assert baseline_color_level(85, reference) == 6
+    assert baseline_color_level(85 - 1e-8, reference) == 4
+    assert baseline_color_level(85 + 1e-8, reference) == 6
+    assert baseline_color_level(100, reference) == 6  # same effort on another day is green
+    assert [baseline_color_level(value, reference) for value in (0, 25, 50, 84)] == [1, 2, 3, 4]
+    assert [baseline_color_level(value, reference) for value in (86, 110, 150, 200, 300)] == [6, 7, 8, 9, 10]
+
+
+def test_baseline_gradient_interpolates_without_white_at_the_target():
+    reference = {"value": 100}
+    assert baseline_color(0, reference) == "rgba(251, 140, 0, 0.3000)"
+    assert baseline_color(85 / 3, reference) == "rgba(255, 241, 118, 0.6500)"
+    assert baseline_color(170 / 3, reference) == "#1e6823"
+    assert baseline_color(85 - 1e-8, reference) == "#378f36"
+    assert baseline_color(85, reference) == "#74ba58"
+    assert baseline_color(170, reference) == "#a5d06e"
+    assert baseline_color(255, reference) == "#d6e685"
+    assert baseline_color(500, reference) == "#d6e685"
+    assert baseline_color(100, reference, reference_day=True) == "#ffffff"
+    # Nearby workloads within the former buckets now produce different colors.
+    assert baseline_color(10, reference) != baseline_color(15, reference)
+    assert baseline_color(90, reference) != baseline_color(100, reference)
 
 
 def test_references_are_isolated_by_measure_and_history_filters():

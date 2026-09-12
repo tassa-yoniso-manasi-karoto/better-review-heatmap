@@ -32,7 +32,9 @@ from Anki's review log; its display cache is not a separate history archive.
 
 ## Build and install
 
-Requires Python, Node.js, and npm. In a Python virtual environment, run:
+Qt 5 support has been removed; this fork requires a Qt 6 version of Anki.
+
+Building requires Python, Node.js, and npm. In a Python virtual environment, run:
 
 ```sh
 python -m pip install -r requirements.txt
@@ -40,9 +42,9 @@ npm ci
 python scripts/build_worktree.py
 ```
 
-The script packages the current files using Qt's UI compilers, esbuild, and
-Python's standard library. It includes Qt 5 and Qt 6 forms without changing Git
-history. End users do not need the build dependencies.
+The script packages the current files using Qt 6's UI compiler, esbuild, and
+Python's standard library, without changing Git history. End users do not need
+the build dependencies.
 
 Open `build/review-heatmap-workload-preview.ankiaddon` in Anki and restart.
 

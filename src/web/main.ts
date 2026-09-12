@@ -92,6 +92,14 @@ class ReviewHeatmap {
     }
 
     let heatmap = new CalHeatMap();
+    const dayColors = this.options.dayColors;
+    const applyDayColors = () => {
+      // Inline fills survive the vendor's asynchronous class updates and
+      // highlights. Calendar keys preserve the inherited DST correction.
+      heatmap.root.selectAll(".graph-domain rect")
+        .style("fill", (cell: CalHeatmapCellData) =>
+          dayColors[calendarDayKey(new Date(cell.t))] || null);
+    };
 
     // console.log("Date: options.today " + new Date(options.today))
     // console.log("Date: calTodayDate "+ calTodayDate)
@@ -115,6 +123,11 @@ class ReviewHeatmap {
       displayLegend: false,
       domainLabelFormat: this.options.domLabForm,
       tooltip: true,
+      afterLoad: applyDayColors,
+      onComplete: applyDayColors,
+      afterLoadNextDomain: applyDayColors,
+      afterLoadPreviousDomain: applyDayColors,
+      afterUpdate: applyDayColors,
       subDomainTitleFormat: (
         isEmpty: boolean,
         formatData: CalHeatmapFormatData,
@@ -270,6 +283,10 @@ class ReviewHeatmap {
     } else {
       bridgeCommand("revhm_opts");
     }
+  }
+
+  public onHmGradient() {
+    bridgeCommand("revhm_gradient");
   }
 
   public onHmContrib(event, button) {

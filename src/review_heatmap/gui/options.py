@@ -181,7 +181,8 @@ class RevHmOptions(OptionsDialog):
         reference_layout = QVBoxLayout(self.referenceGroup)
         explanation = QLabel(
             "Choose a strong day automatically from the last 60 days, or select "
-            "a reference day below. The reference stays fixed until you "
+            "a reference day below. The baseline is 85% of that day's activity "
+            "to keep it comfortably attainable. The reference stays fixed until you "
             "recalculate it. It uses all included decks, so colors are "
             "comparable across views.",
             self.referenceGroup,
@@ -238,12 +239,23 @@ class RevHmOptions(OptionsDialog):
         description = descriptions[metric]
         if not classic and not use_baseline:
             description += " Fixed scale uses stable thresholds, independent of your history."
+        elif use_baseline:
+            description += (
+                " The reference day is white. As workload increases below baseline, "
+                "colors progress from orange to yellow to dark green to medium green. "
+                "At or above baseline, colors start at a lighter green and brighten "
+                "as workload increases. White is reserved for the "
+                "reference date. Days without reviews keep their neutral background."
+            )
         self.labActivityDescription.setText(description)
         reference = saved_reference(conf)
         if reference:
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
             source = "Selected" if reference.get("source") == "selected" else "Automatic"
-            self.labReference.setText(f"{source} reference: {day}. Saved when you press OK.")
+            self.labReference.setText(
+                f"{source} reference: {day}. Baseline: 85% of that day's activity. "
+                "Saved when you press OK."
+            )
         else:
             self.labReference.setText(
                 "No saved reference. Automatic selection needs at least 7 completed "
@@ -384,7 +396,8 @@ def invoke_options_dialog(parent: Optional[QWidget] = None) -> int:
 
 
 def initialize_options():
-    config.setConfigAction(invoke_options_dialog)
+    # Keep Anki's Config button available for the editable gradient JSON.
+    config.setConfigAction(None)
     # Set up menu entry:
     options_action = QAction("Review &Heatmap Options...", mw)
     options_action.triggered.connect(lambda _: invoke_options_dialog())

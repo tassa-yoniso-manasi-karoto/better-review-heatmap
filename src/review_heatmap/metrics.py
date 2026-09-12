@@ -5,6 +5,8 @@ See LICENSE for the add-on's license and additional terms.
 
 import json
 import math
+from colorsys import hls_to_rgb
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 
@@ -24,8 +26,12 @@ FIXED_LEVELS = {
     "time": (1, 5, 10, 20, 30, 45, 60, 90, 120),
     "workload": (2, 5, 10, 20, 30, 45, 60, 90, 120),
 }
-BASELINE_FACTORS = (0.1, 0.2, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0, 3.0)
+BASELINE_FRACTION = 0.85
+ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
+DEFAULT_BASELINE_GRADIENT = json.loads(
+    Path(__file__).with_name("config.json").read_text(encoding="utf-8")
+)["baseline_gradient_default"]
 
 
 def metric_name(conf: Dict) -> str:
@@ -108,5 +114,110 @@ def automatic_reference(rows: Sequence[Sequence[int]], metric: str) -> Optional[
 
 def activity_levels(metric: str, reference: Optional[Dict] = None) -> List[float]:
     if reference is not None:
-        return [factor * float(reference["value"]) for factor in BASELINE_FACTORS]
+        # Baseline days are assigned palette levels, leaving the underlying
+        # counts, recorded time, and saved reference snapshot untouched.
+        return list(range(1, 10))
     return list(FIXED_LEVELS[metric])
+
+
+def baseline_value(reference: Dict) -> float:
+    """Use a gentler target without repeatedly discounting saved references."""
+    return BASELINE_FRACTION * float(reference["value"])
+
+
+def gradient_stops(gradient: Optional[Dict], side: str):
+    """Read editable HSL points; malformed settings fall back to defaults."""
+    try:
+        points = (gradient or DEFAULT_BASELINE_GRADIENT)[side]
+        if len(points) < 2:
+            raise ValueError("A gradient needs at least two points")
+        stops = []
+        for point in points:
+            ratio = float(point["workload_ratio"])
+            h, s, l = map(float, point["hsl"])
+            if not all(math.isfinite(v) for v in (ratio, h, s, l)):
+                raise ValueError("Gradient values must be finite")
+            if not (0 <= h <= 360 and 0 <= s <= 100 and 0 <= l <= 100):
+                raise ValueError("HSL values are out of range")
+            if stops and ratio <= stops[-1][0]:
+                raise ValueError("Gradient ratios must increase")
+            rgb = hls_to_rgb(h / 360, l / 100, s / 100)
+            stops.append((ratio, "".join(f"{round(c * 255):02x}" for c in rgb)))
+        if stops[0][0] != (0 if side == "below" else 1):
+            raise ValueError("Invalid gradient starting ratio")
+        if side == "below" and stops[-1][0] != 1:
+            raise ValueError("Below-baseline gradient must end at 1")
+        return stops
+    except (KeyError, TypeError, ValueError, OverflowError):
+        if gradient is None:
+            raise
+        return gradient_stops(None, side)
+
+
+def point_opacity(point, side):
+    ratio = float(point["workload_ratio"])
+    default = min(100, 30 + max(0, ratio) * 105) if side == "below" else 100
+    try:
+        opacity = float(point.get("opacity", default))
+        return max(0, min(100, opacity)) if math.isfinite(opacity) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def gradient_opacity(gradient, side, ratio):
+    stops = gradient_stops(gradient, side)
+    points = (gradient or DEFAULT_BASELINE_GRADIENT).get(side, [])
+    values = []
+    for position, _ in stops:
+        point = next((p for p in points if isinstance(p, dict)
+                      and p.get("workload_ratio") == position), {"workload_ratio": position})
+        values.append((position, point_opacity(point, side)))
+    for (start, low), (end, high) in zip(values, values[1:]):
+        if ratio <= end:
+            return (low + (high - low) * (ratio - start) / (end - start)) / 100
+    return values[-1][1] / 100
+
+
+def baseline_color(value: float, reference: Dict, reference_day: bool = False,
+                   gradient: Optional[Dict] = None) -> str:
+    """Interpolate continuously; white marks only the reference date."""
+    if reference_day:
+        return "#ffffff"
+    ratio = max(0.0, value / baseline_value(reference))
+    side = "below" if ratio < 1 else "above"
+    stops = gradient_stops(gradient, side)
+    opacity = gradient_opacity(gradient, side, ratio)
+
+    def with_opacity(color):
+        if opacity >= 1:
+            return "#" + color
+        r, g, b = (int(color[i:i + 2], 16) for i in (0, 2, 4))
+        return f"rgba({r}, {g}, {b}, {opacity:.4f})"
+    for (start, low), (end, high) in zip(stops, stops[1:]):
+        if ratio <= end:
+            fraction = (ratio - start) / (end - start)
+            channels = (
+                round(int(low[i:i + 2], 16) * (1 - fraction)
+                      + int(high[i:i + 2], 16) * fraction)
+                for i in (0, 2, 4)
+            )
+            return with_opacity("".join(f"{channel:02x}" for channel in channels))
+    return with_opacity(stops[-1][1])
+
+
+def baseline_color_level(value: float, reference: Dict, reference_day: bool = False) -> int:
+    """Orange, yellow, two darker greens, white, then five lighter greens.
+
+    Only reviewed days call this function. The chosen reference date is a
+    white marker even though its full workload exceeds the reduced baseline.
+    Other days exactly at baseline enter the first lighter-green shade.
+    """
+    ratio = value / baseline_value(reference)
+    if reference_day:
+        return 5
+    if ratio < 1:
+        return max(1, min(4, math.ceil(ratio * 4)))
+    for level, threshold in enumerate(ABOVE_BASELINE_FACTORS, start=6):
+        if ratio <= threshold:
+            return level
+    return 10

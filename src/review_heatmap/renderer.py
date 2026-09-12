@@ -46,6 +46,8 @@ from .metrics import (
     activity_levels,
     activity_value,
     automatic_reference,
+    baseline_color_level,
+    baseline_color,
     baseline_key,
     metric_name,
     saved_reference,
@@ -225,7 +227,8 @@ class HeatmapRenderer:
         )
 
     def _settings_signature(self) -> str:
-        return repr((self._config["synced"], self._config["profile"]))
+        return repr((self._config["synced"], self._config["profile"],
+                     self._config["local"]))
 
     def _activity_legend(self, count_legend: List[float]) -> List[float]:
         conf = self._config["synced"]
@@ -256,7 +259,15 @@ class HeatmapRenderer:
             f"{CSS_MODE_PREFIX}-{conf['mode']}",
             f"{CSS_VIEW_PREFIX}-{view.name}",
         ]
+        if self._baseline_reference() is not None:
+            classes.append("rh-baseline")
         return classes
+
+    def _baseline_reference(self) -> Optional[Dict]:
+        conf = self._config["synced"]
+        if metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline":
+            return saved_reference(conf)
+        return None
 
     def _generate_heatmap_elm(
         self, report: ActivityReport, dynamic_legend, current_deck_only: bool
@@ -275,6 +286,7 @@ class HeatmapRenderer:
             "offset": report.offset,
             "legend": dynamic_legend,
             "whole": not current_deck_only,
+            "dayColors": {},
             "history": {
                 day: [report.activity[day], milliseconds]
                 for day, milliseconds in report.review_time.items()
@@ -282,14 +294,24 @@ class HeatmapRenderer:
         }
 
         metric = metric_name(self._config["synced"])
-        activity = {
-            day: (
-                count if count <= 0 or metric == "reviews" else
+        reference = self._baseline_reference()
+        activity = {}
+        for day, count in report.activity.items():
+            if count <= 0 or metric == "reviews":
+                activity[day] = count
+                continue
+            value = activity_value(count, report.review_time.get(day, 0), metric)
+            if reference is not None:
+                options["dayColors"][day] = baseline_color(
+                    value, reference, reference_day=day == int(reference["day"]),
+                    gradient=self._config["local"].get("baseline_gradient"),
+                )
+                activity[day] = baseline_color_level(
+                    value, reference, reference_day=day == int(reference["day"])
+                )
+            else:
                 # A reviewed day with zero recorded time remains visible/clickable.
-                max(1e-9, activity_value(count, report.review_time.get(day, 0), metric))
-            )
-            for day, count in report.activity.items()
-        }
+                activity[day] = max(1e-9, value)
 
         return HTML_HEATMAP.format(
             options=json.dumps(options), data=json.dumps(activity)

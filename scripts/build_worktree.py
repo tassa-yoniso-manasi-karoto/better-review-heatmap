@@ -3,8 +3,8 @@
 Install requirements.txt and run npm ci, then:
     python scripts/build_worktree.py
 
-Only Qt's UI compilers, the existing JavaScript bundler, and Python's standard
-library are used. Both Qt 5 and Qt 6 forms are included in the resulting ZIP.
+Only Qt 6's UI compiler, the existing JavaScript bundler, and Python's standard
+library are used. The resulting add-on requires Anki with Qt 6.
 """
 
 import json
@@ -42,9 +42,7 @@ def compile_forms(root, package):
         "from . import " + ", ".join(names) + "\n", encoding="utf-8",
     )
     (forms / "__init__.py").write_text(
-        "from aqt.qt import qtmajor\n\n"
-        "if qtmajor >= 6:\n    from .qt6 import *\n"
-        "else:\n    from .qt5 import *\n",
+        "from .qt6 import *\n",
         encoding="utf-8",
     )
 
@@ -76,7 +74,7 @@ def copy_resources(root, package):
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    # Check both compilers before touching any previous build.
+    # Check the Qt 6 compiler before touching any previous build.
     subprocess.run(
         [sys.executable, "-m", f"PyQt{major}.uic.pyuic", "--version"], check=True,
     )

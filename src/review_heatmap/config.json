@@ -1,0 +1,27 @@
+{
+  "gradient_help": "baseline_gradient is the active palette; baseline_gradient_default is the original palette kept for reference or restoring colors. Only the active palette changes the heatmap. Each point has workload_ratio (1 = 85% of reference workload) and hsl [hue 0-360 degrees, saturation 0-100%, lightness 0-100%]. opacity is 0-100% (0 transparent, 100 opaque). Points must be ordered by ratio. Below starts at 0 and ends at 1; above starts at 1. Colors interpolate smoothly in RGB; the final above color is held for higher workloads. Save to refresh. Reference date stays white; empty days stay uncolored.",
+  "baseline_gradient_default": {
+    "below": [
+      {"workload_ratio": 0, "hsl": [33.466135, 100, 49.215686], "opacity": 30},
+      {"workload_ratio": 0.3333333333333333, "hsl": [53.868613, 100, 73.137255], "opacity": 65},
+      {"workload_ratio": 0.6666666666666666, "hsl": [124.054054, 55.223881, 26.27451], "opacity": 100},
+      {"workload_ratio": 1, "hsl": [119.325843, 45.177665, 38.627451], "opacity": 100}
+    ],
+    "above": [
+      {"workload_ratio": 1, "hsl": [102.857143, 41.525424, 53.72549], "opacity": 100},
+      {"workload_ratio": 3, "hsl": [69.896907, 65.986395, 71.176471], "opacity": 100}
+    ]
+  },
+  "baseline_gradient": {
+    "below": [
+      {"workload_ratio": 0, "hsl": [33.466135, 100, 49.215686], "opacity": 30},
+      {"workload_ratio": 0.3333333333333333, "hsl": [53.868613, 100, 73.137255], "opacity": 65},
+      {"workload_ratio": 0.6666666666666666, "hsl": [124.054054, 55.223881, 26.27451], "opacity": 100},
+      {"workload_ratio": 1, "hsl": [119.325843, 45.177665, 38.627451], "opacity": 100}
+    ],
+    "above": [
+      {"workload_ratio": 1, "hsl": [102.857143, 41.525424, 53.72549], "opacity": 100},
+      {"workload_ratio": 3, "hsl": [69.896907, 65.986395, 71.176471], "opacity": 100}
+    ]
+  }
+}

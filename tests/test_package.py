@@ -13,7 +13,7 @@ ARTIFACT = ROOT / "build" / "review-heatmap-workload-preview.ankiaddon"
 pytestmark = pytest.mark.skipif(not ARTIFACT.exists(), reason="build the package first")
 
 
-def test_archive_contains_current_sources_and_both_qt_versions():
+def test_archive_contains_current_sources_and_qt6_forms():
     with ZipFile(ARTIFACT) as archive:
         names = archive.namelist()
         for filename in (
@@ -22,8 +22,7 @@ def test_archive_contains_current_sources_and_both_qt_versions():
             assert archive.read(filename) == (ROOT / "src" / "review_heatmap" / filename).read_bytes()
         for filename in (
             "__init__.py", "manifest.json", "LICENSE.txt", "LICENSES_ICONS.txt",
-            "gui/forms/qt5/options.py", "gui/forms/qt6/options.py",
-            "gui/forms/qt5/contrib.py", "gui/forms/qt6/contrib.py",
+            "gui/forms/qt6/options.py", "gui/forms/qt6/contrib.py",
             "gui/resources/review_heatmap/icons/help.svg", "web/anki-review-heatmap.js",
         ):
             assert filename in names
@@ -54,6 +53,10 @@ class MainWindow(QWidget):
         self.addonManager = SimpleNamespace(
             setWebExports=lambda *args: None,
             setConfigAction=lambda *args: None,
+            setConfigUpdatedAction=lambda *args: None,
+            addonConfigDefaults=lambda *args: __import__("json").loads(
+                (Path(sys.argv[1]) / "review_heatmap" / "config.json").read_text()
+            ),
         )
         self.form = SimpleNamespace(menuTools=QMenu(self))
     def reset(self):

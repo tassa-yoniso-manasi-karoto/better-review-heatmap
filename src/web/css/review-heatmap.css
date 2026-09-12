@@ -136,6 +136,10 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 .opts-btn {
     padding: 2px 4px;
 }
+button.opts-btn {
+    border: 0;
+    font: inherit;
+}
 .opts-btn:hover {
     background: #bfbfbf;
 }
@@ -465,6 +469,25 @@ select.hm-sel:active, select.hm-sel:focus {
 .night_mode .rh-theme-flame .rh-col19{color: #fed976}
 .night_mode .rh-theme-flame .rh-col20{color: #ffeda0}
 
+
+/* Baseline palette: consistent meaning in both light and dark themes.
+   q1–q10 are forecasts/zero; empty cells have no activity class. */
+.rh-container.rh-baseline .cal-heatmap-container .q11{fill: #fb8c00}
+.rh-container.rh-baseline .cal-heatmap-container .q12{fill: #fff176}
+.rh-container.rh-baseline .cal-heatmap-container .q13{fill: #1e6823}
+.rh-container.rh-baseline .cal-heatmap-container .q14{fill: #378f36}
+.rh-container.rh-baseline .cal-heatmap-container .q15{fill: #ffffff}
+.rh-container.rh-baseline .cal-heatmap-container .q16{fill: #74ba58}
+.rh-container.rh-baseline .cal-heatmap-container .q17{fill: #8cc665}
+.rh-container.rh-baseline .cal-heatmap-container .q18{fill: #a4d06f}
+.rh-container.rh-baseline .cal-heatmap-container .q19{fill: #bddb7a}
+.rh-container.rh-baseline .cal-heatmap-container .q20{fill: #d6e685}
+
+/* Keep white cells visible on a white page without masking date highlights. */
+.rh-container.rh-baseline .cal-heatmap-container .graph-rect.q15:not(.highlight):not(.highlight-now){
+    stroke: #909090;
+    stroke-width: 0.5px;
+}
 
 /* Platform-specific adjustments / workarounds */
 /* ################################################################### */

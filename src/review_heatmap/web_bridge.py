@@ -161,6 +161,12 @@ class _CommandHandler:
         parent = self._get_context_parent(context)
         invoke_options_dialog(parent=parent)
 
+    @_register_command_handler("gradient")
+    def gradient(self, payload: None, context: SUPPORTED_CONTEXT_TYPES) -> None:
+        from .gui.gradient import GradientDialog
+
+        GradientDialog(self._config, self._get_context_parent(context)).exec()
+
     @_register_command_handler("contrib")
     def contrib(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:
         parent = self._get_context_parent(context)

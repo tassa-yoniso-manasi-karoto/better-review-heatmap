@@ -189,6 +189,36 @@ def test_baseline_is_saved_once_and_fixed_scale_never_uses_it(setup):
     assert renderer._activity_legend([]) == [1, 5, 10, 20, 30, 45, 60, 90, 120]
 
 
+def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
+    from review_heatmap.metrics import baseline_key, reference_from_day
+
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="workload", activity_scale="baseline")
+    reference_day = TODAY - 4 * 86400
+    reference = reference_from_day((reference_day, 100, 6000000), "workload", "selected")
+    conf["activity_baselines"] = {baseline_key(conf): reference}
+    report = setup.reporter._get_activity(
+        [(reference_day, 100), (TODAY - 3 * 86400, 10), (TODAY - 86400, 100), (TODAY, 0)],
+        [(TODAY + 86400, -200)],
+        {reference_day: 6000000, TODAY - 3 * 86400: 600000, TODAY - 86400: 6000000},
+    )
+    renderer = make_renderer(setup)
+    html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
+    values = json.loads(re.search(r"reviewHeatmap.create\((.+)\);", html)[1])
+    options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
+    assert values[str(reference_day)] == 5
+    assert values[str(TODAY - 3 * 86400)] == 1
+    assert values[str(TODAY - 86400)] == 6
+    assert str(TODAY - 2 * 86400) not in values
+    assert values[str(TODAY)] == 0
+    assert values[str(TODAY + 86400)] == -200
+    assert options["history"][str(reference_day)] == [100, 6000000]
+    assert "rh-baseline" in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
+    assert conf["activity_baselines"][baseline_key(conf)] == reference
+    conf["activity_scale"] = "fixed"
+    assert "rh-baseline" not in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
+
+
 def test_cache_expires_on_day_rollover_or_configuration_change(setup, monkeypatch):
     add_review(setup, TODAY)
     renderer = make_renderer(setup)

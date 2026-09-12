@@ -1,6 +1,7 @@
 """Load add-on modules without starting Anki or opening a collection."""
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -23,7 +24,13 @@ def addon_modules(tmp_path_factory):
     folder = tmp_path_factory.mktemp("addons")
     aqt.mw = SimpleNamespace(
         pm=SimpleNamespace(addonFolder=lambda: str(folder), profile={}),
-        addonManager=SimpleNamespace(setConfigAction=lambda *args: None),
+        addonManager=SimpleNamespace(
+            setConfigAction=lambda *args: None,
+            setConfigUpdatedAction=lambda *args: None,
+            addonConfigDefaults=lambda *args: json.loads(
+                (SOURCE / "config.json").read_text()
+            ),
+        ),
         col=None,
         reset=lambda: None,
     )

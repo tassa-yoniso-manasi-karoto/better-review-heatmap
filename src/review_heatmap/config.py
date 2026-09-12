@@ -74,6 +74,7 @@ heatmap_modes: Dict[str, Dict] = {
 
 
 config_defaults: Dict[str, Dict] = {
+    "local": {},  # Defaults and HSL gradient points come from config.json.
     "synced": {
         "colors": "lime",
         "mode": "year",
