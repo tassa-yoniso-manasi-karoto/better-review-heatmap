@@ -68,6 +68,56 @@ def test_settings_cancel_and_accept_keep_reference_changes_local(setup, options_
     assert len(conf.saves) == 1
 
 
+def test_reference_picker_rejects_empty_days_and_tracks_each_metric(
+    setup, options_module, monkeypatch,
+):
+    module, app = options_module
+    from aqt.qt import QDate, QWidget
+    from review_heatmap.metrics import saved_reference
+
+    notices = []
+    monkeypatch.setattr(module, "showInfo", lambda *args, **kwargs: notices.append(args[0]))
+    rows = {
+        TODAY - 86400: [(TODAY - 86400, 120, 2700000)],
+        TODAY - 2 * 86400: [(TODAY - 2 * 86400, 60, 1800000)],
+    }
+    monkeypatch.setattr(
+        module.ActivityReporter, "reference_history", lambda self, day: rows.get(day, []),
+    )
+    parent = QWidget()
+    parent.col = setup.col
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("workload"))
+    initial_date = dialog.dateReference.date()
+    dialog.dateReference.setDate(QDate(2026, 3, 1))
+    assert dialog.dateReference.date() == initial_date
+    assert saved_reference(dialog.getData()["synced"]) is None
+    assert "No saved reference" in dialog.labReference.text()
+
+    dialog.dateReference.setDate(QDate(2026, 3, 9))
+    reference = copy.deepcopy(saved_reference(dialog.getData()["synced"]))
+    assert reference["day"] == TODAY - 86400
+    assert dialog.labReference.isHidden()
+    dialog.dateReference.setDate(QDate(2026, 3, 1))
+    assert dialog.dateReference.date() == QDate(2026, 3, 9)
+    assert saved_reference(dialog.getData()["synced"]) == reference
+    assert dialog.getData()["synced"]["activity_reference_date"] == reference["day"]
+    assert len(notices) == 2
+
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("time"))
+    assert "No saved reference" in dialog.labReference.text()
+    assert not dialog.labReference.isHidden()
+    dialog.dateReference.setDate(QDate(2026, 3, 8))
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("workload"))
+    assert dialog.dateReference.date() == QDate(2026, 3, 9)
+    assert saved_reference(dialog.getData()["synced"]) == reference
+    dialog.accept()
+    dialog = module.RevHmOptions(setup.conf, parent)
+    assert dialog.dateReference.date() == QDate(2026, 3, 9)
+    assert dialog.labReference.isHidden()
+    dialog.reject()
+
+
 def test_classic_disables_reference_controls(setup, options_module):
     module, app = options_module
     from aqt.qt import QWidget

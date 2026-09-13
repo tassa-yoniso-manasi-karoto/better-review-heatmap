@@ -190,7 +190,8 @@ class RevHmOptions(OptionsDialog):
         self.referenceGroup = QGroupBox("Automatic baseline", tab)
         reference_layout = QVBoxLayout(self.referenceGroup)
         explanation = QLabel(
-            "Use a above average day of learning as your reference. "
+            "<b>Use a solid day of studying as your reference.</b><br> "
+            "A white cell on the heatmap marks the reference day."
         )
         explanation.setWordWrap(True)
         reference_layout.addWidget(explanation)
@@ -200,6 +201,7 @@ class RevHmOptions(OptionsDialog):
         day_layout = QFormLayout()
         self.dateReference = QDateEdit(self.referenceGroup)
         self.dateReference.setCalendarPopup(True)
+        self.dateReference.setKeyboardTracking(False)
         self.dateReference.setDisplayFormat("yyyy-MM-dd")
         self.dateReference.setMaximumDate(QDate.currentDate())
         day_layout.addRow("Reference day", self.dateReference)
@@ -243,23 +245,27 @@ class RevHmOptions(OptionsDialog):
             ),
         }
         description = descriptions[metric]
-        if not classic and not use_baseline:
-            description += " Fixed scale uses stable thresholds, independent of your history."
-        elif use_baseline:
-            description += (
-                " <b>White marks the reference day.</b>"
-            )
         self.labActivityDescription.setText(description)
         reference = saved_reference(conf)
+        self.labReference.setVisible(not reference)
         if reference:
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
-            source = "Selected" if reference.get("source") == "selected" else "Automatic"
+            self._displayReferenceDate(QDate(day.year, day.month, day.day))
         else:
             self.labReference.setText(
                 "No saved reference. Automatic selection needs at least 7 completed "
                 "study days with recorded time in the last 60 days. Until then, "
                 "the fixed scale is used."
             )
+        self._last_reference_date = self.dateReference.date()
+        conf["activity_reference_date"] = self._getReferenceDate(None)
+
+    def _displayReferenceDate(self, date):
+        blocked = self.dateReference.blockSignals(True)
+        try:
+            self.dateReference.setDate(date)
+        finally:
+            self.dateReference.blockSignals(blocked)
 
     def _onReferenceDateChanged(self, date):
         if not self._activity_ready:
@@ -270,6 +276,8 @@ class RevHmOptions(OptionsDialog):
         rows = ActivityReporter(self.mw.col, data).reference_history(day)
         reference = reference_from_day(rows[0], metric_name(conf), "selected") if rows else None
         if reference is None:
+            self._displayReferenceDate(self._last_reference_date)
+            self._refreshActivitySettings()
             showInfo("No included reviews with recorded time for that day.", parent=self)
             return
         self._setReference(conf, reference)

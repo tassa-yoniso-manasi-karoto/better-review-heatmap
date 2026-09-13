@@ -1,6 +1,7 @@
 """Check the built archive and start it with Anki APIs but no collection."""
 
 from pathlib import Path
+import json
 import subprocess
 import sys
 from zipfile import ZipFile
@@ -9,7 +10,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "build" / "review-heatmap-workload-preview.ankiaddon"
+METADATA = json.loads((ROOT / "addon.json").read_text(encoding="utf-8"))
+VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+ARTIFACT = ROOT / "build" / f"{METADATA['repo_name']}-{VERSION}.ankiaddon"
 pytestmark = pytest.mark.skipif(not ARTIFACT.exists(), reason="build the package first")
 
 

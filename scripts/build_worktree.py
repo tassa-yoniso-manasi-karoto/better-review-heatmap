@@ -87,7 +87,7 @@ def main():
 
     package = dist / "src" / metadata["module_name"]
     shutil.copytree(
-        root / "src" / metadata["module_name"], package,
+        root / "src" / "review_heatmap", package,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "meta.json", "user_files", "debug", "log.txt"),
     )
     # Discard any generated UI left in the source tree by earlier builds.
@@ -102,20 +102,20 @@ def main():
     shutil.copy2(root / "src" / "web" / "_vendor" / "LICENSES.txt", package / "LICENSES_WEB.txt")
     version_file = package / "_version.py"
     version_file.write_text(
-        re.sub(r'^__version__ = .+$', f'__version__ = "{version}+workload"',
+        re.sub(r'^__version__ = .+$', f'__version__ = "{version}"',
                version_file.read_text(encoding="utf-8"), flags=re.MULTILINE),
         encoding="utf-8",
     )
     manifest = {
         "package": metadata["module_name"],
-        "name": metadata["display_name"] + " (workload preview)",
+        "name": metadata["display_name"],
         "mod": int(time.time()),
         "conflicts": list(dict.fromkeys(metadata["conflicts"] + [metadata["ankiweb_id"]])),
     }
     (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     environment = dict(os.environ, ANKI_REVIEW_HEATMAP_OUTFILE=str(package / "web" / "anki-review-heatmap.js"))
     subprocess.run(["npm", "run", "build"], cwd=root, env=environment, check=True)
-    destination = root / "build" / "review-heatmap-workload-preview.ankiaddon"
+    destination = root / "build" / f"{metadata['repo_name']}-{version}.ankiaddon"
     with ZipFile(destination, "w", ZIP_DEFLATED) as archive:
         for source in sorted(package.rglob("*")):
             if source.is_file():

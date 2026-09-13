@@ -42,10 +42,6 @@ if TYPE_CHECKING:
     from aqt.browser.table import SearchContext
 
 
-# FIXME: No longer works in combination with other search specifiers
-# e.g. deck:current, which we actually add in the overview view
-
-
 def _find_cards_reviewed_between(start_date: int, end_date: int) -> List[int]:
     # select from cards instead of just selecting uniques from revlog
     # in order to exclude deleted cards
@@ -57,7 +53,7 @@ def _find_cards_reviewed_between(start_date: int, end_date: int) -> List[int]:
     )
 
 
-_re_rid = re.compile(r"^rid:([0-9]+):([0-9]+)$")
+_re_rid = re.compile(r"^(?P<deck>deck:current\s+)?rid:(?P<start>[0-9]+):(?P<end>[0-9]+)$")
 
 
 def find_rid(search: str) -> Optional[List[int]]:
@@ -66,18 +62,19 @@ def find_rid(search: str) -> Optional[List[int]]:
     if not match:
         return None
 
-    start_date = int(match[1])
-    end_date = int(match[2])
+    start_date = int(match["start"])
+    end_date = int(match["end"])
 
-    return _find_cards_reviewed_between(start_date, end_date)
+    found_ids = _find_cards_reviewed_between(start_date, end_date)
+    if match["deck"]:
+        # Let Anki resolve the current deck, including its child decks.
+        deck_ids = set(mw.col.find_cards("deck:current"))
+        found_ids = [cid for cid in found_ids if cid in deck_ids]
+    return found_ids
 
 
 def on_browser_will_search(search_context: "SearchContext"):
-    search = search_context.search
-    if search.startswith("rid"):
-        found_ids = find_rid(search)
-    else:
-        return
+    found_ids = find_rid(search_context.search)
 
     if found_ids is None:
         return
