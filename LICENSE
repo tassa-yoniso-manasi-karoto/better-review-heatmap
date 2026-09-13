@@ -672,14 +672,10 @@ subject to the further restrictions below:
   Additionally, all copies of any covered work conveyed by you must include
   in the Appropriate Legal Notices the following author attribution:
 
-  "Based on the Anki add-on Review Heatmap by Glutanimate.
-  Click here to support Glutanimate's work."
+  "Based on the Anki add-on Review Heatmap by Glutanimate."
 
   The words "Review Heatmap" must be a clickable hyperlink that leads directly
-  to the Internet URL "https://github.com/glutanimate/review-heatmap/". The
-  words "Click here to support Glutanimate's work" must be a clickable
-  hyperlink that leads directly to the Internet URL
-  "https://glutanimate.com/support-my-work/".
+  to the Internet URL "https://github.com/glutanimate/review-heatmap/".
 
   This attribution must also be included in copyright notices in the
   README or description of any covered work conveyed by you (e.g. add-on

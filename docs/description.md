@@ -1,5 +1,7 @@
 <!-- BANNER -->
 
+This is a modified fork. It requires Anki 2.1.50 or later, using Qt 6.
+
 Adds a **heatmap graph** to Anki's main window which visualizes past and future card review activity, similar to the contribution view on GitHub. Information on the **current streak** is displayed alongside the heatmap. Clicking on an item shows the cards reviewed or due on that day.
 
 <img src="https://raw.githubusercontent.com/glutanimate/review-heatmap/main/screenshots/review-heatmap-1.png">   <img src="https://raw.githubusercontent.com/glutanimate/review-heatmap/main/screenshots/review-heatmap-2.png">
@@ -23,9 +25,9 @@ The use of this add-on is documented in the [official Wiki](https://github.com/g
 
 (Make sure to enable closed-captions for comments on the demonstrated features)
 
-<!-- SUPPORT -->
-
 ### CREDITS AND LICENSE
+
+Based on the Anki add-on [Review Heatmap](https://github.com/glutanimate/review-heatmap/) by Glutanimate.
 
 *Copyright © 2016-2022 [Aristotelis P.](https://glutanimate.com/)  (Glutanimate)*
 
@@ -37,5 +39,3 @@ Inspired by GitHub's contribution calendar and *Forecast graph on Overview page*
 Licensed under the _GNU AGPLv3_, extended by a number of additional terms. This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY. For more information on the license please see the [LICENSE file](https://github.com/glutanimate/review-heatmap/blob/main/LICENSE) accompanying this add-on. The source code is available on [![GitHub icon](https://glutanimate.com/logos/github.svg) GitHub](https://github.com/glutanimate/review-heatmap). Pull requests and other contributions are welcome!
 
 <!-- RESOURCES -->
-
-<!-- FUNDING -->

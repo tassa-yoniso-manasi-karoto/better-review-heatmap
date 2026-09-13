@@ -66,19 +66,14 @@ html_template = """\
 <body>
     {title}
     <p><h3>Credits</h3></p>
+    <p>This is a modified fork of the original add-on.</p>
+    <p>Based on the Anki add-on
+        <a href="https://github.com/glutanimate/review-heatmap/">Review Heatmap</a>
+        by Glutanimate.</p>
     {authors_string}
     {libs_string}
     
-    <p><img src="{qrc_prefix}:icons/heart_small.svg"/><strong> Thank you!</strong></p>
-    <p>My heartfelt thanks go out to everyone who has <b>supported</b> this add-on through their tips,
-        contributions, or any other means. You guys rock!</p>
-    <p>In particular I would like to thank all of the awesome people who support me
-        on <b><a href="https://www.patreon.com/glutanimate">Patreon</a></b>, including:</p>
-    <div style="color:#aa2a4c;">{members_string}</div>
-    <p><i>Want to be listed here?
-        <b><a href="https://www.patreon.com/bePatron?u=7522179">Pledge your support on Patreon now</a></b>
-        to receive all kinds of exclusive goodies!
-    </i></p>
+    {members_string}
     
     <p><h3>License</h3></p>
     <p><i>{display_name}</i> is <b>free and open-source</b> software. The add-on code that runs within
@@ -128,10 +123,11 @@ def getAboutString(title=False, showDebug=False):
         ", ".join(sorted(ADDON.CONTRIBUTORS, key=string.lower))
     )
 
-    members_top_string = "<b>{}</b>".format(", ".join(ADDON.MEMBERS_TOP))
-    members_credited_string = ", ".join(ADDON.MEMBERS_CREDITED)
-    members_string = "<p>{t},</p><p>{r}</p>".format(
-        t=members_top_string, r=members_credited_string)
+    members = list(ADDON.MEMBERS_TOP) + list(ADDON.MEMBERS_CREDITED)
+    members_string = (
+        "<p>Original project supporters: {}</p>".format(", ".join(members))
+        if members else ""
+    )
 
     if title:
         title_string = title_template.format(display_name=ADDON.NAME,
@@ -151,5 +147,4 @@ def getAboutString(title=False, showDebug=False):
                                 libs_string=libs_string,
                                 contributors_string=contributors_string,
                                 members_string=members_string,
-                                qrc_prefix=ADDON.MODULE,
                                 debugging=debugging)

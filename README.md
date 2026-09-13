@@ -53,9 +53,11 @@ the build dependencies.
 Open `build/review-heatmap-workload-preview.ankiaddon` in Anki and restart.
 
 > [!NOTE]
-> Support for legacy Qt5 has been removed; this fork requires a Qt 6 version of Anki.
+> This fork requires Anki 2.1.50 or later, using Qt 6. Qt 5 is not supported.
 
 ## Credits and license
+
+Based on the Anki add-on [Review Heatmap](https://github.com/glutanimate/review-heatmap/) by Glutanimate.
 
 Original add-on copyright © 2016–2022 Aristotelis P.
 ([Glutanimate](https://glutanimate.com/)). Includes d3.js (BSD) and cal-heatmap

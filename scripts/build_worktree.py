@@ -99,6 +99,7 @@ def main():
     compile_forms(root, package)
     shutil.copy2(root / "LICENSE", package / "LICENSE.txt")
     shutil.copy2(root / "resources" / "LICENSES_ICONS.md", package / "LICENSES_ICONS.txt")
+    shutil.copy2(root / "src" / "web" / "_vendor" / "LICENSES.txt", package / "LICENSES_WEB.txt")
     version_file = package / "_version.py"
     version_file.write_text(
         re.sub(r'^__version__ = .+$', f'__version__ = "{version}+workload"',
