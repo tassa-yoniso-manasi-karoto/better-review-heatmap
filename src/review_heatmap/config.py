@@ -121,3 +121,16 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
                 changed = True
         if changed:
             manager[storage] = values
+
+    local = manager["local"]
+    if local.get("baseline_gradient_version", 1) < 2:
+        defaults = manager.defaults["local"]
+        for key in ("baseline_gradient_default", "baseline_gradient"):
+            gradient = deepcopy(local.get(key, defaults[key]))
+            above = gradient.get("above", [])
+            if len(above) == 2 and float(above[1].get("workload_ratio", 0)) == 3:
+                above[1]["workload_ratio"] = 2
+                above.append(deepcopy(defaults[key]["above"][2]))
+            local[key] = gradient
+        local["baseline_gradient_version"] = 2
+        manager["local"] = local

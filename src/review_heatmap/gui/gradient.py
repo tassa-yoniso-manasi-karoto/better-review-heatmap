@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from aqt.qt import (
     QColor, QColorDialog, QDialog, QDialogButtonBox, QFormLayout,
-    QGroupBox, QPushButton, QVBoxLayout, QHBoxLayout, QDoubleSpinBox,
+    QDoubleSpinBox, QGroupBox, QHBoxLayout, QIcon, QPushButton, Qt, QVBoxLayout,
 )
 
 from ..metrics import DEFAULT_BASELINE_GRADIENT, gradient_stops, gradient_opacity, point_opacity
@@ -76,17 +76,29 @@ class GradientDialog(QDialog):
                 opacity = QDoubleSpinBox(group)
                 opacity.setRange(0, 100)
                 opacity.setDecimals(1)
-                opacity.setPrefix("Opacity ")
                 opacity.setSuffix("%")
+                opacity.setAlignment(Qt.AlignmentFlag.AlignRight)
+                opacity.setFixedWidth(72)
                 opacity.setValue(point_opacity(point, side))
                 opacity.setKeyboardTracking(False)
                 opacity.valueChanged.connect(
                     lambda value, p=point, b=button: self._set_opacity(p, value, b)
                 )
                 row = QHBoxLayout()
-                row.addWidget(button)
+                row.setSpacing(4)
+                row.addWidget(button, 1)
                 row.addWidget(opacity)
-                form.addRow(f"{point['workload_ratio'] * 100:g}%", row)
+                restore = QPushButton(group)
+                restore.setIcon(QIcon("review_heatmap:icons/restore.svg"))
+                restore.setToolTip("Restore this color and opacity")
+                restore.setAccessibleName("Restore this gradient point")
+                restore.setFixedWidth(30)
+                restore.clicked.connect(
+                    lambda checked=False, s=side, p=point, b=button, o=opacity:
+                    self._restore_point(s, p, b, o)
+                )
+                row.addWidget(restore)
+                form.addRow(f"{int(point['workload_ratio'] * 100)}%", row)
             self.groups.addWidget(group)
 
     def _save(self):
@@ -98,6 +110,25 @@ class GradientDialog(QDialog):
     def _set_opacity(self, point, value, button):
         point["opacity"] = value
         self._style_button(button, point)
+        self._save()
+
+    def _restore_point(self, side, point, button, opacity):
+        defaults = self.config["local"].get(
+            "baseline_gradient_default", DEFAULT_BASELINE_GRADIENT
+        )
+        ratio = point["workload_ratio"]
+        default = next(
+            (candidate for candidate in defaults[side]
+             if float(candidate["workload_ratio"]) == float(ratio)),
+            DEFAULT_BASELINE_GRADIENT[side][0],
+        )
+        point.clear()
+        point.update(deepcopy(default))
+        point.setdefault("opacity", point_opacity(point, side))
+        self._style_button(button, point)
+        opacity.blockSignals(True)
+        opacity.setValue(point["opacity"])
+        opacity.blockSignals(False)
         self._save()
 
     def _restore_defaults(self):

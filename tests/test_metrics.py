@@ -63,9 +63,9 @@ def test_baseline_gradient_interpolates_without_white_at_the_target():
     assert baseline_color(170 / 3, reference) == "#1e6823"
     assert baseline_color(85 - 1e-8, reference) == "#378f36"
     assert baseline_color(85, reference) == "#74ba58"
-    assert baseline_color(170, reference) == "#a5d06e"
-    assert baseline_color(255, reference) == "#d6e685"
-    assert baseline_color(500, reference) == "#d6e685"
+    assert baseline_color(170, reference) == "#d6e685"
+    assert baseline_color(255, reference) == "#81d4fa"
+    assert baseline_color(500, reference) == "#81d4fa"
     assert baseline_color(100, reference, reference_day=True) == "#ffffff"
     # Nearby workloads within the former buckets now produce different colors.
     assert baseline_color(10, reference) != baseline_color(15, reference)
