@@ -3,8 +3,8 @@
 Install requirements.txt and run npm ci, then:
     python scripts/build_worktree.py
 
-Only Qt 6's UI compiler, the existing JavaScript bundler, and Python's standard
-library are used. The resulting add-on requires Anki with Qt 6.
+Qt 5's system UI compiler, PyQt 6's UI compiler, the existing JavaScript
+bundler, and Python's standard library are used.
 """
 
 import json
@@ -19,30 +19,52 @@ import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
-major = 6
-    
 def compile_forms(root, package):
     forms = package / "gui" / "forms"
     forms.mkdir(parents=True, exist_ok=True)
     names = []
-    target = forms / f"qt{major}"
-    target.mkdir(exist_ok=True)
-    names = []
-    for source in sorted((root / "designer").glob("*.ui")):
-        generated = subprocess.check_output(
-            [sys.executable, "-m", f"PyQt{major}.uic.pyuic", str(source)],
-            text=True,
+    compilers = {
+        5: ["uic-qt5", "-g", "python"],
+        6: [sys.executable, "-m", "PyQt6.uic.pyuic"],
+    }
+    for major, compiler in compilers.items():
+        target = forms / f"qt{major}"
+        target.mkdir(exist_ok=True)
+        for source in sorted((root / "designer").glob("*.ui")):
+            generated = subprocess.check_output(
+                [*compiler, str(source)], text=True,
+            )
+            # Both generated variants import their binding directly. Routing
+            # imports through Anki lets one archive work with either toolkit.
+            generated = re.sub(
+                r"^from (?:PySide2|PyQt[56])[^\n]+(?:\n|$)",
+                "",
+                generated,
+                flags=re.MULTILINE,
+            )
+            if major == 5:
+                generated = "from aqt.qt import *  # type: ignore\n" + generated
+            else:
+                generated = (
+                    "from aqt import qt as QtCore\n"
+                    "from aqt import qt as QtGui\n"
+                    "from aqt import qt as QtWidgets\n" + generated
+                )
+            # Resources are ordinary files registered through QDir below.
+            generated = re.sub(r"^import \w+_rc\s*$", "", generated, flags=re.MULTILINE)
+            generated = generated.replace(":/review_heatmap/", "review_heatmap:")
+            (target / f"{source.stem}.py").write_text(generated, encoding="utf-8")
+            if source.stem not in names:
+                names.append(source.stem)
+        (target / "__init__.py").write_text(
+            "from . import " + ", ".join(names) + "\n", encoding="utf-8",
         )
-        # Resources are ordinary files registered through QDir below.
-        generated = re.sub(r"^import \w+_rc\s*$", "", generated, flags=re.MULTILINE)
-        generated = generated.replace(":/review_heatmap/", "review_heatmap:")
-        (target / f"{source.stem}.py").write_text(generated, encoding="utf-8")
-        names.append(source.stem)
-    (target / "__init__.py").write_text(
-        "from . import " + ", ".join(names) + "\n", encoding="utf-8",
-    )
     (forms / "__init__.py").write_text(
-        "from .qt6 import *\n",
+        "from aqt.qt import qtmajor\n\n"
+        "if qtmajor == 5:\n"
+        "    from .qt5 import *\n"
+        "else:\n"
+        "    from .qt6 import *\n",
         encoding="utf-8",
     )
 
@@ -74,9 +96,10 @@ def copy_resources(root, package):
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    # Check the Qt 6 compiler before touching any previous build.
+    # Check both compilers before touching any previous build.
+    subprocess.run(["uic-qt5", "-version"], check=True)
     subprocess.run(
-        [sys.executable, "-m", f"PyQt{major}.uic.pyuic", "--version"], check=True,
+        [sys.executable, "-m", "PyQt6.uic.pyuic", "--version"], check=True,
     )
     metadata = json.loads((root / "addon.json").read_text(encoding="utf-8"))
     version = json.loads((root / "package.json").read_text(encoding="utf-8"))["version"]
@@ -110,7 +133,7 @@ def main():
         "package": metadata["module_name"],
         "name": metadata["display_name"],
         "mod": int(time.time()),
-        "conflicts": list(dict.fromkeys(metadata["conflicts"] + [metadata["ankiweb_id"]])),
+        "conflicts": list(dict.fromkeys(metadata["conflicts"])),
     }
     (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     environment = dict(os.environ, ANKI_REVIEW_HEATMAP_OUTFILE=str(package / "web" / "anki-review-heatmap.js"))

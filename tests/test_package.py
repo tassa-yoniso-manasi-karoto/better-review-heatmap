@@ -19,6 +19,9 @@ pytestmark = pytest.mark.skipif(not ARTIFACT.exists(), reason="build the package
 def test_archive_contains_current_sources_and_qt6_forms():
     with ZipFile(ARTIFACT) as archive:
         names = archive.namelist()
+        manifest = json.loads(archive.read("manifest.json"))
+        assert METADATA["ankiweb_id"] not in manifest["conflicts"]
+        assert "1771074083" in manifest["conflicts"]
         for filename in (
             "activity.py", "config.py", "metrics.py", "controller.py", "renderer.py", "gui/options.py",
         ):
@@ -26,6 +29,7 @@ def test_archive_contains_current_sources_and_qt6_forms():
         for filename in (
             "__init__.py", "manifest.json", "LICENSE.txt", "LICENSES_ICONS.txt",
             "LICENSES_WEB.txt",
+            "gui/forms/qt5/options.py", "gui/forms/qt5/contrib.py",
             "gui/forms/qt6/options.py", "gui/forms/qt6/contrib.py",
             "gui/resources/review_heatmap/icons/help.svg", "web/anki-review-heatmap.js",
             "gui/resources/review_heatmap/icons/restore.svg", "web/assets/palette.svg",
@@ -36,6 +40,44 @@ def test_archive_contains_current_sources_and_qt6_forms():
         assert archive.read("LICENSES_WEB.txt") == (
             ROOT / "src/web/_vendor/LICENSES.txt"
         ).read_bytes()
+
+
+def test_qt5_forms_initialize(tmp_path):
+    pytest.importorskip("PyQt5")
+    package = tmp_path / "better_review_heatmap"
+    with ZipFile(ARTIFACT) as archive:
+        archive.extractall(package)
+    script = r'''
+import sys
+from pathlib import Path
+from types import ModuleType
+from PyQt5 import QtCore, QtGui, QtWidgets
+
+aqt = ModuleType("aqt")
+qt = ModuleType("aqt.qt")
+for module in (QtCore, QtGui, QtWidgets):
+    for name in dir(module):
+        if not name.startswith("_"):
+            setattr(qt, name, getattr(module, name))
+qt.qtmajor = 5
+aqt.qt = qt
+sys.modules["aqt"] = aqt
+sys.modules["aqt.qt"] = qt
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "gui"))
+from forms import options, contrib
+
+app = QtWidgets.QApplication([])
+for module in (options, contrib):
+    dialog = QtWidgets.QDialog()
+    module.Ui_Dialog().setupUi(dialog)
+print("Qt 5 forms initialized successfully")
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(package)], capture_output=True, text=True,
+        env={**__import__("os").environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_packaged_addon_initializes_without_opening_a_collection(tmp_path):
