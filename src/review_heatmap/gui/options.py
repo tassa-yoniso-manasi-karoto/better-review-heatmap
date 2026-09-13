@@ -232,8 +232,9 @@ class RevHmOptions(OptionsDialog):
         descriptions = {
             "reviews": "Classic uses the original review counts and average-based color scale.",
             "time": (
-                "Study time (linear) uses recorded duration directly: twice "
-                "the time means twice the activity."
+                "Linear workload multiplies review count by total recorded "
+                "minutes, without weighting adjustments. Doubling either input "
+                "doubles the index; doubling both quadruples it."
             ),
             "workload": (
                 "Workload gives review count more weight than recorded time. "
@@ -433,7 +434,7 @@ def _on_profile_open():
         config["profile"] = profile
         config.save("profile", profile_unload=True)
         showInfo(
-            "Review Heatmap offers Study time (linear) and Workload "
+            "Review Heatmap offers Workload (linear) and Workload "
             "(review-weighted) color modes in "
             "Review Heatmap Options → Activity.\n\n"
             "Both use Anki's recorded review time. Please check Deck Options → "

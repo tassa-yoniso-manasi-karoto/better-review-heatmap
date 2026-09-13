@@ -165,7 +165,7 @@ def test_render_preserves_raw_totals_streaks_and_forecast_scale(setup):
         assert values[str(TODAY + 86400)] == -200
         assert "68 cards" in html  # original count-based active-day average
         if metric == "time":
-            assert values[str(TODAY)] == 45
+            assert values[str(TODAY)] == 5400
         elif metric == "workload":
             assert values[str(TODAY)] > values[str(TODAY - 86400)]
     assert snapshots["reviews"]["legend"][:10] == snapshots["workload"]["legend"][:10]
@@ -193,7 +193,7 @@ def test_baseline_is_saved_once_and_fixed_scale_never_uses_it(setup):
     assert renderer._activity_legend([]) == levels
     assert len(setup.conf.saves) == 1
     setup.conf["synced"]["activity_scale"] = "fixed"
-    assert renderer._activity_legend([]) == [1, 5, 10, 20, 30, 45, 60, 90, 120]
+    assert renderer._activity_legend([]) == [4, 25, 100, 400, 900, 2025, 3600, 8100, 14400]
 
 
 def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):

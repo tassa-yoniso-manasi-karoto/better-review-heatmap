@@ -7,7 +7,7 @@ import pytest
 from review_heatmap.metrics import (
     activity_levels, activity_value, automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
-    migrate_workload_references, reference_from_day, saved_reference,
+    migrate_activity_references, reference_from_day, saved_reference,
 )
 
 
@@ -20,15 +20,25 @@ def test_review_weighted_workload_recognizes_dense_recall():
     assert activity_value(30, 45 * 60000, "workload") == pytest.approx(2 ** (2 / 3) * reading)
 
 
-def test_measures_keep_recorded_units_and_zero_time():
+def test_linear_workload_uses_both_unadjusted_inputs():
+    assert activity_value(15, 2700000, "time") == 675
+    assert activity_value(30, 2700000, "time") == 1350
+    assert activity_value(15, 5400000, "time") == 1350
+    assert activity_value(30, 5400000, "time") == 2700
+    assert activity_value(0, 2700000, "time") == 0
+    assert activity_value(15, 0, "time") == 0
+
+
+def test_measures_keep_counts_and_zero_time():
     assert activity_value(15, 2700000, "reviews") == 15
-    assert activity_value(15, 2700000, "time") == 45
+    assert activity_value(15, 2700000, "time") == 675
     assert activity_value(15, 0, "workload") == 0
     assert activity_value(0, 2700000, "workload") == 0
 
 
-def test_old_references_keep_dates_and_raw_totals_across_formula_upgrade():
-    conf = {"activity_metric": "workload", "activity_reference_date": 1}
+@pytest.mark.parametrize("metric", ["time", "workload"])
+def test_old_references_keep_dates_and_raw_totals_across_formula_upgrade(metric):
+    conf = {"activity_metric": metric, "activity_reference_date": 1}
     references = conf["activity_baselines"] = {}
     old_references = {}
     for exclusions, source in (([], "selected"), ([17], "automatic")):
@@ -37,27 +47,29 @@ def test_old_references_keep_dates_and_raw_totals_across_formula_upgrade():
         key = json.dumps(key_parts, separators=(",", ":"))
         old_references[key] = {
             "day": 1, "reviews": 120, "time_ms": 2700000,
-            "value": math.sqrt(120 * 45), "source": source,
+            "value": 45 if metric == "time" else math.sqrt(120 * 45), "source": source,
         }
     references.update(deepcopy(old_references))
-    time_key = baseline_key(dict(conf, activity_metric="time"))
-    references[time_key] = reference_from_day((2, 15, 2700000), "time", "selected")
-    old_time = deepcopy(references[time_key])
+    other_metric = "workload" if metric == "time" else "time"
+    other_key = baseline_key(dict(conf, activity_metric=other_metric))
+    references[other_key] = reference_from_day((2, 15, 2700000), other_metric, "selected")
+    old_other = deepcopy(references[other_key])
 
-    assert migrate_workload_references(conf)
+    assert migrate_activity_references(conf)
     for exclusions in ([], [17]):
         reference = saved_reference(dict(conf, limdecks=exclusions))
-        assert reference["value"] == pytest.approx(120 * 0.375 ** (1 / 3))
+        expected = 5400 if metric == "time" else 120 * 0.375 ** (1 / 3)
+        assert reference["value"] == pytest.approx(expected)
         assert reference["day"] == 1
         assert reference["reviews"] == 120
         assert reference["time_ms"] == 2700000
         assert reference["source"] == ("selected" if not exclusions else "automatic")
     assert conf["activity_reference_date"] == 1
-    assert references[time_key] == old_time
+    assert references[other_key] == old_other
     for key, reference in old_references.items():
         assert references[key] == reference
     migrated = deepcopy(conf)
-    assert not migrate_workload_references(conf)
+    assert not migrate_activity_references(conf)
     assert conf == migrated
 
 
@@ -74,12 +86,12 @@ def test_reference_upgrade_preserves_newer_selections_and_invalid_old_entries():
         "invalid": {"value": 1},
     }
     original = deepcopy(conf)
-    assert not migrate_workload_references(conf)
+    assert not migrate_activity_references(conf)
     assert conf == original
     del conf["activity_baselines"][key]
     del conf["activity_baselines"][old_key]["time_ms"]
     original = deepcopy(conf)
-    assert not migrate_workload_references(conf)
+    assert not migrate_activity_references(conf)
     assert conf == original
 
 
@@ -95,13 +107,13 @@ def test_reference_is_an_actual_day_and_ignores_zero_duration():
 def test_reference_requires_positive_time_and_applies_only_when_supplied():
     assert reference_from_day((1, 100, 0), "time", "selected") is None
     reference = reference_from_day((1, 120, 2700000), "time", "selected")
-    assert activity_levels("time")[5] == 45
+    assert activity_levels("time")[5] == 2025
     assert activity_levels("time", reference) == list(range(1, 10))
-    assert baseline_value(reference) == pytest.approx(38.25)
+    assert baseline_value(reference) == pytest.approx(4590)
     reference["value"] = 90
     assert baseline_value(reference) == pytest.approx(76.5)
     assert reference["value"] == 90  # applying the discount never compounds it
-    assert activity_levels("time")[5] == 45
+    assert activity_levels("time")[5] == 2025
 
 
 def test_baseline_palette_has_a_white_reference_and_gentler_threshold():

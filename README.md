@@ -10,14 +10,15 @@ Open **Tools → Review Heatmap Options → Activity** and choose a measure:
 
 - **Review count (classic):** original review counts and color scaling;
   selected by default.
-- **Study time (linear):** Anki's recorded review duration.
+- **Workload (linear):** `review count × total recorded minutes`, with no
+  weighting adjustments.
 - **Workload (review-weighted):** gives review count more influence than time,
   using `reviews × ∛(average recorded minutes per review)` internally.
 
 Hover over a past day to see its recorded time and review count. Streaks still
 count days with reviews, and future dates show cards due.
 
-Study time and Workload offer two color scales:
+Both workload modes offer two color scales:
 
 - **Fixed scale:** stable thresholds independent of other days.
 - **Automatic baseline:** selects a strong recent study day, or lets you choose

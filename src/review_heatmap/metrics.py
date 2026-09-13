@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Sequence
 
 METRICS = {
     "reviews": {"label": "Review count (classic)"},
-    "time": {"label": "Study time (linear)"},
+    "time": {"label": "Workload (linear)"},
     "workload": {"label": "Workload (review-weighted)"},
 }
 SCALES = {
@@ -23,7 +23,9 @@ SCALES = {
 # Nine boundaries preserve the existing ten activity shades. These fixed
 # scales never depend on another day's activity or on the visible date range.
 FIXED_LEVELS = {
-    "time": (1, 5, 10, 20, 30, 45, 60, 90, 120),
+    # Unadjusted count × minutes uses squared score units compared with the
+    # original square-root workload; keep practical fixed-scale boundaries.
+    "time": (4, 25, 100, 400, 900, 2025, 3600, 8100, 14400),
     "workload": (2, 5, 10, 20, 30, 45, 60, 90, 120),
 }
 BASELINE_FRACTION = 0.85
@@ -40,9 +42,9 @@ def metric_name(conf: Dict) -> str:
 
 
 def activity_value(reviews: int, milliseconds: int, metric: str) -> float:
-    """Workload weights review count more strongly than recorded time.
+    """Linear workload multiplies count and total minutes without adjustment.
 
-    Count times the cube root of average duration is equivalent to
+    Review-weighted workload uses count times the cube root of average duration:
     count^(2/3) * total_minutes^(1/3). Doubling both doubles workload, while
     doubling time alone multiplies it by the cube root of two.
     Zero recorded duration is preserved; no missing time is estimated.
@@ -50,7 +52,8 @@ def activity_value(reviews: int, milliseconds: int, metric: str) -> float:
     reviews = max(0, reviews)
     minutes = max(0, milliseconds) / 60000
     if metric == "time":
-        return minutes
+        # Keep the stored mode key so existing selections carry over.
+        return reviews * minutes
     if metric == "workload":
         return reviews * (minutes / reviews) ** (1 / 3) if reviews else 0.0
     return float(reviews)
@@ -60,7 +63,7 @@ def baseline_key(conf: Dict) -> str:
     """References are specific to a measure and its included history."""
     return json.dumps(
         [
-            2 if metric_name(conf) == "workload" else 1,  # formula version
+            1 if metric_name(conf) == "reviews" else 2,  # formula version
             metric_name(conf),
             sorted(conf.get("limdecks", [])),
             conf.get("limcdel", False),
@@ -72,8 +75,8 @@ def baseline_key(conf: Dict) -> str:
     )
 
 
-def migrate_workload_references(conf: Dict) -> bool:
-    """Recalculate every old workload reference from its saved raw totals.
+def migrate_activity_references(conf: Dict) -> bool:
+    """Recalculate old time/workload references from their saved raw totals.
 
     Keep the original snapshots for compatibility with older installations.
     Selected dates, filters, sources, and existing new-format references stay
@@ -88,7 +91,8 @@ def migrate_workload_references(conf: Dict) -> bool:
             continue
         try:
             parts = json.loads(key)
-            if not isinstance(parts, list) or len(parts) != 7 or parts[:2] != [1, "workload"]:
+            if (not isinstance(parts, list) or len(parts) != 7
+                    or parts[0] != 1 or parts[1] not in ("time", "workload")):
                 continue
             parts[0] = 2
             new_key = json.dumps(parts, separators=(",", ":"))
@@ -96,7 +100,7 @@ def migrate_workload_references(conf: Dict) -> bool:
                 continue
             int(reference["day"])
             value = activity_value(
-                int(reference["reviews"]), int(reference["time_ms"]), "workload"
+                int(reference["reviews"]), int(reference["time_ms"]), parts[1]
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             continue

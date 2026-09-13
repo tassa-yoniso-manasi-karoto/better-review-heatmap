@@ -40,7 +40,7 @@ from aqt import mw
 
 from .consts import ADDON
 from .libaddon.anki.configmanager import ConfigManager
-from .metrics import migrate_workload_references
+from .metrics import migrate_activity_references
 
 __all__ = ["heatmap_colors", "heatmap_modes", "config_defaults", "config"]
 
@@ -127,7 +127,7 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
             manager[storage] = values
 
     synced = manager["synced"]
-    if migrate_workload_references(synced):
+    if migrate_activity_references(synced):
         manager["synced"] = synced
 
     local = manager["local"]
