@@ -51,13 +51,14 @@ from aqt.utils import showInfo
 from ..activity import ActivityReporter
 from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_modes
 from ..metrics import (
-    METRICS, SCALES, automatic_reference, baseline_key, metric_name,
+    METRICS, SCALES, baseline_key, metric_name,
     reference_from_day, saved_reference,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
 from ..times import daystart_epoch
 from .forms import options as qtform_options
+from .gradient import GradientDialog
 
 
 class RevHmOptions(OptionsDialog):
@@ -80,6 +81,14 @@ class RevHmOptions(OptionsDialog):
                 ("items", {"setter": "_setActivityScaleItems"}),
                 ("value", {"dataPath": "synced/activity_scale"}),
             ),
+        ),
+        (
+            "dateReference",
+            (("value", {
+                "dataPath": "synced/activity_reference_date",
+                "setter": "_setReferenceDate",
+                "getter": "_getReferenceDate",
+            }),),
         ),
         (
             "form.selHmColor",
@@ -180,28 +189,22 @@ class RevHmOptions(OptionsDialog):
         self.referenceGroup = QGroupBox("Automatic baseline", tab)
         reference_layout = QVBoxLayout(self.referenceGroup)
         explanation = QLabel(
-            "<b>Recommended:</b> use a strong recent day as your reference. "
-            "The target is 85% of its activity and stays fixed until recalculated.",
-            self.referenceGroup,
+            "Use a above average day of learning as your reference. "
         )
         explanation.setWordWrap(True)
         reference_layout.addWidget(explanation)
         self.labReference = QLabel(self.referenceGroup)
         self.labReference.setWordWrap(True)
         reference_layout.addWidget(self.labReference)
-        self.btnRecalculate = QPushButton("Recalculate from recent activity", self.referenceGroup)
-        reference_layout.addWidget(self.btnRecalculate)
-
-        day_layout = QHBoxLayout()
+        day_layout = QFormLayout()
         self.dateReference = QDateEdit(self.referenceGroup)
         self.dateReference.setCalendarPopup(True)
         self.dateReference.setDisplayFormat("yyyy-MM-dd")
         self.dateReference.setMaximumDate(QDate.currentDate())
-        self.dateReference.setDate(QDate.currentDate().addDays(-1))
-        self.btnUseReferenceDay = QPushButton("Use this day as reference", self.referenceGroup)
-        day_layout.addWidget(self.dateReference)
-        day_layout.addWidget(self.btnUseReferenceDay)
+        day_layout.addRow("Reference day", self.dateReference)
         reference_layout.addLayout(day_layout)
+        self.btnEditGradient = QPushButton("Edit gradient colors…", self.referenceGroup)
+        reference_layout.addWidget(self.btnEditGradient)
         layout.addWidget(self.referenceGroup)
 
         timing = QLabel(
@@ -238,18 +241,13 @@ class RevHmOptions(OptionsDialog):
             description += " Fixed scale uses stable thresholds, independent of your history."
         elif use_baseline:
             description += (
-                " <b>White marks the reference day.</b> Below target, colors move "
-                "from orange to green; at and above target, from light green to blue. "
-                "Empty days remain neutral."
+                " <b>White marks the reference day.</b>"
             )
         self.labActivityDescription.setText(description)
         reference = saved_reference(conf)
         if reference:
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
             source = "Selected" if reference.get("source") == "selected" else "Automatic"
-            self.labReference.setText(
-                f"<b>{source} reference:</b> {day} · Target: 85% · Saved with OK."
-            )
         else:
             self.labReference.setText(
                 "No saved reference. Automatic selection needs at least 7 completed "
@@ -257,25 +255,16 @@ class RevHmOptions(OptionsDialog):
                 "the fixed scale is used."
             )
 
-    def _onRecalculateReference(self):
-        data = self.getData()
-        conf = data["synced"]
-        rows = ActivityReporter(self.mw.col, data).reference_history()
-        reference = automatic_reference(rows, metric_name(conf))
-        if reference is None:
-            showInfo("Not enough recent study days with recorded time to choose a reference.", parent=self)
+    def _onReferenceDateChanged(self, date):
+        if not self._activity_ready:
             return
-        self._setReference(conf, reference)
-
-    def _onUseReferenceDay(self):
         data = self.getData()
         conf = data["synced"]
-        date = self.dateReference.date()
         day = int(datetime(date.year(), date.month(), date.day(), tzinfo=timezone.utc).timestamp())
         rows = ActivityReporter(self.mw.col, data).reference_history(day)
         reference = reference_from_day(rows[0], metric_name(conf), "selected") if rows else None
         if reference is None:
-            showInfo("No included reviews with recorded time for that day. Check the date and history filters.", parent=self)
+            showInfo("No included reviews with recorded time for that day.", parent=self)
             return
         self._setReference(conf, reference)
 
@@ -303,10 +292,16 @@ class RevHmOptions(OptionsDialog):
         self.selActivityMetric.currentIndexChanged.connect(self._refreshActivitySettings)
         self.selActivityScale.currentIndexChanged.connect(self._refreshActivitySettings)
         self.form.tabWidget.currentChanged.connect(self._refreshActivitySettings)
-        self.btnRecalculate.clicked.connect(self._onRecalculateReference)
-        self.btnUseReferenceDay.clicked.connect(self._onUseReferenceDay)
+        self.dateReference.dateChanged.connect(self._onReferenceDateChanged)
+        self.btnEditGradient.clicked.connect(self._onEditGradient)
 
     # Actions:
+
+    def _onEditGradient(self):
+        GradientDialog(self.config, self).exec()
+        # The options dialog keeps a tentative copy of all settings. Refresh
+        # its local copy so pressing OK does not undo palette changes.
+        self._data["local"] = deepcopy(self.config["local"])
 
     # Deck list buttons
     # TODO: Migrate to custom widget
@@ -344,6 +339,20 @@ class RevHmOptions(OptionsDialog):
 
     def _setDateLimDataMin(self, data_val):
         return self.mw.col.crt
+
+    def _setReferenceDate(self, data_val):
+        if data_val:
+            return data_val
+        date = QDate.currentDate().addDays(-1)
+        return int(datetime(
+            date.year(), date.month(), date.day(), tzinfo=timezone.utc
+        ).timestamp())
+
+    def _getReferenceDate(self, widget_val):
+        date = self.dateReference.date()
+        return int(datetime(
+            date.year(), date.month(), date.day(), tzinfo=timezone.utc
+        ).timestamp())
 
     def _setDateLimDataMax(self, data_val):
         return int(round(time.time()))

@@ -86,6 +86,7 @@ config_defaults: Dict[str, Dict] = {
         "limdecks": [],
         "activity_metric": "reviews",
         "activity_scale": "fixed",
+        "activity_reference_date": 0,
         "activity_baselines": {},
         "version": ADDON.VERSION,
     },
@@ -110,7 +111,8 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
     migration intentionally does not depend on the add-on version.
     """
     for storage, keys in (
-        ("synced", ("activity_metric", "activity_scale", "activity_baselines")),
+        ("synced", ("activity_metric", "activity_scale", "activity_reference_date",
+                    "activity_baselines")),
         ("profile", ("time_notice_seen",)),
     ):
         values = manager[storage]
