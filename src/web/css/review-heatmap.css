@@ -33,14 +33,18 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 .rh-today-progress {
     display: inline-flex;
     align-items: center;
-    gap: 0.45em;
-    margin-inline-start: 0.8em;
+    gap: 0.2em;
+    margin-inline-start: 0.4em;
     vertical-align: middle;
     white-space: nowrap;
     font-size: 0.85em;
+    text-align: left;
 }
 .rh-today-progress-track {
-    display: inline-block;
+    display: inline-flex;
+    flex: none;
+    justify-content: flex-start;
+    direction: ltr;
     width: 7rem;
     height: 0.5rem;
     overflow: hidden;
@@ -50,10 +54,16 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 }
 .rh-today-progress-fill {
     display: block;
+    flex: none;
+    margin: 0;
     height: 100%;
     border-radius: inherit;
 }
 .rh-today-progress-label {
+    /* Reserve trailing space so the percentage stays beside the bar. */
+    width: 10ch;
+    flex: none;
+    text-align: left;
     font-variant-numeric: tabular-nums;
 }
 

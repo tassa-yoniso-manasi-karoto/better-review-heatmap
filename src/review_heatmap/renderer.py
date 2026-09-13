@@ -35,7 +35,9 @@ Heatmap and stats elements generation
 
 import json
 from enum import Enum
+from hashlib import sha256
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
+from uuid import uuid4
 
 from aqt.main import AnkiQt
 
@@ -146,6 +148,8 @@ class HeatmapRenderer:
         self._config: "ConfigManager" = config
         self._reporter: ActivityReporter = reporter
         self._render_cache: Optional[_RenderCache] = None
+        # A renderer lives for one open collection, including page reloads.
+        self._progress_session = uuid4().hex
 
     # TODO: Consider caching on the render-level
 
@@ -292,13 +296,19 @@ class HeatmapRenderer:
             return None
         reference = self._baseline_reference()
         if reference is None:
-            return {"percent": None, "color": ""}
+            return {"percent": None, "color": "", "context": ""}
         today = report.today // 1000 if report else self._reporter._today
         # Today's forecast is negative; only completed reviews contribute.
         count = max(0, report.activity.get(today, 0)) if report else 0
         milliseconds = report.review_time.get(today, 0) if report else 0
         value = activity_value(count, milliseconds, "workload")
+        # Do not animate between different profiles, days, filters or targets.
+        context = json.dumps([
+            self._progress_session, today, baseline_key(conf), reference["day"],
+            baseline_value(reference), self._config["local"].get("baseline_gradient"),
+        ], sort_keys=True)
         return {
+            "context": sha256(context.encode("utf-8")).hexdigest(),
             "percent": 100 * value / baseline_value(reference),
             "color": baseline_color(
                 value, reference, reference_day=today == int(reference["day"]),

@@ -323,7 +323,7 @@ def test_today_progress_visibility_and_missing_baseline(setup):
     renderer = make_renderer(setup)
     assert renderer._today_progress(None) is None  # fixed scale has no baseline
     setup.conf["synced"]["activity_scale"] = "baseline"
-    assert renderer._today_progress(None) == {"percent": None, "color": ""}
+    assert renderer._today_progress(None) == {"percent": None, "color": "", "context": ""}
     assert renderer._today_progress_script(setup.modules.renderer.HeatmapView.overview, None) == ""
     setup.conf["profile"]["show_today_progress"] = False
     assert renderer._today_progress(None) is None
@@ -341,3 +341,21 @@ def test_today_progress_is_rendered_when_calendar_is_hidden(setup):
     html = make_renderer(setup).render(setup.modules.renderer.HeatmapView.deckbrowser)
     assert "ReviewHeatmap.updateTodayProgress(" in html
     assert "new ReviewHeatmap(" not in html
+
+
+def test_progress_animation_context_survives_reviews_but_resets_for_new_targets(setup):
+    from review_heatmap.metrics import baseline_key, reference_from_day
+
+    conf = setup.conf["synced"]
+    conf["activity_scale"] = "baseline"
+    reference = reference_from_day((TODAY - 86400, 100, 6000000), "workload", "selected")
+    conf["activity_baselines"][baseline_key(conf)] = reference
+    renderer = make_renderer(setup)
+    before = renderer._today_progress(None)["context"]
+    report = setup.reporter._get_activity([(TODAY, 10)], [], {TODAY: 600000})
+    assert renderer._today_progress(report)["context"] == before
+    assert make_renderer(setup)._today_progress(report)["context"] != before
+    tomorrow = report._replace(today=report.today + 86400000)
+    assert renderer._today_progress(tomorrow)["context"] != before
+    reference["value"] *= 2
+    assert renderer._today_progress(report)["context"] != before
