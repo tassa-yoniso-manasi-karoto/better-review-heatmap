@@ -1,11 +1,10 @@
 {
-    "display_name": "Review Heatmap",
-    "module_name": "review_heatmap",
-    "repo_name": "review-heatmap",
-    "ankiweb_id": "1771074083",
-    "author": "Glutanimate",
-    "contact": "https://glutanimate.com",
-    "homepage": "https://github.com/glutanimate/review-heatmap",
+    "display_name": "Better Review Heatmap",
+    "module_name": "better_review_heatmap",
+    "repo_name": "better-review-heatmap",
+    "ankiweb_id": "1868371602",
+    "author": "tassa-yoniso-manasi-karoto",
+    "homepage": "https://github.com/tassa-yoniso-manasi-karoto/better-review-heatmap",
     "copyright_start": 2016,
     "tags": "stats motivation streak heatmap overview",
     "conflicts": [
