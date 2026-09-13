@@ -60,32 +60,26 @@ var rhNewFinderAPI = false;
 
 HTML_HEATMAP: str = f"""
 <div class="heatmap">
+    <div id="cal-heatmap"></div>
     <div class="heatmap-controls">
-        <div class="alignleft">
-            <span>&nbsp;</span>
+        <div title="Go back\n(Shift-click for first year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'prev');" class="hm-btn">
+            <img src="{WEB_BASE}/assets/left.svg" />
         </div>
-        <div class="aligncenter">
-            <div title="Go back\n(Shift-click for first year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'prev');" class="hm-btn">
-                <img height="10px" src="{WEB_BASE}/assets/left.svg" />
-            </div>
-            <div title="Today" onclick="reviewHeatmap.onHmHome(event, this);" class="hm-btn">
-                <img height="10px" src="{WEB_BASE}/assets/circle.svg" />
-            </div>
-            <div title="Go forward\n(Shift-click for last year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'next');" class="hm-btn">
-                <img height="10px" src="{WEB_BASE}/assets/right.svg" />
-            </div>
+        <div title="Go forward\n(Shift-click for last year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'next');" class="hm-btn">
+            <img src="{WEB_BASE}/assets/right.svg" />
         </div>
-        <div class="alignright">
-            <button hidden id="review-heatmap-palette" type="button" class="hm-btn opts-btn" title="Edit gradient colors" aria-label="Edit gradient colors" onclick="reviewHeatmap.onHmGradient();">
-                <img src="{WEB_BASE}/assets/palette.svg" />
-            </button>
-            <div class="hm-btn opts-btn" title="Options" onclick="reviewHeatmap.onHmOpts(event, this);">
+        <div title="Today" onclick="reviewHeatmap.onHmHome(event, this);" class="hm-btn hm-today">
+            <img src="{WEB_BASE}/assets/circle.svg" />
+        </div>
+        <div class="hm-settings-row">
+            <div class="hm-btn" title="Options" onclick="reviewHeatmap.onHmOpts(event, this);">
                 <img src="{WEB_BASE}/assets/options.svg" />
             </div>
+            <button hidden id="review-heatmap-palette" type="button" class="hm-btn" title="Edit gradient colors" aria-label="Edit gradient colors" onclick="reviewHeatmap.onHmGradient();">
+                <img src="{WEB_BASE}/assets/palette.svg" />
+            </button>
         </div>
-        <div style="clear: both;">&nbsp;</div>
     </div>
-    <div id="cal-heatmap"></div>
 </div>
 <script type="text/javascript">
     window.reviewHeatmap = new ReviewHeatmap({{options}});
