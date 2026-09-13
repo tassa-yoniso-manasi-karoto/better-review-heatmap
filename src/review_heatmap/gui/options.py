@@ -180,11 +180,8 @@ class RevHmOptions(OptionsDialog):
         self.referenceGroup = QGroupBox("Automatic baseline", tab)
         reference_layout = QVBoxLayout(self.referenceGroup)
         explanation = QLabel(
-            "Choose a strong day automatically from the last 60 days, or select "
-            "a reference day below. The baseline is 85% of that day's activity "
-            "to keep it comfortably attainable. The reference stays fixed until you "
-            "recalculate it. It uses all included decks, so colors are "
-            "comparable across views.",
+            "<b>Recommended:</b> use a strong recent day as your reference. "
+            "The target is 85% of its activity and stays fixed until recalculated.",
             self.referenceGroup,
         )
         explanation.setWordWrap(True)
@@ -241,11 +238,9 @@ class RevHmOptions(OptionsDialog):
             description += " Fixed scale uses stable thresholds, independent of your history."
         elif use_baseline:
             description += (
-                " The reference day is white. As workload increases below baseline, "
-                "colors progress from orange to yellow to dark green to medium green. "
-                "At or above baseline, colors start at a lighter green and brighten "
-                "as workload increases. White is reserved for the "
-                "reference date. Days without reviews keep their neutral background."
+                " <b>White marks the reference day.</b> Below target, colors move "
+                "from orange to green; at and above target, from light green to blue. "
+                "Empty days remain neutral."
             )
         self.labActivityDescription.setText(description)
         reference = saved_reference(conf)
@@ -253,8 +248,7 @@ class RevHmOptions(OptionsDialog):
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
             source = "Selected" if reference.get("source") == "selected" else "Automatic"
             self.labReference.setText(
-                f"{source} reference: {day}. Baseline: 85% of that day's activity. "
-                "Saved when you press OK."
+                f"<b>{source} reference:</b> {day} · Target: 85% · Saved with OK."
             )
         else:
             self.labReference.setText(

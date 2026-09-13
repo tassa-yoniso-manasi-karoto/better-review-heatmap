@@ -273,6 +273,7 @@ class HeatmapRenderer:
         self, report: ActivityReport, dynamic_legend, current_deck_only: bool
     ) -> str:
         mode = heatmap_modes[self._config["synced"]["mode"]]
+        metric = metric_name(self._config["synced"])
 
         # TODO: pass on "whole" to govern browser link "deck:current" addition
         options = {
@@ -286,6 +287,10 @@ class HeatmapRenderer:
             "offset": report.offset,
             "legend": dynamic_legend,
             "whole": not current_deck_only,
+            "showPaletteButton": (
+                metric != "reviews"
+                and self._config["synced"].get("activity_scale") == "baseline"
+            ),
             "dayColors": {},
             "history": {
                 day: [report.activity[day], milliseconds]
@@ -293,7 +298,6 @@ class HeatmapRenderer:
             },
         }
 
-        metric = metric_name(self._config["synced"])
         reference = self._baseline_reference()
         activity = {}
         for day, count in report.activity.items():

@@ -55,9 +55,24 @@ interface CalHeatmapCellData {
 
 class ReviewHeatmap {
   private heatmap: CalHeatMap | null;
+  private paletteButton: HTMLElement | null;
 
   constructor(private options: ReviewHeatmapOptions) {
     this.heatmap = null;
+    this.paletteButton = document.getElementById("review-heatmap-palette");
+    this.setPaletteVisibility(options.showPaletteButton);
+    window.setInterval(() => this.refreshPaletteVisibility(), 1000);
+  }
+
+  private setPaletteVisibility(visible: boolean) {
+    if (this.paletteButton) {
+      this.paletteButton.hidden = !visible;
+    }
+  }
+
+  private refreshPaletteVisibility() {
+    bridgeCommand("revhm_palettevisible", (visible) =>
+      this.setPaletteVisibility(visible === true));
   }
 
   public create(data: ReviewHeatmapData) {

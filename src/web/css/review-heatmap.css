@@ -115,6 +115,9 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     user-select: none;
     vertical-align: center;
 }
+.hm-btn[hidden] {
+    display: none;
+}
 .hm-btn:hover {
     background: #bfbfbf;
 }

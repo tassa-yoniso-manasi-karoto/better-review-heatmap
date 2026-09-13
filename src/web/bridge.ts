@@ -31,7 +31,11 @@
 # Any modifications to this file must keep this entire header intact.
 */
 
-export function bridgeCommand(command: string): any {
-  // @ts-expect-error
-  return pycmd(command);
+export function bridgeCommand(command: string, callback?: (result: unknown) => void): any {
+  // Anki installs pycmd asynchronously after the page starts loading.
+  const pycmd = (globalThis as any).pycmd;
+  if (typeof pycmd !== "function") {
+    return false;
+  }
+  return pycmd(command, callback);
 }

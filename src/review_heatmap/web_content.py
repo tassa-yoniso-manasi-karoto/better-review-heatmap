@@ -76,7 +76,7 @@ HTML_HEATMAP: str = f"""
             </div>
         </div>
         <div class="alignright">
-            <button type="button" class="hm-btn opts-btn" title="Edit gradient colors" aria-label="Edit gradient colors" onclick="reviewHeatmap.onHmGradient();">
+            <button hidden id="review-heatmap-palette" type="button" class="hm-btn opts-btn" title="Edit gradient colors" aria-label="Edit gradient colors" onclick="reviewHeatmap.onHmGradient();">
                 <img src="{WEB_BASE}/assets/palette.svg" />
             </button>
             <div class="hm-btn opts-btn" title="Options" onclick="reviewHeatmap.onHmOpts(event, this);">
