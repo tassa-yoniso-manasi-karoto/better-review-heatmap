@@ -39,7 +39,7 @@ document.head.appendChild(__vite_style__);
 import { CalHeatMap } from "./_vendor/cal-heatmap.js";
 import { ReviewHeatmapOptions, ReviewHeatmapData } from "./types";
 import { bridgeCommand } from "./bridge";
-import { calendarDayKey, reviewSummary } from "./activity";
+import { calendarDayKey, reviewSummary, updateTodayProgress } from "./activity";
 
 interface CalHeatmapFormatData {
   count: string | undefined;
@@ -54,6 +54,7 @@ interface CalHeatmapCellData {
 }
 
 class ReviewHeatmap {
+  public static updateTodayProgress = updateTodayProgress;
   private heatmap: CalHeatMap | null;
   private paletteButton: HTMLElement | null;
 

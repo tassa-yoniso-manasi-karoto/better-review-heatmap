@@ -107,3 +107,9 @@ HTML_STREAK: str = """
 HTML_INFO_NODATA: str = """
 No activity data to show (<span class="linkspan" onclick='pycmd("revhm_opts");'>options</span>).
 """
+
+HTML_TODAY_PROGRESS: str = """
+<script type="text/javascript">
+    ReviewHeatmap.updateTodayProgress({data});
+</script>
+"""

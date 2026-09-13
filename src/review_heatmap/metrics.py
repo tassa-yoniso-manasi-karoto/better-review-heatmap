@@ -11,9 +11,9 @@ from typing import Dict, List, Optional, Sequence
 
 
 METRICS = {
-    "reviews": {"label": "Classic — review count"},
-    "time": {"label": "Study time"},
-    "workload": {"label": "Workload — reviews and time"},
+    "reviews": {"label": "Review count (classic)"},
+    "time": {"label": "Study time (linear)"},
+    "workload": {"label": "Workload (review-weighted)"},
 }
 SCALES = {
     "fixed": {"label": "Fixed scale"},
@@ -35,15 +35,16 @@ DEFAULT_BASELINE_GRADIENT = json.loads(
 
 
 def metric_name(conf: Dict) -> str:
-    value = conf.get("activity_metric", "reviews")
-    return value if value in METRICS else "reviews"
+    value = conf.get("activity_metric", "workload")
+    return value if value in METRICS else "workload"
 
 
 def activity_value(reviews: int, milliseconds: int, metric: str) -> float:
-    """Workload gives count and time equal proportional influence.
+    """Workload weights review count more strongly than recorded time.
 
-    Doubling both doubles workload. Doubling time alone increases it by only
-    sqrt(2), limiting the influence of long readings and interrupted timers.
+    Count times the cube root of average duration is equivalent to
+    count^(2/3) * total_minutes^(1/3). Doubling both doubles workload, while
+    doubling time alone multiplies it by the cube root of two.
     Zero recorded duration is preserved; no missing time is estimated.
     """
     reviews = max(0, reviews)
@@ -51,7 +52,7 @@ def activity_value(reviews: int, milliseconds: int, metric: str) -> float:
     if metric == "time":
         return minutes
     if metric == "workload":
-        return math.sqrt(reviews * minutes)
+        return reviews * (minutes / reviews) ** (1 / 3) if reviews else 0.0
     return float(reviews)
 
 
@@ -59,7 +60,7 @@ def baseline_key(conf: Dict) -> str:
     """References are specific to a measure and its included history."""
     return json.dumps(
         [
-            1,  # formula/reference format version
+            2 if metric_name(conf) == "workload" else 1,  # formula version
             metric_name(conf),
             sorted(conf.get("limdecks", [])),
             conf.get("limcdel", False),
@@ -69,6 +70,41 @@ def baseline_key(conf: Dict) -> str:
         ],
         separators=(",", ":"),
     )
+
+
+def migrate_workload_references(conf: Dict) -> bool:
+    """Recalculate every old workload reference from its saved raw totals.
+
+    Keep the original snapshots for compatibility with older installations.
+    Selected dates, filters, sources, and existing new-format references stay
+    intact; this migration never reads or changes review history.
+    """
+    references = conf.get("activity_baselines", {})
+    if not isinstance(references, dict):
+        return False
+    changed = False
+    for key, reference in list(references.items()):
+        if not isinstance(reference, dict):
+            continue
+        try:
+            parts = json.loads(key)
+            if not isinstance(parts, list) or len(parts) != 7 or parts[:2] != [1, "workload"]:
+                continue
+            parts[0] = 2
+            new_key = json.dumps(parts, separators=(",", ":"))
+            if new_key in references:
+                continue
+            int(reference["day"])
+            value = activity_value(
+                int(reference["reviews"]), int(reference["time_ms"]), "workload"
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(value) or value <= 0:
+            continue
+        references[new_key] = dict(reference, value=value)
+        changed = True
+    return changed
 
 
 def saved_reference(conf: Dict) -> Optional[Dict]:

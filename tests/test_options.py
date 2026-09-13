@@ -41,6 +41,12 @@ def test_settings_cancel_and_accept_keep_reference_changes_local(setup, options_
     dialog = module.RevHmOptions(conf, parent)
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("workload"))
     dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData("baseline"))
+    assert dialog.form.groupBox.title() == "Appearance"
+    assert dialog.form.groupBox.isAncestorOf(dialog.form.cbTodayProgress)
+    assert dialog.form.tab.isAncestorOf(dialog.form.cbTodayProgress)
+    assert dialog.form.cbTodayProgress.isEnabled()
+    assert dialog.form.cbTodayProgress.isChecked()
+    dialog.form.cbTodayProgress.setChecked(False)
     pending = dialog.getData()["synced"]
     reference = reference_from_day((TODAY - 86400, 120, 2700000), "workload", "selected")
     dialog._setReference(pending, reference)
@@ -53,9 +59,11 @@ def test_settings_cancel_and_accept_keep_reference_changes_local(setup, options_
     dialog = module.RevHmOptions(conf, parent)
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("workload"))
     dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData("baseline"))
+    dialog.form.cbTodayProgress.setChecked(False)
     dialog._setReference(dialog.getData()["synced"], reference)
     dialog.accept()
     assert conf["synced"]["activity_metric"] == "workload"
+    assert conf["profile"]["show_today_progress"] is False
     assert conf["synced"]["activity_baselines"][baseline_key(conf["synced"])] == reference
     assert len(conf.saves) == 1
 
@@ -66,7 +74,9 @@ def test_classic_disables_reference_controls(setup, options_module):
     parent = QWidget()
     parent.col = setup.col
     dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("reviews"))
     assert not dialog.selActivityScale.isEnabled()
+    assert not dialog.form.cbTodayProgress.isEnabled()
     assert dialog.referenceGroup.isHidden()
     dialog.reject()
 

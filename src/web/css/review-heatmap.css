@@ -29,6 +29,34 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     margin-top: 1em;
 }
 
+/* Daily workload alongside Anki's existing study summary. */
+.rh-today-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
+    margin-inline-start: 0.8em;
+    vertical-align: middle;
+    white-space: nowrap;
+    font-size: 0.85em;
+}
+.rh-today-progress-track {
+    display: inline-block;
+    width: 7rem;
+    height: 0.5rem;
+    overflow: hidden;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    border-radius: 999px;
+    background: rgba(128, 128, 128, 0.2);
+}
+.rh-today-progress-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+}
+.rh-today-progress-label {
+    font-variant-numeric: tabular-nums;
+}
+
 .heatmap {
     display: inline-flex;
     align-items: flex-start;

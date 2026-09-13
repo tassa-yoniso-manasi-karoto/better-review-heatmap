@@ -6,6 +6,7 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -36,7 +37,13 @@ class MemoryDB:
 
 class Config(dict):
     def __init__(self, defaults):
-        super().__init__(copy.deepcopy(defaults))
+        defaults = copy.deepcopy(defaults)
+        if "local" in defaults:
+            palette_defaults = json.loads(
+                (Path(__file__).resolve().parents[1] / "src/review_heatmap/config.json").read_text()
+            )
+            defaults["local"] = dict(palette_defaults, **defaults["local"])
+        super().__init__(defaults)
         self.saves = []
         self.defaults = copy.deepcopy(defaults)
 
@@ -234,17 +241,103 @@ def test_cache_expires_on_day_rollover_or_configuration_change(setup, monkeypatc
 
 def test_additive_settings_migration_preserves_existing_data(addon_modules):
     conf = Config(addon_modules.config.config_defaults)
+    # Palette defaults are loaded separately from config.json in Anki.
+    conf["local"]["baseline_gradient_version"] = 2
     for key in ("activity_metric", "activity_scale", "activity_baselines"):
         del conf["synced"][key]
     del conf["profile"]["time_notice_seen"]
+    del conf["profile"]["show_today_progress"]
     conf["synced"].update(colors="ice", limdate=1234, limdecks=[17], custom={"keep": True})
     previous = copy.deepcopy(conf)
     addon_modules.config.ensure_activity_defaults(conf)
     for storage, values in previous.items():
         for key, value in values.items():
             assert conf[storage][key] == value
-    assert conf["synced"]["activity_metric"] == "reviews"
+    assert conf["synced"]["activity_metric"] == "workload"
+    assert conf["profile"]["show_today_progress"] is True
     assert conf["profile"]["time_notice_seen"] is False
     conf["synced"]["activity_metric"] = "workload"
     addon_modules.config.ensure_activity_defaults(conf)
     assert conf["synced"]["activity_metric"] == "workload"
+
+    from review_heatmap.metrics import baseline_key, saved_reference
+
+    key_parts = json.loads(baseline_key(conf["synced"]))
+    key_parts[0] = 1
+    old_key = json.dumps(key_parts, separators=(",", ":"))
+    conf["synced"]["activity_baselines"][old_key] = {
+        "day": TODAY, "reviews": 120, "time_ms": 2700000,
+        "value": (120 * 45) ** 0.5, "source": "selected",
+    }
+    palette = copy.deepcopy(conf["local"])
+    addon_modules.config.ensure_activity_defaults(conf)
+    reference = saved_reference(conf["synced"])
+    assert reference["day"] == TODAY
+    assert reference["value"] == pytest.approx(120 * 0.375 ** (1 / 3))
+    assert conf["local"] == palette
+
+
+def test_workload_defaults_do_not_replace_existing_mode_choices(addon_modules):
+    conf = Config(addon_modules.config.config_defaults)
+    assert conf["synced"]["activity_metric"] == "workload"
+    assert conf["profile"]["show_today_progress"] is True
+    conf["profile"]["show_today_progress"] = False
+    for metric in ("reviews", "time", "workload"):
+        conf["synced"]["activity_metric"] = metric
+        addon_modules.config.ensure_activity_defaults(conf)
+        assert conf["synced"]["activity_metric"] == metric
+        assert conf["profile"]["show_today_progress"] is False
+
+
+@pytest.mark.parametrize("reviews, expected", [(0, 0), (34, 40), (85, 100), (170, 200)])
+def test_today_progress_matches_workload_baseline_and_calendar_color(setup, reviews, expected):
+    from review_heatmap.metrics import baseline_key, reference_from_day
+
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="workload", activity_scale="baseline")
+    setup.conf["profile"]["show_today_progress"] = True
+    reference_day = TODAY - 86400
+    reference = reference_from_day((reference_day, 100, 6000000), "workload", "selected")
+    conf["activity_baselines"] = {baseline_key(conf): reference}
+    history = [(reference_day, 100)]
+    times = {reference_day: 6000000}
+    if reviews:
+        history.append((TODAY, reviews))
+        times[TODAY] = reviews * 60000
+    report = setup.reporter._get_activity(history, [(TODAY, -400)], times)
+    renderer = make_renderer(setup)
+    progress = renderer._today_progress(report)
+    assert progress["percent"] == pytest.approx(expected)
+    if reviews:
+        html = renderer._generate_heatmap_elm(report, [], False)
+        options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
+        assert progress["color"] == options["dayColors"][str(TODAY)]
+    else:
+        # Pending cards do not become completed work.
+        assert report.activity[TODAY] == -400
+    reference["day"] = TODAY
+    assert renderer._today_progress(report)["color"] == "#ffffff"
+
+
+def test_today_progress_visibility_and_missing_baseline(setup):
+    renderer = make_renderer(setup)
+    assert renderer._today_progress(None) is None  # fixed scale has no baseline
+    setup.conf["synced"]["activity_scale"] = "baseline"
+    assert renderer._today_progress(None) == {"percent": None, "color": ""}
+    assert renderer._today_progress_script(setup.modules.renderer.HeatmapView.overview, None) == ""
+    setup.conf["profile"]["show_today_progress"] = False
+    assert renderer._today_progress(None) is None
+    setup.conf["profile"]["show_today_progress"] = True
+    for metric in ("reviews", "time"):
+        setup.conf["synced"]["activity_metric"] = metric
+        assert renderer._today_progress(None) is None
+
+
+def test_today_progress_is_rendered_when_calendar_is_hidden(setup):
+    add_review(setup, TODAY)
+    setup.conf["profile"].update(show_today_progress=True, statsvis=False)
+    setup.conf["profile"]["display"]["deckbrowser"] = False
+    setup.conf["synced"]["activity_scale"] = "baseline"
+    html = make_renderer(setup).render(setup.modules.renderer.HeatmapView.deckbrowser)
+    assert "ReviewHeatmap.updateTodayProgress(" in html
+    assert "new ReviewHeatmap(" not in html

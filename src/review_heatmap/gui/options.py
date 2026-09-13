@@ -82,6 +82,7 @@ class RevHmOptions(OptionsDialog):
                 ("value", {"dataPath": "synced/activity_scale"}),
             ),
         ),
+        ("form.cbTodayProgress", (("value", {"dataPath": "profile/show_today_progress"}),)),
         (
             "dateReference",
             (("value", {
@@ -227,13 +228,17 @@ class RevHmOptions(OptionsDialog):
         self.selActivityScale.setEnabled(not classic)
         use_baseline = not classic and conf.get("activity_scale") == "baseline"
         self.referenceGroup.setVisible(use_baseline)
+        self.form.cbTodayProgress.setEnabled(metric == "workload" and use_baseline)
         descriptions = {
             "reviews": "Classic uses the original review counts and average-based color scale.",
-            "time": "Study time colors days by Anki's recorded review duration.",
+            "time": (
+                "Study time (linear) uses recorded duration directly: twice "
+                "the time means twice the activity."
+            ),
             "workload": (
-                "Workload balances review count and recorded time. At the same "
-                "duration, more reviews produce a stronger shade. Long reading "
-                "sessions and interruptions have less influence than in Study time."
+                "Workload gives review count more weight than recorded time. "
+                "Longer reviews receive extra credit with diminishing returns. "
+                "At the same pace, twice as many reviews means twice the activity."
             ),
         }
         description = descriptions[metric]
@@ -428,7 +433,8 @@ def _on_profile_open():
         config["profile"] = profile
         config.save("profile", profile_unload=True)
         showInfo(
-            "Review Heatmap offers Study time and Workload color modes in "
+            "Review Heatmap offers Study time (linear) and Workload "
+            "(review-weighted) color modes in "
             "Review Heatmap Options → Activity.\n\n"
             "Both use Anki's recorded review time. Please check Deck Options → "
             "Timers → Maximum answer seconds and choose a limit that suits "

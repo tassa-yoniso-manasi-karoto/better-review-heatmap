@@ -40,6 +40,7 @@ from aqt import mw
 
 from .consts import ADDON
 from .libaddon.anki.configmanager import ConfigManager
+from .metrics import migrate_workload_references
 
 __all__ = ["heatmap_colors", "heatmap_modes", "config_defaults", "config"]
 
@@ -84,7 +85,7 @@ config_defaults: Dict[str, Dict] = {
         "limcdel": False,
         "limresched": True,
         "limdecks": [],
-        "activity_metric": "reviews",
+        "activity_metric": "workload",
         "activity_scale": "fixed",
         "activity_reference_date": 0,
         "activity_baselines": {},
@@ -93,6 +94,7 @@ config_defaults: Dict[str, Dict] = {
     "profile": {
         "display": {"deckbrowser": True, "overview": True, "stats": True},
         "statsvis": True,
+        "show_today_progress": True,
         "hotkeys": {},
         "time_notice_seen": False,
         "version": ADDON.VERSION,
@@ -113,7 +115,7 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
     for storage, keys in (
         ("synced", ("activity_metric", "activity_scale", "activity_reference_date",
                     "activity_baselines")),
-        ("profile", ("time_notice_seen",)),
+        ("profile", ("time_notice_seen", "show_today_progress")),
     ):
         values = manager[storage]
         changed = False
@@ -123,6 +125,10 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
                 changed = True
         if changed:
             manager[storage] = values
+
+    synced = manager["synced"]
+    if migrate_workload_references(synced):
+        manager["synced"] = synced
 
     local = manager["local"]
     if local.get("baseline_gradient_version", 1) < 2:

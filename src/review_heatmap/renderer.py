@@ -49,6 +49,7 @@ from .metrics import (
     baseline_color_level,
     baseline_color,
     baseline_key,
+    baseline_value,
     metric_name,
     saved_reference,
 )
@@ -63,6 +64,7 @@ from .web_content import (
     HTML_INFO_NODATA,
     HTML_MAIN_ELEMENT,
     HTML_STREAK,
+    HTML_TODAY_PROGRESS,
 )
 
 if TYPE_CHECKING:
@@ -165,7 +167,10 @@ class HeatmapRenderer:
             limhist=limhist, limfcst=limfcst, current_deck_only=current_deck_only
         )
         if report is None:
-            return HTML_MAIN_ELEMENT.format(content=HTML_INFO_NODATA, classes="")
+            return HTML_MAIN_ELEMENT.format(
+                content=HTML_INFO_NODATA + self._today_progress_script(view, report),
+                classes="",
+            )
 
         count_legend = self._dynamic_legend(report.stats.activity_daily_avg.value)
         history_legend = self._activity_legend(count_legend)
@@ -192,7 +197,8 @@ class HeatmapRenderer:
             self._save_current_perf(report)
 
         render = HTML_MAIN_ELEMENT.format(
-            content=heatmap + stats, classes=" ".join(classes)
+            content=heatmap + stats + self._today_progress_script(view, report),
+            classes=" ".join(classes),
         )
 
         self._render_cache = _RenderCache(
@@ -268,6 +274,37 @@ class HeatmapRenderer:
         if metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline":
             return saved_reference(conf)
         return None
+
+    def _today_progress_script(
+        self, view: HeatmapView, report: Optional[ActivityReport]
+    ) -> str:
+        if view != HeatmapView.deckbrowser:
+            return ""
+        return HTML_TODAY_PROGRESS.format(data=json.dumps(self._today_progress(report)))
+
+    def _today_progress(self, report: Optional[ActivityReport]) -> Optional[Dict]:
+        conf = self._config["synced"]
+        if (
+            not self._config["profile"].get("show_today_progress", True)
+            or metric_name(conf) != "workload"
+            or conf.get("activity_scale") != "baseline"
+        ):
+            return None
+        reference = self._baseline_reference()
+        if reference is None:
+            return {"percent": None, "color": ""}
+        today = report.today // 1000 if report else self._reporter._today
+        # Today's forecast is negative; only completed reviews contribute.
+        count = max(0, report.activity.get(today, 0)) if report else 0
+        milliseconds = report.review_time.get(today, 0) if report else 0
+        value = activity_value(count, milliseconds, "workload")
+        return {
+            "percent": 100 * value / baseline_value(reference),
+            "color": baseline_color(
+                value, reference, reference_day=today == int(reference["day"]),
+                gradient=self._config["local"].get("baseline_gradient"),
+            ),
+        }
 
     def _generate_heatmap_elm(
         self, report: ActivityReport, dynamic_legend, current_deck_only: bool

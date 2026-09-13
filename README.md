@@ -8,10 +8,11 @@ and retains the inherited daylight-saving fix.
 
 Open **Tools → Review Heatmap Options → Activity** and choose a measure:
 
-- **Classic:** original review counts and color scaling; selected by default.
-- **Study time:** Anki's recorded review duration.
-- **Workload:** balances review count and time using
-  `√(reviews × recorded minutes)` internally.
+- **Review count (classic):** original review counts and color scaling;
+  selected by default.
+- **Study time (linear):** Anki's recorded review duration.
+- **Workload (review-weighted):** gives review count more influence than time,
+  using `reviews × ∛(average recorded minutes per review)` internally.
 
 Hover over a past day to see its recorded time and review count. Streaks still
 count days with reviews, and future dates show cards due.

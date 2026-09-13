@@ -46,3 +46,8 @@ export interface ReviewHeatmapOptions {
 }
 
 export type ReviewHeatmapData = { [timestamp: number]: number };
+
+export interface TodayProgress {
+  percent: number | null;
+  color: string;
+}
