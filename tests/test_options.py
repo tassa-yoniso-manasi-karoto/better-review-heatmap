@@ -78,11 +78,12 @@ def test_reference_picker_rejects_empty_days_and_tracks_each_metric(
     notices = []
     monkeypatch.setattr(module, "showInfo", lambda *args, **kwargs: notices.append(args[0]))
     rows = {
-        TODAY - 86400: [(TODAY - 86400, 120, 2700000)],
-        TODAY - 2 * 86400: [(TODAY - 2 * 86400, 60, 1800000)],
+        TODAY - 86400: [(TODAY - 86400, 120, 2700000, [(22500, 120)])],
+        TODAY - 2 * 86400: [(TODAY - 2 * 86400, 60, 1800000, [(30000, 60)])],
     }
     monkeypatch.setattr(
-        module.ActivityReporter, "reference_history", lambda self, day: rows.get(day, []),
+        module.ActivityReporter, "reference_history",
+        lambda self, day, with_durations=False: rows.get(day, []),
     )
     parent = QWidget()
     parent.col = setup.col
@@ -128,6 +129,47 @@ def test_classic_disables_reference_controls(setup, options_module):
     assert not dialog.selActivityScale.isEnabled()
     assert not dialog.form.cbTodayProgress.isEnabled()
     assert dialog.referenceGroup.isHidden()
+    dialog.reject()
+
+
+def test_custom_exponents_recalculate_the_same_reference_and_respect_cancel(setup, options_module):
+    module, app = options_module
+    from aqt.qt import QDate, QWidget
+    from review_heatmap.metrics import saved_reference
+
+    yesterday = TODAY - 86400
+    for sequence, duration in enumerate((15000, 15000, 240000)):
+        add_review(setup, yesterday, milliseconds=duration, sequence=sequence)
+    parent = QWidget()
+    parent.col = setup.col
+    original = copy.deepcopy(dict(setup.conf))
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("custom"))
+    dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData("baseline"))
+    assert not dialog.customGroup.isHidden()
+    dialog.dateReference.setDate(QDate(2026, 3, 9))
+    conf = dialog.getData()["synced"]
+    assert saved_reference(conf)["value"] == 3
+    dialog.spinCustomReviewWeight.setValue(0.6)
+    assert dialog.spinCustomTimeWeight.value() == 0.4
+    assert conf["custom_time_weight"] == 0.4
+    reference = saved_reference(conf)
+    assert reference["day"] == yesterday
+    assert reference["value"] == pytest.approx(2 * 0.25 ** 0.4 + 4 ** 0.4)
+    dialog.spinCustomTimeWeight.setValue(1)
+    assert dialog.spinCustomReviewWeight.value() == 0
+    assert saved_reference(conf)["value"] == 4.5
+    dialog.reject()
+    assert dict(setup.conf) == original
+
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("custom"))
+    dialog.spinCustomTimeWeight.setValue(0.7)
+    dialog.accept()
+    assert setup.conf["synced"]["custom_time_weight"] == 0.7
+    dialog = module.RevHmOptions(setup.conf, parent)
+    assert dialog.spinCustomReviewWeight.value() == 0.3
+    assert dialog.spinCustomTimeWeight.value() == 0.7
     dialog.reject()
 
 

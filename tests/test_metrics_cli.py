@@ -31,6 +31,7 @@ def test_json_scores_match_direct_metric_calls():
     assert data["schema_version"] == 1
     assert data["inputs"] == {"reviews": 100, "minutes": 10.0, "milliseconds": 600000}
     assert data["reference"] is None
+    assert data["duration_model"] == "equal-duration assumption"
 
     for metric_key, meta in METRICS.items():
         res = data["results"][metric_key]
@@ -71,7 +72,7 @@ def test_reference_and_color_against_direct_calls():
     assert classic["color"] is None
 
     # Workload metrics match direct calls
-    for metric_key in ("time", "workload"):
+    for metric_key in ("time", "workload", "custom", "recorded_time"):
         res = data["results"][metric_key]
         score = activity_value(120, 1800000, metric_key)
         ref = reference_from_day((0, 150, 2700000), metric_key, "cli")
@@ -104,6 +105,29 @@ def test_equivalent_minute_and_millisecond_inputs():
     assert data_min["inputs"]["milliseconds"] == 900000
     assert data_ms["inputs"]["milliseconds"] == 900000
     assert data_min["results"] == data_ms["results"]
+
+
+def test_individual_durations_and_custom_exponents_use_exact_scores():
+    proc = run_cli([
+        "--durations-ms", "15000", "15000", "240000",
+        "--reference-durations-ms", "15000", "240000",
+        "--review-exponent", "0.3", "--time-exponent", "0.7", "--json",
+    ])
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["duration_model"] == data["reference_duration_model"] == "individual"
+    assert data["inputs"]["reviews"] == 3
+    assert data["inputs"]["milliseconds"] == 270000
+    linear = data["results"]["time"]
+    assert linear["score"] == 3
+    assert linear["reference_score"] == 2.5
+    assert linear["ratio"] == pytest.approx(3 / (2.5 * 0.85))
+    custom = data["results"]["custom"]
+    assert custom["exponents"] == pytest.approx({"reviews": 0.3, "time": 0.7})
+    assert custom["score"] == pytest.approx(activity_value(
+        3, 270000, "custom", [(15000, 2), (240000, 1)], {"custom_time_weight": 0.7},
+    ))
+    assert data["results"]["recorded_time"]["score"] == 4.5
 
 
 def test_zero_activity_and_empty_color():
@@ -143,6 +167,12 @@ def test_zero_activity_and_empty_color():
     ["--reviews", "10", "--minutes", "5", "--reference-reviews", "50", "--reference-minutes", "nan"],
     ["--reviews", "10", "--minutes", "5", "--reference-reviews", "50", "--reference-minutes", "inf"],
     ["--reviews", "10", "--minutes", "5", "--metric", "invalid_metric"],
+    ["--durations-ms", "-10"],
+    ["--durations-ms", "15000", "--reviews", "2"],
+    ["--durations-ms", "15000", "--reference-durations-ms", "15000", "--reference-minutes", "1"],
+    ["--durations-ms", "15000", "--time-exponent", "1.1"],
+    ["--durations-ms", "15000", "--time-exponent", "nan"],
+    ["--durations-ms", "15000", "--review-exponent", "0.6", "--time-exponent", "0.5"],
 ])
 def test_invalid_inputs_exit_code_2(bad_args):
     proc = run_cli(bad_args)

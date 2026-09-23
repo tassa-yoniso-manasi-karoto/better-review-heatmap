@@ -98,11 +98,17 @@ def test_count_and_time_share_filters_including_deleted_cards(setup):
     add_review(setup, yesterday, 99, milliseconds=90000, sequence=2)
     add_review(setup, yesterday, 1, ease=0, milliseconds=999999, sequence=3)
     assert setup.reporter._cards_done() == [(yesterday, 3, 300000)]
+    assert setup.reporter._cards_done(with_durations=True) == [
+        (yesterday, 3, 300000, [(30000, 1), (90000, 1), (180000, 1)]),
+    ]
     assert setup.reporter._cards_done(current_deck_only=True) == [(yesterday, 1, 30000)]
     setup.conf["synced"]["limcdel"] = True
     assert setup.reporter._cards_done() == [(yesterday, 2, 210000)]
     setup.conf["synced"]["limdecks"] = [2]
     assert setup.reporter._cards_done() == [(yesterday, 1, 30000)]
+    assert setup.reporter.reference_history(yesterday, with_durations=True) == [
+        (yesterday, 1, 30000, [(30000, 1)]),
+    ]
     setup.conf["synced"]["limresched"] = False
     assert setup.reporter._cards_done() == [(yesterday, 2, 1029999)]
 
@@ -165,7 +171,7 @@ def test_render_preserves_raw_totals_streaks_and_forecast_scale(setup):
         assert values[str(TODAY + 86400)] == -200
         assert "68 cards" in html  # original count-based active-day average
         if metric == "time":
-            assert values[str(TODAY)] == 5400
+            assert values[str(TODAY)] == pytest.approx(5400 ** 0.5)
         elif metric == "workload":
             assert values[str(TODAY)] > values[str(TODAY - 86400)]
     assert snapshots["reviews"]["legend"][:10] == snapshots["workload"]["legend"][:10]
@@ -193,7 +199,60 @@ def test_baseline_is_saved_once_and_fixed_scale_never_uses_it(setup):
     assert renderer._activity_legend([]) == levels
     assert len(setup.conf.saves) == 1
     setup.conf["synced"]["activity_scale"] = "fixed"
-    assert renderer._activity_legend([]) == [4, 25, 100, 400, 900, 2025, 3600, 8100, 14400]
+    assert renderer._activity_legend([]) == [2, 5, 10, 20, 30, 45, 60, 90, 120]
+
+
+def test_mixed_durations_reach_heatmap_progress_and_reference_migration(setup):
+    from review_heatmap.metrics import baseline_key, saved_reference
+
+    yesterday = TODAY - 86400
+    for date in (yesterday, TODAY):
+        for sequence, duration in enumerate((15000, 15000, 240000)):
+            add_review(setup, date, milliseconds=duration, sequence=sequence)
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="time", activity_scale="baseline")
+    old_parts = json.loads(baseline_key(conf))
+    old_parts[0] = 2
+    old_key = json.dumps(old_parts, separators=(",", ":"))
+    old_reference = {"day": yesterday, "reviews": 3, "time_ms": 270000,
+                     "value": 13.5, "source": "selected"}
+    conf["activity_baselines"][old_key] = copy.deepcopy(old_reference)
+    report = setup.reporter.get_report(limfcst=0)
+    assert report.review_durations[TODAY] == [(15000, 2), (240000, 1)]
+    renderer = make_renderer(setup)
+    renderer._activity_legend([])
+    assert saved_reference(conf)["value"] == 3
+    assert saved_reference(conf)["day"] == yesterday
+    assert conf["activity_baselines"][old_key] == old_reference
+    progress = renderer._today_progress(report)
+    assert progress["percent"] == pytest.approx(100 / 0.85)
+    html = renderer._generate_heatmap_elm(report, [], False)
+    options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
+    assert options["dayColors"][str(TODAY)] == progress["color"]
+    conf["activity_scale"] = "fixed"
+    html = renderer._generate_heatmap_elm(report, [], False)
+    values = json.loads(re.search(r"reviewHeatmap.create\((.+)\);", html)[1])
+    assert values[str(TODAY)] == 3
+
+
+def test_missing_legacy_reference_is_not_replaced_by_automatic_selection(setup):
+    from review_heatmap.metrics import baseline_key, saved_reference
+
+    for age in range(1, 9):
+        add_review(setup, TODAY - age * 86400)
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="workload", activity_scale="baseline")
+    old_parts = json.loads(baseline_key(conf))
+    old_parts[0] = 2
+    old_key = json.dumps(old_parts, separators=(",", ":"))
+    conf["activity_baselines"][old_key] = {
+        "day": TODAY - 20 * 86400, "value": 30, "source": "selected",
+    }
+    before = copy.deepcopy(conf)
+    assert make_renderer(setup)._activity_legend([]) == [2, 5, 10, 20, 30, 45, 60, 90, 120]
+    assert saved_reference(conf) is None
+    assert conf == before
+    assert not setup.conf.saves
 
 
 def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
@@ -232,7 +291,10 @@ def test_cache_expires_on_day_rollover_or_configuration_change(setup, monkeypatc
     view = setup.modules.renderer.HeatmapView.deckbrowser
     renderer.render(view, limfcst=0)
     assert renderer._cache_still_valid(view, None, 0, False)
-    setup.conf["synced"]["activity_metric"] = "workload"
+    setup.conf["synced"]["activity_metric"] = "custom"
+    assert not renderer._cache_still_valid(view, None, 0, False)
+    renderer.render(view, limfcst=0)
+    setup.conf["synced"]["custom_time_weight"] = 0.7
     assert not renderer._cache_still_valid(view, None, 0, False)
     renderer.render(view, limfcst=0)
     monkeypatch.setattr(type(setup.reporter), "_today", property(lambda self: TODAY + 86400))
@@ -271,9 +333,9 @@ def test_additive_settings_migration_preserves_existing_data(addon_modules):
     }
     palette = copy.deepcopy(conf["local"])
     addon_modules.config.ensure_activity_defaults(conf)
-    reference = saved_reference(conf["synced"])
-    assert reference["day"] == TODAY
-    assert reference["value"] == pytest.approx(120 * 0.375 ** (1 / 3))
+    # Loading settings has no durations; migration waits for the reporter.
+    assert saved_reference(conf["synced"]) is None
+    assert conf["synced"]["activity_baselines"][old_key]["day"] == TODAY
     assert conf["local"] == palette
 
 
@@ -282,7 +344,7 @@ def test_workload_defaults_do_not_replace_existing_mode_choices(addon_modules):
     assert conf["synced"]["activity_metric"] == "workload"
     assert conf["profile"]["show_today_progress"] is True
     conf["profile"]["show_today_progress"] = False
-    for metric in ("reviews", "time", "workload"):
+    for metric in ("reviews", "time", "workload", "custom", "recorded_time"):
         conf["synced"]["activity_metric"] = metric
         addon_modules.config.ensure_activity_defaults(conf)
         assert conf["synced"]["activity_metric"] == metric
@@ -328,9 +390,11 @@ def test_today_progress_visibility_and_missing_baseline(setup):
     setup.conf["profile"]["show_today_progress"] = False
     assert renderer._today_progress(None) is None
     setup.conf["profile"]["show_today_progress"] = True
-    for metric in ("reviews", "time"):
+    setup.conf["synced"]["activity_metric"] = "reviews"
+    assert renderer._today_progress(None) is None
+    for metric in ("time", "custom", "recorded_time"):
         setup.conf["synced"]["activity_metric"] = metric
-        assert renderer._today_progress(None) is None
+        assert renderer._today_progress(None)["percent"] is None
 
 
 def test_today_progress_is_rendered_when_calendar_is_hidden(setup):

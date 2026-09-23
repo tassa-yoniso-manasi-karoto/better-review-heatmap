@@ -143,7 +143,7 @@ export function updateTodayProgress(data: TodayProgress | null): void {
   const track = document.createElement("span");
   track.className = "rh-today-progress-track";
   track.setAttribute("role", "progressbar");
-  track.setAttribute("aria-label", "Today's workload");
+  track.setAttribute("aria-label", "Today's activity");
   track.setAttribute("aria-valuemin", "0");
   track.setAttribute("aria-valuemax", "100");
   const fill = document.createElement("span");
@@ -160,7 +160,7 @@ export function updateTodayProgress(data: TodayProgress | null): void {
     label.textContent = "No baseline";
     wrapper.title = "Choose a reference day in Review Heatmap Options → Activity, " +
       "or allow automatic selection after seven completed study days.";
-    track.setAttribute("aria-valuetext", "No workload baseline available");
+    track.setAttribute("aria-valuetext", "No activity baseline available");
   } else {
     animateTodayProgress({ ...data, percent: Math.max(0, data.percent) }, state => {
       const bounded = Math.min(100, state.percent);
@@ -168,10 +168,10 @@ export function updateTodayProgress(data: TodayProgress | null): void {
       fill.style.width = `${bounded}%`;
       fill.style.backgroundColor = state.color;
       label.textContent = text;
-      wrapper.title = `Today's workload: ${text} of baseline. ` +
-        "100% is 85% of the reference day's workload. Uses the heatmap's included decks.";
+      wrapper.title = `Today's activity: ${text} of baseline. ` +
+        "100% is 85% of the reference day's activity. Uses the heatmap's included decks.";
       track.setAttribute("aria-valuenow", String(bounded));
-      track.setAttribute("aria-valuetext", `${text} of workload baseline`);
+      track.setAttribute("aria-valuetext", `${text} of activity baseline`);
     }, () => wrapper.isConnected);
   }
 }

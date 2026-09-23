@@ -1,6 +1,7 @@
 # Heatmap Metrics CLI Guide
 
-Test formula changes without Anki or add-on build.
+Test formula changes without Anki or an add-on build. Read [DESIGN.md](DESIGN.md)
+for current decisions, their rationale, and deferred work.
 
 ## Files
 
@@ -10,28 +11,43 @@ Test formula changes without Anki or add-on build.
 
 Stdlib only. Works with `python -S`.
 
+Exact workload scores require individual answer durations. Totals-only inputs
+assume every answer took the same time and are labeled accordingly. Collection
+callers must pass actual duration buckets to `activity_value`; never use the
+totals-only approximation to migrate a saved reference.
+
 ## Commands
 
 ```sh
-# Basic table check
-python scripts/metrics_cli.py --reviews 100 --minutes 10
+# Exact mixed-duration scores (milliseconds per answer)
+python -S scripts/metrics_cli.py --durations-ms 15000 15000 240000
 
-# JSON output
-python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json
+# Exact baseline comparison, JSON output
+python scripts/metrics_cli.py --durations-ms 15000 15000 240000 \
+  --reference-durations-ms 15000 240000 --json
 
-# Baseline check
-python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json
+# Custom review/time weights: either flag implies the other
+python scripts/metrics_cli.py --durations-ms 15000 240000 \
+  --metric custom --review-exponent 0.3 --time-exponent 0.7 --json
 
-# Single metric
-python scripts/metrics_cli.py --reviews 100 --minutes 10 --metric workload --json
+# Synthetic equal-duration scenario (100 answers of 6 seconds each)
+python scripts/metrics_cli.py --reviews 100 --minutes 10 --json
 ```
 
 ## CLI Flags
 
-- `--reviews N`: Nonnegative integer. Required.
-- `--minutes T` | `--time-ms M`: Duration. One required. Fractional minutes OK; milliseconds integer.
-- `--metric KEY`: Optional. Default `all`. Choices: `all`, `reviews`, `time`, `workload`.
-- `--reference-reviews N` + `--reference-minutes T`: Optional baseline pair. Both required together. Both > 0.
+- Supply `--durations-ms D ...`, or `--reviews N` with `--minutes T` /
+  `--time-ms M`. Durations and counts must be nonnegative; milliseconds are
+  integers. With individual durations, count is inferred; an explicit count
+  must match the number of durations.
+- `--metric KEY`: defaults to `all`; keys are `reviews`, `time`, `workload`,
+  `custom`, `recorded_time`. Legacy key `time` means **Workload (linear)**;
+  `recorded_time` means time alone.
+- Reference: `--reference-durations-ms D ...`, or the positive pair
+  `--reference-reviews N --reference-minutes T`. Reference total time must be
+  positive. An explicit count must match any supplied individual durations.
+- `--review-exponent A` / `--time-exponent B`: custom mode only, each in [0, 1].
+  One implies its complement; if both are supplied, they must total 1.
 - `--json`: Output single raw JSON object.
 
 Exit code: 0 success, 2 invalid input (negative, nonfinite, missing pair, bad key).
@@ -39,26 +55,33 @@ Exit code: 0 success, 2 invalid input (negative, nonfinite, missing pair, bad ke
 ## JSON Output
 
 Keys:
+
 - `schema_version`: 1
 - `metric_source_path`: `metrics.py` path
+- `duration_model`: `individual` or `equal-duration assumption`.
+- `reference_duration_model`: the same labels, or null without a reference.
 - `inputs`: `{"reviews": N, "minutes": T, "milliseconds": M}`
 - `reference`: `null` or input totals for reference day
 - `results.<metric>`:
-  - `score`: `activity_value(reviews, milliseconds, metric)`
+  - `score`: shared `activity_value` result with supplied durations and weights.
+  - `exponents`: `reviews` and `time` weights.
   - `fixed_thresholds`: Levels from `activity_levels(metric)`. Null for classic.
   - `reference_score`: Reference day score. Null for classic or no reference.
   - `target_score`: 85% of reference score (`baseline_value(reference)`).
   - `ratio` / `percent`: `score / target_score` and `100 * ratio`.
-  - `color`: CSS RGBA from `baseline_color(score, reference)`. Null if reviews 0.
+  - `color`: CSS hex/RGBA from `baseline_color`; null without reviews/reference.
+
+Classic has no fixed thresholds or reference-derived results. Colors use the
+bundled default gradient; the CLI does not load a profile's custom palette.
 
 ## Formula Revision Workflow
 
-1. Edit `src/review_heatmap/metrics.py` (`activity_value`, `FIXED_LEVELS`, `activity_levels`, `baseline_value`).
-2. Run CLI with edge cases:
-   - Zero: `--reviews 0 --minutes 0`
-   - Dense fast: `--reviews 300 --minutes 15`
-   - Slow reading: `--reviews 20 --minutes 40`
-3. Run tests:
+1. Change the shared functions in `src/review_heatmap/metrics.py`; do not copy
+   formulas into the CLI. Preserve classic behavior and reference migrations.
+2. Compare mixed and uniform durations through the CLI. Use totals only for
+   explicitly synthetic equal-duration scenarios.
+3. Run focused tests; include activity/options tests when those paths change:
+
    ```sh
    pytest tests/test_metrics_cli.py tests/test_metrics.py
    ```

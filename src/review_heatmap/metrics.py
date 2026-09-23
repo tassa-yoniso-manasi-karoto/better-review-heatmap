@@ -11,9 +11,11 @@ from typing import Dict, List, Optional, Sequence
 
 
 METRICS = {
-    "reviews": {"label": "Review count (classic)"},
-    "time": {"label": "Workload (linear)"},
-    "workload": {"label": "Workload (review-weighted)"},
+    "reviews": {"label": "Review count (classic)", "time_weight": 0.0},
+    "time": {"label": "Workload (linear)", "time_weight": 0.5},
+    "workload": {"label": "Workload (review-weighted)", "time_weight": 0.4},
+    "custom": {"label": "Workload (custom)", "time_weight": None},
+    "recorded_time": {"label": "Recorded time", "time_weight": 1.0},
 }
 SCALES = {
     "fixed": {"label": "Fixed scale"},
@@ -23,11 +25,13 @@ SCALES = {
 # Nine boundaries preserve the existing ten activity shades. These fixed
 # scales never depend on another day's activity or on the visible date range.
 FIXED_LEVELS = {
-    # Unadjusted count × minutes uses squared score units compared with the
-    # original square-root workload; keep practical fixed-scale boundaries.
-    "time": (4, 25, 100, 400, 900, 2025, 3600, 8100, 14400),
+    "time": (2, 5, 10, 20, 30, 45, 60, 90, 120),
     "workload": (2, 5, 10, 20, 30, 45, 60, 90, 120),
+    "custom": (2, 5, 10, 20, 30, 45, 60, 90, 120),
+    "recorded_time": (1, 5, 10, 20, 30, 45, 60, 90, 120),
 }
+FORMULA_VERSION = 3
+DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
 BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
@@ -41,74 +45,107 @@ def metric_name(conf: Dict) -> str:
     return value if value in METRICS else "workload"
 
 
-def activity_value(reviews: int, milliseconds: int, metric: str) -> float:
-    """Linear workload multiplies count and total minutes without adjustment.
+def metric_weights(metric: str, conf: Optional[Dict] = None):
+    """One stored custom exponent makes the complementary pair sum to one."""
+    weight = METRICS[metric]["time_weight"]
+    if weight is None:
+        weight = (conf or {}).get("custom_time_weight", DEFAULT_CUSTOM_TIME_WEIGHT)
+    weight = float(weight)
+    if not math.isfinite(weight) or not 0 <= weight <= 1:
+        raise ValueError("The time exponent must be between 0 and 1")
+    return 1 - weight, weight
 
-    Review-weighted workload uses count times the cube root of average duration:
-    count^(2/3) * total_minutes^(1/3). Doubling both doubles workload, while
-    doubling time alone multiplies it by the cube root of two.
-    Zero recorded duration is preserved; no missing time is estimated.
+
+def activity_value(reviews: int, milliseconds: int, metric: str,
+                   duration_counts=None, conf: Optional[Dict] = None) -> float:
+    """Sum per-answer credit using (milliseconds, count) duration buckets.
+
+    Collection callers must supply actual duration buckets. Without them this
+    evaluates a synthetic equal-duration scenario, used by the totals-only CLI.
+    The uniform assumption is never used to migrate an actual saved reference.
     """
     reviews = max(0, reviews)
     minutes = max(0, milliseconds) / 60000
-    if metric == "time":
-        # Keep the stored mode key so existing selections carry over.
-        return reviews * minutes
-    if metric == "workload":
-        return reviews * (minutes / reviews) ** (1 / 3) if reviews else 0.0
-    return float(reviews)
+    _, time_weight = metric_weights(metric, conf)
+    if time_weight == 0:
+        return float(reviews)
+    if time_weight == 1:
+        return minutes
+    if duration_counts is None:
+        return reviews * (minutes / reviews) ** time_weight if reviews else 0.0
+    return math.fsum(
+        count * (max(0, duration) / 60000) ** time_weight
+        for duration, count in duration_counts
+    )
 
 
 def baseline_key(conf: Dict) -> str:
     """References are specific to a measure and its included history."""
-    return json.dumps(
-        [
-            1 if metric_name(conf) == "reviews" else 2,  # formula version
-            metric_name(conf),
-            sorted(conf.get("limdecks", [])),
-            conf.get("limcdel", False),
-            conf.get("limresched", True),
-            conf.get("limdate", 0),
-            conf.get("limhist", 0),
-        ],
-        separators=(",", ":"),
-    )
+    metric = metric_name(conf)
+    parts = [
+        1 if metric == "reviews" else FORMULA_VERSION,
+        metric,
+        sorted(conf.get("limdecks", [])),
+        conf.get("limcdel", False),
+        conf.get("limresched", True),
+        conf.get("limdate", 0),
+        conf.get("limhist", 0),
+    ]
+    if metric == "custom":
+        parts.append(metric_weights(metric, conf)[1])
+    return json.dumps(parts, separators=(",", ":"))
 
 
-def migrate_activity_references(conf: Dict) -> bool:
-    """Recalculate old time/workload references from their saved raw totals.
-
-    Keep the original snapshots for compatibility with older installations.
-    Selected dates, filters, sources, and existing new-format references stay
-    intact; this migration never reads or changes review history.
-    """
+def legacy_reference(conf: Dict) -> Optional[Dict]:
+    """Find the active measure/filter snapshot without altering older versions."""
     references = conf.get("activity_baselines", {})
     if not isinstance(references, dict):
+        return None
+    pending = references.get(baseline_key(conf))
+    if isinstance(pending, dict) and pending.get("needs_durations"):
+        return pending
+    if metric_name(conf) not in ("time", "workload"):
+        return None
+    parts = json.loads(baseline_key(conf))
+    for version in (2, 1):
+        parts[0] = version
+        reference = references.get(json.dumps(parts, separators=(",", ":")))
+        if isinstance(reference, dict):
+            return reference
+    return None
+
+
+def migrate_activity_references(conf: Dict, read_day=None) -> bool:
+    """Upgrade the active snapshot using real durations, never inferred ones.
+
+    A caller with an ActivityReporter supplies read_day. Other measures/filters
+    migrate when used; original snapshots and existing v3 snapshots are retained.
+    """
+    if read_day is None or saved_reference(conf) is not None:
         return False
-    changed = False
-    for key, reference in list(references.items()):
-        if not isinstance(reference, dict):
-            continue
+    reference = legacy_reference(conf)
+    if reference is None:
+        return False
+    try:
+        day = int(reference["day"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    rows = read_day(day)
+    for row in rows:
+        if row[0] != day or len(row) < 4:
+            continue  # count and total time cannot reconstruct individual durations
         try:
-            parts = json.loads(key)
-            if (not isinstance(parts, list) or len(parts) != 7
-                    or parts[0] != 1 or parts[1] not in ("time", "workload")):
-                continue
-            parts[0] = 2
-            new_key = json.dumps(parts, separators=(",", ":"))
-            if new_key in references:
-                continue
-            int(reference["day"])
-            value = activity_value(
-                int(reference["reviews"]), int(reference["time_ms"]), parts[1]
+            updated = reference_from_day(
+                row, metric_name(conf), reference.get("source", "selected"), conf,
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        if not math.isfinite(value) or value <= 0:
-            continue
-        references[new_key] = dict(reference, value=value)
-        changed = True
-    return changed
+        if updated is not None:
+            migrated = dict(reference, **updated)
+            migrated.pop("needs_durations", None)
+            conf["activity_baselines"][baseline_key(conf)] = migrated
+            return True
+    return False
 
 
 def saved_reference(conf: Dict) -> Optional[Dict]:
@@ -116,7 +153,7 @@ def saved_reference(conf: Dict) -> Optional[Dict]:
     if not isinstance(references, dict):
         return None
     reference = references.get(baseline_key(conf))
-    if not isinstance(reference, dict):
+    if not isinstance(reference, dict) or reference.get("needs_durations"):
         return None
     try:
         value = float(reference["value"])
@@ -126,10 +163,12 @@ def saved_reference(conf: Dict) -> Optional[Dict]:
     return reference if math.isfinite(value) and value > 0 else None
 
 
-def reference_from_day(row: Sequence[int], metric: str, source: str) -> Optional[Dict]:
-    day, reviews, milliseconds = row
-    value = activity_value(reviews, milliseconds, metric)
-    if value <= 0:
+def reference_from_day(row: Sequence, metric: str, source: str,
+                       conf: Optional[Dict] = None) -> Optional[Dict]:
+    day, reviews, milliseconds = row[:3]
+    durations = row[3] if len(row) > 3 else None
+    value = activity_value(reviews, milliseconds, metric, durations, conf)
+    if not math.isfinite(value) or value <= 0:
         return None
     return {
         "day": day,
@@ -140,8 +179,9 @@ def reference_from_day(row: Sequence[int], metric: str, source: str) -> Optional
     }
 
 
-def automatic_reference(rows: Sequence[Sequence[int]], metric: str) -> Optional[Dict]:
-    candidates = [reference_from_day(row, metric, "automatic") for row in rows]
+def automatic_reference(rows: Sequence[Sequence], metric: str,
+                        conf: Optional[Dict] = None) -> Optional[Dict]:
+    candidates = [reference_from_day(row, metric, "automatic", conf) for row in rows]
     candidates = sorted(
         (ref for ref in candidates if ref is not None),
         key=lambda ref: (ref["value"], ref["day"]),

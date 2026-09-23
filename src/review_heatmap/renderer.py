@@ -47,6 +47,8 @@ from .libaddon.platform import PLATFORM
 from .metrics import (
     activity_levels,
     activity_value,
+    legacy_reference,
+    migrate_activity_references,
     automatic_reference,
     baseline_color_level,
     baseline_color,
@@ -247,9 +249,16 @@ class HeatmapRenderer:
             return count_legend
         reference = None
         if conf.get("activity_scale") == "baseline":
+            if migrate_activity_references(
+                conf, lambda day: self._reporter.reference_history(day, with_durations=True),
+            ):
+                self._config["synced"] = conf
+                self._config.save("synced", profile_unload=True)
             reference = saved_reference(conf)
-            if reference is None:
-                reference = automatic_reference(self._reporter.reference_history(), metric)
+            if reference is None and legacy_reference(conf) is None:
+                reference = automatic_reference(
+                    self._reporter.reference_history(with_durations=True), metric, conf,
+                )
                 if reference is not None:
                     references = conf.get("activity_baselines")
                     if not isinstance(references, dict):
@@ -290,7 +299,7 @@ class HeatmapRenderer:
         conf = self._config["synced"]
         if (
             not self._config["profile"].get("show_today_progress", True)
-            or metric_name(conf) != "workload"
+            or metric_name(conf) == "reviews"
             or conf.get("activity_scale") != "baseline"
         ):
             return None
@@ -301,7 +310,8 @@ class HeatmapRenderer:
         # Today's forecast is negative; only completed reviews contribute.
         count = max(0, report.activity.get(today, 0)) if report else 0
         milliseconds = report.review_time.get(today, 0) if report else 0
-        value = activity_value(count, milliseconds, "workload")
+        durations = (report.review_durations or {}).get(today) if report else None
+        value = activity_value(count, milliseconds, metric_name(conf), durations, conf)
         # Do not animate between different profiles, days, filters or targets.
         context = json.dumps([
             self._progress_session, today, baseline_key(conf), reference["day"],
@@ -351,7 +361,10 @@ class HeatmapRenderer:
             if count <= 0 or metric == "reviews":
                 activity[day] = count
                 continue
-            value = activity_value(count, report.review_time.get(day, 0), metric)
+            value = activity_value(
+                count, report.review_time.get(day, 0), metric,
+                (report.review_durations or {}).get(day), self._config["synced"],
+            )
             if reference is not None:
                 options["dayColors"][day] = baseline_color(
                     value, reference, reference_day=day == int(reference["day"]),

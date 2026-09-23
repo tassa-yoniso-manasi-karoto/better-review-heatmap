@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """CLI developer tool for inspecting Review Heatmap activity and workload calculations.
 
-Evaluates synthetic daily totals using the add-on's actual functions without
-launching Anki or building the add-on.
+Evaluates individual durations or synthetic daily totals using the add-on's
+actual functions without launching Anki. Totals assume equal answer durations.
 
 Usage examples:
     python scripts/metrics_cli.py --reviews 100 --minutes 10
+    python scripts/metrics_cli.py --durations-ms 15000 15000 180000 --json
     python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json
     python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json
 """
@@ -14,6 +15,7 @@ import argparse
 import importlib.util
 import json
 import math
+from collections import Counter
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Sequence
@@ -31,10 +33,12 @@ spec.loader.exec_module(metrics)
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inspect Review Heatmap calculations for synthetic daily totals.",
+        description=("Inspect Review Heatmap calculations for individual durations or "
+                     "daily totals. Totals assume equal answer durations."),
         epilog=(
             "Usage examples:\n"
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10\n"
+            "  python scripts/metrics_cli.py --durations-ms 15000 15000 180000 --json\n"
             "  python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json\n"
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json\n"
         ),
@@ -43,8 +47,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reviews",
         type=int,
-        required=True,
-        help="Required nonnegative integer: review events, not unique cards.",
+        help="Review events, not unique cards. Inferred when --durations-ms is supplied.",
     )
     time_group = parser.add_mutually_exclusive_group(required=True)
     time_group.add_argument(
@@ -56,6 +59,10 @@ def create_parser() -> argparse.ArgumentParser:
         "--time-ms",
         type=int,
         help="Total recorded duration in milliseconds (integer).",
+    )
+    time_group.add_argument(
+        "--durations-ms", type=int, nargs="+",
+        help="Individual recorded answer durations in milliseconds; gives exact per-answer sums.",
     )
     metric_choices = ["all"] + list(metrics.METRICS.keys())
     parser.add_argument(
@@ -76,6 +83,12 @@ def create_parser() -> argparse.ArgumentParser:
         default=None,
         help="Positive duration in minutes for synthetic reference day.",
     )
+    parser.add_argument("--reference-durations-ms", type=int, nargs="+",
+                        help="Individual reference-day durations; count is inferred if omitted.")
+    parser.add_argument("--review-exponent", type=float,
+                        help="Custom mode's review exponent (0–1); complements time exponent.")
+    parser.add_argument("--time-exponent", type=float,
+                        help="Custom mode's time exponent (0–1); exponents must total 1.")
     parser.add_argument(
         "--json",
         action="store_true",
@@ -87,6 +100,16 @@ def create_parser() -> argparse.ArgumentParser:
 def parse_and_validate(parser: argparse.ArgumentParser, argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
+    if args.durations_ms is not None:
+        if any(duration < 0 for duration in args.durations_ms):
+            parser.error("--durations-ms cannot contain negative durations.")
+        if args.reviews is not None and args.reviews != len(args.durations_ms):
+            parser.error("--reviews must match the number of --durations-ms values.")
+        args.reviews = len(args.durations_ms)
+        args.time_ms = sum(args.durations_ms)
+    if args.reviews is None:
+        parser.error("--reviews is required without --durations-ms.")
+
     if args.reviews < 0:
         parser.error("--reviews must be a nonnegative integer.")
 
@@ -96,6 +119,26 @@ def parse_and_validate(parser: argparse.ArgumentParser, argv: Optional[Sequence[
     if args.time_ms is not None:
         if args.time_ms < 0:
             parser.error("--time-ms must be a nonnegative integer.")
+
+    if args.reference_durations_ms is not None:
+        if args.reference_minutes is not None:
+            parser.error("Use --reference-durations-ms or --reference-minutes, not both.")
+        if any(duration < 0 for duration in args.reference_durations_ms):
+            parser.error("Reference durations cannot be negative.")
+        if (args.reference_reviews is not None
+                and args.reference_reviews != len(args.reference_durations_ms)):
+            parser.error("Reference review count must match the supplied durations.")
+        args.reference_reviews = len(args.reference_durations_ms)
+        args.reference_minutes = sum(args.reference_durations_ms) / 60000
+
+    for weight in (args.review_exponent, args.time_exponent):
+        if weight is not None and (not math.isfinite(weight) or not 0 <= weight <= 1):
+            parser.error("Custom exponents must be finite numbers between 0 and 1.")
+    if args.review_exponent is not None and args.time_exponent is not None:
+        if not math.isclose(args.review_exponent + args.time_exponent, 1, abs_tol=1e-9):
+            parser.error("Custom review and time exponents must total 1.")
+    if args.time_exponent is None and args.review_exponent is not None:
+        args.time_exponent = 1 - args.review_exponent
 
     has_ref_rev = args.reference_reviews is not None
     has_ref_min = args.reference_minutes is not None
@@ -125,6 +168,9 @@ def evaluate(
     ref_reviews: Optional[int] = None,
     ref_time_ms: Optional[int] = None,
     ref_minutes: Optional[float] = None,
+    durations_ms: Optional[Sequence[int]] = None,
+    ref_durations_ms: Optional[Sequence[int]] = None,
+    custom_time_weight: Optional[float] = None,
 ) -> Dict[str, Any]:
     has_reference = ref_reviews is not None and ref_time_ms is not None and ref_minutes is not None
 
@@ -134,9 +180,11 @@ def evaluate(
         keys = [metric_key]
 
     results: Dict[str, Any] = {}
+    conf = {} if custom_time_weight is None else {"custom_time_weight": custom_time_weight}
+    durations = list(Counter(durations_ms).items()) if durations_ms is not None else None
     for key in keys:
         label = metrics.METRICS[key]["label"]
-        score = metrics.activity_value(reviews, time_ms, key)
+        score = metrics.activity_value(reviews, time_ms, key, durations, conf)
         if not math.isfinite(score):
             raise ValueError(f"Nonfinite score produced for metric {key}: {score}")
 
@@ -155,7 +203,10 @@ def evaluate(
         else:
             fixed_thresholds = list(metrics.activity_levels(key))
             if has_reference:
-                ref = metrics.reference_from_day((0, ref_reviews, ref_time_ms), key, "cli")
+                row = (0, ref_reviews, ref_time_ms)
+                if ref_durations_ms is not None:
+                    row += (list(Counter(ref_durations_ms).items()),)
+                ref = metrics.reference_from_day(row, key, "cli", conf)
                 if ref is None:
                     raise ValueError(f"Unable to create reference for metric {key}")
                 ref_score = float(ref["value"])
@@ -196,9 +247,16 @@ def evaluate(
                     "palette": None,
                 }
 
+        review_weight, time_weight = metrics.metric_weights(key, conf)
+        results[key]["exponents"] = {"reviews": review_weight, "time": time_weight}
+
     data: Dict[str, Any] = {
         "schema_version": 1,
         "metric_source_path": str(METRICS_PATH),
+        "duration_model": "individual" if durations_ms is not None else "equal-duration assumption",
+        "reference_duration_model": (
+            "individual" if ref_durations_ms is not None else "equal-duration assumption"
+        ) if has_reference else None,
         "inputs": {
             "reviews": reviews,
             "minutes": minutes,
@@ -231,11 +289,13 @@ def format_table(data: Dict[str, Any]) -> str:
     lines.append("Review Heatmap Metric Calculations")
     lines.append("=" * 35)
     lines.append(f"Inputs:    {inp['reviews']} reviews, {inp['minutes']} min ({inp['milliseconds']:,} ms)")
+    lines.append(f"Durations: {data['duration_model']}")
     if ref:
         lines.append(
             f"Reference: {ref['reviews']} reviews, {ref['minutes']} min ({ref['milliseconds']:,} ms) "
             f"[palette: {data.get('palette')}]"
         )
+        lines.append(f"Reference durations: {data['reference_duration_model']}")
     lines.append("")
 
     results = data["results"]
@@ -326,6 +386,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ref_reviews=ref_reviews,
             ref_time_ms=ref_time_ms,
             ref_minutes=ref_minutes,
+            durations_ms=args.durations_ms,
+            ref_durations_ms=args.reference_durations_ms,
+            custom_time_weight=args.time_exponent,
         )
     except (ValueError, OverflowError) as exc:
         sys.stderr.write(f"Error during calculation: {exc}\n")

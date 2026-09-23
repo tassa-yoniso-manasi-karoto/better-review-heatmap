@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from aqt.qt import (
-    QAction, QApplication, QComboBox, QDate, QDateEdit, QFormLayout,
+    QAction, QApplication, QComboBox, QDate, QDateEdit, QDoubleSpinBox, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QPushButton, QTimer, QVBoxLayout, QWidget,
 )
 
@@ -52,6 +52,7 @@ from ..activity import ActivityReporter
 from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_modes
 from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
+    legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
@@ -83,6 +84,7 @@ class RevHmOptions(OptionsDialog):
             ),
         ),
         ("form.cbTodayProgress", (("value", {"dataPath": "profile/show_today_progress"}),)),
+        ("spinCustomTimeWeight", (("value", {"dataPath": "synced/custom_time_weight"}),)),
         (
             "dateReference",
             (("value", {
@@ -187,6 +189,20 @@ class RevHmOptions(OptionsDialog):
         self.labActivityDescription.setWordWrap(True)
         layout.addWidget(self.labActivityDescription)
 
+        self.customGroup = QGroupBox("Custom workload", tab)
+        custom_layout = QFormLayout(self.customGroup)
+        self.spinCustomReviewWeight = QDoubleSpinBox(self.customGroup)
+        self.spinCustomTimeWeight = QDoubleSpinBox(self.customGroup)
+        for spin in (self.spinCustomReviewWeight, self.spinCustomTimeWeight):
+            spin.setRange(0, 1)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.05)
+            spin.setKeyboardTracking(False)
+        custom_layout.addRow("Review exponent", self.spinCustomReviewWeight)
+        custom_layout.addRow("Time exponent", self.spinCustomTimeWeight)
+        custom_layout.addRow(QLabel("Changing either exponent adjusts the other; their total is 1."))
+        layout.addWidget(self.customGroup)
+
         self.referenceGroup = QGroupBox("Automatic baseline", tab)
         reference_layout = QVBoxLayout(self.referenceGroup)
         explanation = QLabel(
@@ -230,27 +246,56 @@ class RevHmOptions(OptionsDialog):
         self.selActivityScale.setEnabled(not classic)
         use_baseline = not classic and conf.get("activity_scale") == "baseline"
         self.referenceGroup.setVisible(use_baseline)
-        self.form.cbTodayProgress.setEnabled(metric == "workload" and use_baseline)
+        self.form.cbTodayProgress.setEnabled(not classic and use_baseline)
+        self.customGroup.setVisible(metric == "custom")
+        custom_review, custom_time = metric_weights("custom", conf)
+        for spin, value in ((self.spinCustomReviewWeight, custom_review),
+                            (self.spinCustomTimeWeight, custom_time)):
+            blocked = spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(blocked)
+        self._last_custom_weight = custom_time
         descriptions = {
             "reviews": "Classic uses the original review counts and average-based color scale.",
             "time": (
-                "Linear workload multiplies review count by total recorded "
-                "minutes, without weighting adjustments. Doubling either input "
-                "doubles the index; doubling both quadruples it."
+                "Equal review and time influence (0.5 / 0.5). Each answer earns "
+                "the square root of its recorded minutes; credits are added for the day."
             ),
             "workload": (
-                "Workload gives review count more weight than recorded time. "
-                "Longer reviews receive extra credit with diminishing returns. "
-                "At the same pace, twice as many reviews means twice the activity."
+                "Review and time exponents are 0.6 / 0.4. Each answer earns its "
+                "recorded minutes raised to 0.4; credits are added for the day."
             ),
+            "custom": (
+                f"Review and time exponents are {custom_review:.2f} / {custom_time:.2f}. "
+                "Each answer earns its recorded minutes raised to the time exponent; "
+                "credits are added for the day."
+            ),
+            "recorded_time": "Colors use total Anki-recorded minutes, without a review-count adjustment.",
         }
         description = descriptions[metric]
         self.labActivityDescription.setText(description)
+        migrate_activity_references(
+            conf, lambda day: ActivityReporter(self.mw.col, self.getData()).reference_history(
+                day, with_durations=True,
+            ),
+        )
         reference = saved_reference(conf)
         self.labReference.setVisible(not reference)
         if reference:
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
             self._displayReferenceDate(QDate(day.year, day.month, day.day))
+        elif legacy_reference(conf) is not None:
+            previous = legacy_reference(conf)
+            try:
+                day = datetime.fromtimestamp(int(previous["day"]), timezone.utc).date()
+                self._displayReferenceDate(QDate(day.year, day.month, day.day))
+            except (KeyError, ValueError, TypeError, OverflowError):
+                pass
+            self.labReference.setText(
+                "The saved reference's review durations are unavailable. "
+                "Choose another reference day. The old snapshot is preserved; "
+                "the fixed scale is used until then."
+            )
         else:
             self.labReference.setText(
                 "No saved reference. Automatic selection needs at least 7 completed "
@@ -273,8 +318,8 @@ class RevHmOptions(OptionsDialog):
         data = self.getData()
         conf = data["synced"]
         day = int(datetime(date.year(), date.month(), date.day(), tzinfo=timezone.utc).timestamp())
-        rows = ActivityReporter(self.mw.col, data).reference_history(day)
-        reference = reference_from_day(rows[0], metric_name(conf), "selected") if rows else None
+        rows = ActivityReporter(self.mw.col, data).reference_history(day, with_durations=True)
+        reference = reference_from_day(rows[0], metric_name(conf), "selected", conf) if rows else None
         if reference is None:
             self._displayReferenceDate(self._last_reference_date)
             self._refreshActivitySettings()
@@ -286,6 +331,28 @@ class RevHmOptions(OptionsDialog):
         if not isinstance(conf.get("activity_baselines"), dict):
             conf["activity_baselines"] = {}
         conf["activity_baselines"][baseline_key(conf)] = reference
+        self._refreshActivitySettings()
+
+    def _onCustomWeightChanged(self, value, is_time):
+        if not self._activity_ready:
+            return
+        data = self.getData()
+        conf = data["synced"]
+        old_conf = dict(conf, custom_time_weight=self._last_custom_weight)
+        previous = saved_reference(old_conf) or legacy_reference(old_conf)
+        time_weight = round(value if is_time else 1 - value, 2)
+        for spin, weight in ((self.spinCustomTimeWeight, time_weight),
+                             (self.spinCustomReviewWeight, 1 - time_weight)):
+            blocked = spin.blockSignals(True)
+            spin.setValue(weight)
+            spin.blockSignals(blocked)
+        conf["custom_time_weight"] = time_weight
+        if metric_name(conf) == "custom" and previous and saved_reference(conf) is None:
+            # Keep the chosen day even if its underlying records have since
+            # disappeared. Never substitute a newly automatic reference for it.
+            conf.setdefault("activity_baselines", {})[baseline_key(conf)] = dict(
+                previous, needs_durations=True,
+            )
         self._refreshActivitySettings()
 
     def _onAccept(self):
@@ -308,6 +375,12 @@ class RevHmOptions(OptionsDialog):
         self.form.tabWidget.currentChanged.connect(self._refreshActivitySettings)
         self.dateReference.dateChanged.connect(self._onReferenceDateChanged)
         self.btnEditGradient.clicked.connect(self._onEditGradient)
+        self.spinCustomTimeWeight.valueChanged.connect(
+            lambda value: self._onCustomWeightChanged(value, True),
+        )
+        self.spinCustomReviewWeight.valueChanged.connect(
+            lambda value: self._onCustomWeightChanged(value, False),
+        )
 
     # Actions:
 

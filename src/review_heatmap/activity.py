@@ -109,6 +109,7 @@ class ActivityReport(NamedTuple):
     offset: int
     stats: StatsReport
     review_time: Dict[int, int]
+    review_durations: Optional[Dict[int, List[Tuple[int, int]]]] = None
 
 
 class ActivityReporter:
@@ -136,6 +137,7 @@ class ActivityReporter:
             history_rows = self._cards_done(
                 start=history_start,
                 current_deck_only=current_deck_only,
+                with_durations=True,
             )
             forecast = self._cards_due(
                 start=self._today,
@@ -147,9 +149,10 @@ class ActivityReporter:
                 return None
 
             activity_report = self._get_activity(
-                history=[(day, count) for day, count, _ in history_rows],
+                history=[(row[0], row[1]) for row in history_rows],
                 forecast=forecast,
-                review_time={day: milliseconds for day, _, milliseconds in history_rows},
+                review_time={row[0]: row[2] for row in history_rows},
+                review_durations={row[0]: row[3] for row in history_rows},
             )
         else:
             raise NotImplementedError(
@@ -158,7 +161,8 @@ class ActivityReporter:
 
         return activity_report
 
-    def reference_history(self, day: Optional[int] = None) -> List[Sequence[int]]:
+    def reference_history(self, day: Optional[int] = None,
+                          with_durations: bool = False) -> List[Sequence]:
         """Read reference candidates independently of the displayed calendar range.
 
         All configured history/deck filters still apply. A reference is shared
@@ -168,7 +172,8 @@ class ActivityReporter:
         history_limit = self._get_conf_history_limit(conf["limhist"], conf["limdate"])
         start = day if day is not None else self._today - 60 * 86400
         stop = day + 86400 if day is not None else self._today
-        return self._cards_done(start=max(start, history_limit or 0), stop=stop)
+        return self._cards_done(start=max(start, history_limit or 0), stop=stop,
+                                with_durations=with_durations)
 
     def set_collection(self, col: "Collection"):
         # NOTE: Binding the collection is dangerous if we ever persist ActivityReporter
@@ -191,6 +196,7 @@ class ActivityReporter:
         history: List[Sequence[int]],
         forecast: Optional[List[Sequence[int]]] = None,
         review_time: Optional[Dict[int, int]] = None,
+        review_durations: Optional[Dict[int, List[Tuple[int, int]]]] = None,
     ) -> ActivityReport:
 
         first_day = history[0][0] if history else 0
@@ -269,6 +275,7 @@ class ActivityReporter:
                 activity_daily_avg=StatsEntryCards(value=avg_cur),
             ),
             review_time=review_time or {},
+            review_durations=review_durations,
         )
 
     # Collection properties
@@ -480,7 +487,8 @@ GROUP BY day ORDER BY day""".format(
         start: Optional[int] = None,
         current_deck_only: bool = False,
         stop: Optional[int] = None,
-    ) -> List[Sequence[int]]:
+        with_durations: bool = False,
+    ) -> List[Sequence]:
         """
         start: timestamp in seconds to start reporting from
 
@@ -499,6 +507,7 @@ GROUP BY day ORDER BY day""".format(
 
         Returns:
             [[day, review count, recorded milliseconds], ...]
+            With durations, append [(duration_ms, answer_count), ...] per day.
         """
         offset = self._offset * 3600
 
@@ -520,13 +529,28 @@ GROUP BY day ORDER BY day""".format(
         cmd = """\
 SELECT CAST(STRFTIME('%s', id / 1000 - {}, 'unixepoch',
                      'localtime', 'start of day') AS int)
-AS day, COUNT(), COALESCE(SUM(time), 0)
+AS day, COUNT(), {}
 FROM revlog {}
-GROUP BY day ORDER BY day""".format(
-            offset, lim
+GROUP BY {} ORDER BY {}""".format(
+            offset,
+            "COALESCE(time, 0)" if with_durations else "COALESCE(SUM(time), 0)",
+            lim, "day, COALESCE(time, 0)" if with_durations else "day",
+            "day, COALESCE(time, 0)" if with_durations else "day",
         )
 
         res = self._db.all(cmd)
+
+        if with_durations:
+            # Group exact millisecond durations in SQL, then apply powers in
+            # Python. This works with Anki SQLite builds without math extensions
+            # and avoids sending individual review records to the renderer.
+            days = {}
+            for day, count, duration in res:
+                totals = days.setdefault(day, [0, 0, []])
+                totals[0] += count
+                totals[1] += count * duration
+                totals[2].append((duration, count))
+            res = [(day, *totals) for day, totals in days.items()]
 
         if isDebuggingOn():
             self.__debug_cards_done(cmd, res)

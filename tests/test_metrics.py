@@ -7,31 +7,53 @@ import pytest
 from review_heatmap.metrics import (
     activity_levels, activity_value, automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
-    migrate_activity_references, reference_from_day, saved_reference,
+    legacy_reference, metric_weights, migrate_activity_references,
+    reference_from_day, saved_reference,
 )
 
 
 def test_review_weighted_workload_recognizes_dense_recall():
     reading = activity_value(15, 45 * 60000, "workload")
     recall = activity_value(120, 45 * 60000, "workload")
-    assert recall / reading == pytest.approx(4)
+    assert recall / reading == pytest.approx(8 ** 0.6)
     assert activity_value(30, 90 * 60000, "workload") == pytest.approx(2 * reading)
-    assert activity_value(15, 90 * 60000, "workload") == pytest.approx(2 ** (1 / 3) * reading)
-    assert activity_value(30, 45 * 60000, "workload") == pytest.approx(2 ** (2 / 3) * reading)
+    assert activity_value(15, 90 * 60000, "workload") == pytest.approx(2 ** 0.4 * reading)
+    assert activity_value(30, 45 * 60000, "workload") == pytest.approx(2 ** 0.6 * reading)
 
 
-def test_linear_workload_uses_both_unadjusted_inputs():
-    assert activity_value(15, 2700000, "time") == 675
-    assert activity_value(30, 2700000, "time") == 1350
-    assert activity_value(15, 5400000, "time") == 1350
-    assert activity_value(30, 5400000, "time") == 2700
-    assert activity_value(0, 2700000, "time") == 0
-    assert activity_value(15, 0, "time") == 0
+@pytest.mark.parametrize("metric", ["time", "workload", "custom"])
+def test_mixed_answers_sum_without_bonus_from_combining_them(metric):
+    conf = {"custom_time_weight": 0.7}
+    fast = activity_value(100, 1500000, metric, [(15000, 100)], conf)
+    slow = activity_value(10, 2400000, metric, [(240000, 10)], conf)
+    combined = activity_value(110, 3900000, metric,
+                              [(15000, 100), (240000, 10)], conf)
+    assert combined == pytest.approx(fast + slow)
+    if metric == "time":
+        assert combined == 70  # 100 * sqrt(1/4) + 10 * sqrt(4)
+    assert combined < activity_value(110, 3900000, metric, conf=conf)
+    assert activity_value(220, 7800000, metric,
+                          [(15000, 200), (240000, 20)], conf) == pytest.approx(2 * combined)
+
+
+def test_custom_weights_match_presets_and_endpoints():
+    durations = [(15000, 100), (240000, 10)]
+    for weight, metric in ((0, "reviews"), (0.4, "workload"),
+                           (0.5, "time"), (1, "recorded_time")):
+        conf = {"custom_time_weight": weight}
+        assert sum(metric_weights("custom", conf)) == 1
+        assert activity_value(110, 3900000, "custom", durations, conf) == (
+            activity_value(110, 3900000, metric, durations)
+        )
+    assert baseline_key(dict(conf, activity_metric="custom")) != baseline_key(
+        dict(conf, activity_metric="custom", custom_time_weight=0.4)
+    )
 
 
 def test_measures_keep_counts_and_zero_time():
     assert activity_value(15, 2700000, "reviews") == 15
-    assert activity_value(15, 2700000, "time") == 675
+    assert activity_value(15, 2700000, "recorded_time") == 45
+    assert activity_value(15, 2700000, "time") == pytest.approx(math.sqrt(675))
     assert activity_value(15, 0, "workload") == 0
     assert activity_value(0, 2700000, "workload") == 0
 
@@ -43,7 +65,7 @@ def test_old_references_keep_dates_and_raw_totals_across_formula_upgrade(metric)
     old_references = {}
     for exclusions, source in (([], "selected"), ([17], "automatic")):
         key_parts = json.loads(baseline_key(dict(conf, limdecks=exclusions)))
-        key_parts[0] = 1
+        key_parts[0] = 2
         key = json.dumps(key_parts, separators=(",", ":"))
         old_references[key] = {
             "day": 1, "reviews": 120, "time_ms": 2700000,
@@ -55,10 +77,13 @@ def test_old_references_keep_dates_and_raw_totals_across_formula_upgrade(metric)
     references[other_key] = reference_from_day((2, 15, 2700000), other_metric, "selected")
     old_other = deepcopy(references[other_key])
 
-    assert migrate_activity_references(conf)
+    durations = [(15000, 100), (60000, 20)]
+    read_day = lambda day: [(day, 120, 2700000, durations)]
     for exclusions in ([], [17]):
-        reference = saved_reference(dict(conf, limdecks=exclusions))
-        expected = 5400 if metric == "time" else 120 * 0.375 ** (1 / 3)
+        active_conf = dict(conf, limdecks=exclusions)
+        assert migrate_activity_references(active_conf, read_day)
+        reference = saved_reference(active_conf)
+        expected = 70 if metric == "time" else 100 * 0.25 ** 0.4 + 20
         assert reference["value"] == pytest.approx(expected)
         assert reference["day"] == 1
         assert reference["reviews"] == 120
@@ -69,7 +94,7 @@ def test_old_references_keep_dates_and_raw_totals_across_formula_upgrade(metric)
     for key, reference in old_references.items():
         assert references[key] == reference
     migrated = deepcopy(conf)
-    assert not migrate_activity_references(conf)
+    assert not migrate_activity_references(conf, read_day)
     assert conf == migrated
 
 
@@ -86,12 +111,16 @@ def test_reference_upgrade_preserves_newer_selections_and_invalid_old_entries():
         "invalid": {"value": 1},
     }
     original = deepcopy(conf)
-    assert not migrate_activity_references(conf)
+    assert not migrate_activity_references(conf, lambda day: pytest.fail("newer reference wins"))
     assert conf == original
     del conf["activity_baselines"][key]
-    del conf["activity_baselines"][old_key]["time_ms"]
     original = deepcopy(conf)
     assert not migrate_activity_references(conf)
+    assert not migrate_activity_references(conf, lambda day: [])
+    # Summaries alone must never silently replace the old score with an estimate.
+    assert not migrate_activity_references(conf, lambda day: [(day, 15, 2700000)])
+    assert legacy_reference(conf)["day"] == 1
+    assert saved_reference(conf) is None
     assert conf == original
 
 
@@ -107,13 +136,13 @@ def test_reference_is_an_actual_day_and_ignores_zero_duration():
 def test_reference_requires_positive_time_and_applies_only_when_supplied():
     assert reference_from_day((1, 100, 0), "time", "selected") is None
     reference = reference_from_day((1, 120, 2700000), "time", "selected")
-    assert activity_levels("time")[5] == 2025
+    assert activity_levels("time")[5] == 45
     assert activity_levels("time", reference) == list(range(1, 10))
-    assert baseline_value(reference) == pytest.approx(4590)
+    assert baseline_value(reference) == pytest.approx(0.85 * math.sqrt(5400))
     reference["value"] = 90
     assert baseline_value(reference) == pytest.approx(76.5)
     assert reference["value"] == 90  # applying the discount never compounds it
-    assert activity_levels("time")[5] == 2025
+    assert activity_levels("time")[5] == 45
 
 
 def test_baseline_palette_has_a_white_reference_and_gentler_threshold():
