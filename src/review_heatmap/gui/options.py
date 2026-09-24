@@ -275,7 +275,7 @@ class RevHmOptions(OptionsDialog):
         self.form.selHmColor.setVisible(show_color_scheme)
         self.selActivityScale.setEnabled(not classic)
         self.referenceGroup.setVisible(use_baseline)
-        self.form.cbTodayProgress.setEnabled(not classic)
+        self.form.cbTodayProgress.setEnabled(use_baseline)
         self.btnEditGradient.setVisible(use_baseline)
         self.customGroup.setVisible(metric == "custom")
         custom_review, custom_time = metric_weights("custom", conf)

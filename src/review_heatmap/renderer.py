@@ -347,16 +347,14 @@ class HeatmapRenderer:
         if (
             not self._config["profile"].get("show_today_progress", True)
             or metric_name(conf) == "reviews"
+            or conf.get("activity_scale") != "baseline"
         ):
             return None
         reference = self._baseline_reference()
-        use_baseline = conf.get("activity_scale") == "baseline"
-        if use_baseline and reference is None:
+        if reference is None:
             return {"percent": None, "color": "", "context": ""}
         scores = self._activity_scores(report) if report else {}
-        anchor = baseline_value(reference) if reference else adaptive_anchor(scores.values())
-        if anchor is None:
-            return None
+        anchor = baseline_value(reference)
         today = report.today // 1000 if report else self._reporter._today
         # Today's forecast is negative; only completed reviews contribute.
         value = scores.get(today, 0)
@@ -365,7 +363,6 @@ class HeatmapRenderer:
             self._progress_session, today, baseline_key(conf),
             conf.get("activity_scale"), reference["day"] if reference else None,
             anchor, self._config["local"].get("baseline_gradient"),
-            conf["colors"], theme_manager.night_mode,
         ], sort_keys=True)
         progress = {
             "context": sha256(context.encode("utf-8")).hexdigest(),
@@ -373,12 +370,8 @@ class HeatmapRenderer:
             "color": baseline_color(
                 value, reference, reference_day=today == int(reference["day"]),
                 gradient=self._config["local"].get("baseline_gradient"),
-            ) if reference else adaptive_color(
-                value, anchor, conf["colors"], theme_manager.night_mode,
             ),
         }
-        if not use_baseline:
-            progress["scale"] = "adaptive"
         return progress
 
     def _generate_heatmap_elm(

@@ -376,7 +376,7 @@ def test_mixed_durations_reach_heatmap_progress_and_reference_migration(setup):
     html = renderer._generate_heatmap_elm(report, [], False)
     values = json.loads(re.search(r"reviewHeatmap.create\((.+)\);", html)[1])
     assert values[str(TODAY)] == 6  # exactly the median, without the 85% discount
-    assert renderer._today_progress(report)["percent"] == 100
+    assert renderer._today_progress(report) is None
 
 
 def test_missing_legacy_reference_is_not_replaced_by_automatic_selection(setup):
@@ -436,7 +436,7 @@ def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
 
 
 def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
-    from review_heatmap.metrics import adaptive_color
+    from review_heatmap.metrics import adaptive_anchor, adaptive_color
 
     for age, count in ((400, 1), (10, 2), (2, 3), (0, 100)):
         for sequence in range(count):
@@ -447,13 +447,12 @@ def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
     renderer = make_renderer(setup)
     conf = setup.conf["synced"]
     assert conf["activity_scale"] == "adaptive"
-    progress = renderer._today_progress(report)
-    assert progress["scale"] == "adaptive"
-    assert progress["percent"] == 4000  # 100 / median(1, 2, 3, 100)
+    assert renderer._today_progress(report) is None
+    assert adaptive_anchor(renderer._activity_scores(report).values()) == 2.5
     html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
     options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
     assert options["dayColors"][str(TODAY - 10 * 86400)] == adaptive_color(2, 2.5)
-    assert options["dayColors"][str(TODAY)] == progress["color"]
+    assert options["dayColors"][str(TODAY)] == adaptive_color(100, 2.5)
     assert "#ffffff" not in options["dayColors"].values()
     assert str(TODAY + 86400) not in options["dayColors"]
     assert conf["activity_baselines"] == {}
@@ -466,10 +465,12 @@ def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
     html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
     assert json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])["dayColors"] == before
     conf["colors"] = "ice"
-    assert renderer._today_progress(report)["color"] == adaptive_color(100, 2.5, "ice")
+    html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
+    options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
+    assert options["dayColors"][str(TODAY)] == adaptive_color(100, 2.5, "ice")
     conf["limhist"] = 3
     filtered = setup.reporter.get_report(limfcst=2)
-    assert renderer._today_progress(filtered)["percent"] == pytest.approx(10000 / 51.5)
+    assert adaptive_anchor(renderer._activity_scores(filtered).values()) == 51.5
 
 
 def test_fixed_setting_migrates_without_changing_saved_references(setup):
@@ -583,7 +584,7 @@ def test_today_progress_matches_workload_baseline_and_calendar_color(setup, revi
 
 def test_today_progress_visibility_and_missing_baseline(setup):
     renderer = make_renderer(setup)
-    assert renderer._today_progress(None) is None  # adaptive has no history yet
+    assert renderer._today_progress(None) is None  # Classic never shows goal progress
     setup.conf["synced"]["activity_scale"] = "baseline"
     assert renderer._today_progress(None) == {"percent": None, "color": "", "context": ""}
     assert renderer._today_progress_script(setup.modules.renderer.HeatmapView.overview, None) == ""

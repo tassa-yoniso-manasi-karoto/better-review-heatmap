@@ -133,7 +133,7 @@ def test_classic_disables_reference_controls(setup, options_module):
     assert dialog.selActivityScale.currentText() == "Classic"
     assert dialog.selActivityScale.findData("fixed") == -1
     assert "median score" in dialog.labActivityDescription.text()
-    assert dialog.form.cbTodayProgress.isEnabled()
+    assert not dialog.form.cbTodayProgress.isEnabled()
     assert dialog.btnEditGradient.isHidden()
     assert not dialog.form.selHmColor.isHidden()
     for metric in ("time", "workload", "custom", "recorded_time"):
@@ -143,6 +143,8 @@ def test_classic_disables_reference_controls(setup, options_module):
             assert dialog.form.selHmColor.isHidden() == (scale == "baseline")
             assert dialog.form.label.isHidden() == (scale == "baseline")
             assert dialog.btnEditGradient.isHidden() == (scale == "adaptive")
+            assert dialog.form.cbTodayProgress.isEnabled() == (scale == "baseline")
+            assert dialog.form.cbTodayProgress.isChecked()  # keep the saved preference
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("reviews"))
     assert not dialog.selActivityScale.isEnabled()
     assert not dialog.form.cbTodayProgress.isEnabled()
