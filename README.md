@@ -3,7 +3,7 @@ This fork extends [Glutanimate's Review Heatmap](https://github.com/glutanimate/
 and retains the inherited daylight-saving fix of [@olliecheng](https://github.com/olliecheng/review-heatmap).
 
 <p align="center">
-    <img src="https://github.com/tassa-yoniso-manasi-karoto/better-review-heatmap/raw/refs/heads/main/screenshots/animated.avif" alt="Better Review Heatmap Demo" width="800" />
+    <img src="https://github.com/tassa-yoniso-manasi-karoto/better-review-heatmap/raw/refs/heads/master/screenshots/animated.avif" alt="Better Review Heatmap Demo" width="800" />
 </p>
 
 ## Usage

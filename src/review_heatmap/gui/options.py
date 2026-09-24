@@ -489,7 +489,7 @@ def initialize_options():
     # Keep Anki's Config button available for the editable gradient JSON.
     config.setConfigAction(None)
     # Set up menu entry:
-    options_action = QAction("Review &Heatmap Options...", mw)
+    options_action = QAction("🟩 Better Review &Heatmap Options...", mw)
     options_action.triggered.connect(lambda _: invoke_options_dialog())
     mw.form.menuTools.addAction(options_action)
 
