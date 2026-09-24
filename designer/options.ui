@@ -17,7 +17,7 @@
         </font>
        </property>
        <property name="text">
-        <string>Review Heatmap Settings</string>
+        <string>Better Review Heatmap Settings</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -34,6 +34,9 @@
       <widget class="QLabel" name="fmtLabVersion">
        <property name="text">
         <string>v{ADDON_VERSION}</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
        </property>
       </widget>
      </item>

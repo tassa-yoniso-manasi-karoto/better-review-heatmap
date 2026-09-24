@@ -25,17 +25,25 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
-## [2.1.0] - Unreleased
+## [2.1.0] - 2026-09-24
+
+### Added
+- Added support for a **new-card-only heatmap** and a toggle to switch back and forth
+- Added **Time-only** and **Custom Workload** modes with configurable metric weights
+- Added an **in-app changelog tab** natively rendered in markdown
 
 ### Changed
-- Unified workload modes around a shared and more mathematically accurate formula family
-- Upgraded the fixed threshold scale to an adaptive scale based on median historical activity
-- Configured automatic references to refresh every 30 days to keep targets relevant as study habits evolve
+- **Overhauled entirely workload math**
+- **Adjusted scoring for workload "linear" and "review-weighted" modes**
+- Configured automatic references to **refresh every 30 days** to keep targets relevant as study habits evolve
 - Shifted the automatic target baseline to the 90th percentile to represent a more challenging and ambitious goal
-- Prefixed the Review Heatmap entry in the Tools menu with a green square icon
+- Restricted the today's progress bar display to baseline mode only
+- Renamed settings tabs and reorganized mode selection UI
 
 ### Fixed
+- Upgraded the fixed threshold scale to an **adaptive scale** based on median historical activity
 - Fixed an issue where the workload of individual decks was unfairly evaluated against collectionwide goals
+- Restricted custom gradient colors to reference-day baseline coloring
 
 ## [2.0.2] - 2026-09-14
 

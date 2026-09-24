@@ -269,7 +269,10 @@ class RevHmOptions(OptionsDialog):
         self.dateReference.setMaximumDate(QDate.currentDate())
         self.dateReference.setDate(QDate.currentDate().addDays(-1))
         self.btnAutoReference = QToolButton(self.referenceGroup)
-        self.btnAutoReference.setAutoRaise(True)
+        self.btnAutoReference.setStyleSheet(
+            "QToolButton { border: 1px solid palette(mid); border-radius: 4px; padding: 2px; }"
+            "QToolButton:hover { border-color: palette(highlight); }"
+        )
         self.btnAutoReference.setIcon(theme_manager.icon_from_resources(
             "review_heatmap:icons/auto-reference.svg",
         ))
@@ -287,10 +290,8 @@ class RevHmOptions(OptionsDialog):
         layout.addWidget(self.btnEditGradient)
 
         timing = QLabel(
-            "Hover over a past day to see recorded study time and reviews. "
             "Anki limits recorded time using Deck Options → Timers → Maximum "
-            "answer seconds. Choose a limit appropriate for your study habits. "
-            "Streaks count any day with reviews. Future days show cards due.", tab,
+            "answer seconds. Choose a limit appropriate for your study habits.", tab,
         )
         timing.setWordWrap(True)
         layout.addWidget(timing)
