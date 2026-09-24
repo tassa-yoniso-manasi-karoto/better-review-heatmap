@@ -162,6 +162,7 @@ class RevHmOptions(OptionsDialog):
     def _setupUI(self):
         super(RevHmOptions, self)._setupUI()
         self._setupActivityTab()
+        self._setupChangelogTab()
 
         # manually adjust title label font sizes on Windows
         # gap between default windows font sizes and sizes that work well
@@ -261,6 +262,45 @@ class RevHmOptions(OptionsDialog):
         layout.addWidget(timing)
         layout.addStretch()
         self.form.tabWidget.insertTab(1, tab, "Display Mode")
+
+
+    def _setupChangelogTab(self):
+        from aqt.qt import QVBoxLayout, QTextBrowser
+        import os
+        
+        layout = QVBoxLayout(self.form.tabChangelog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.changelogBrowser = QTextBrowser(self.form.tabChangelog)
+        self.changelogBrowser.setOpenExternalLinks(True)
+        
+        # Apply custom styling to remove li padding and add section padding
+        self.changelogBrowser.document().setDefaultStyleSheet(
+            "ul, ol { margin-top: 4px; margin-bottom: 4px; padding-top: 0px; padding-bottom: 0px; } "
+            "li { margin-top: 0px; margin-bottom: 0px; padding-top: 0px; padding-bottom: 0px; } "
+            "h2 { margin-top: 16px; margin-bottom: 8px; } "
+            "h3 { margin-top: 12px; margin-bottom: 4px; }"
+        )
+        
+        layout.addWidget(self.changelogBrowser)
+        
+        changelog_path = os.path.join(os.path.dirname(__file__), "..", "CHANGELOG.md")
+        if os.path.exists(changelog_path):
+            with open(changelog_path, "r", encoding="utf-8") as f:
+                md_text = f.read()
+            
+            # Trim header comments
+            if "-->" in md_text:
+                md_text = md_text.split("-->", 1)[-1].strip()
+            
+            if hasattr(self.changelogBrowser, "setMarkdown"):
+                self.changelogBrowser.setMarkdown(md_text)
+            else:
+                try:
+                    import markdown
+                    html = markdown.markdown(md_text)
+                    self.changelogBrowser.setHtml(html)
+                except ImportError:
+                    self.changelogBrowser.setPlainText(md_text)
 
     def _refreshActivitySettings(self, *args):
         if not self._activity_ready:

@@ -1,30 +1,74 @@
 # Changelog
 
-All notable changes to [Review Heatmap](https://ankiweb.net/shared/info/1771074083) will be documented here. You can click on each release number to be directed to a detailed log of all code commits for that particular release. The download links will direct you to the GitHub release page, allowing you to manually install a release if you want.
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-If you enjoy Review Heatmap, please consider **supporting my work on Patreon**:
+<!--
+FORMAT REQUIREMENTS:
 
-<p align="center"><a href="https://patreon.com/glutanimate"><img src="https://glutanimate.com/logos/patreon_button.svg" height="48px"> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <img src="https://glutanimate.com/logos/thanks.svg" height="48px"></a></p>
+- Version headers MUST be: ## [x.y.z] or ## [x.y.z-tag] - YYYY-MM-DD
+  Examples: ## [1.0.0] - 2024-01-15  or  ## [1.0.0-alpha] - Unreleased
+- Section headers MUST be: ### Added, ### Changed, ### Fixed, ### Deprecated,
+  ### Removed, or ### Security (exactly these names, case-sensitive)
+- List items MUST start with "- " (hyphen + space)
+- Keep one blank line between sections
 
-:heart: My heartfelt thanks goes out to everyone who has supported this add-on through their tips, contributions, or any other means (you know who you are!). All of the recent additions would not have been possible without you. **Thank you** for being awesome!
+Guidelines for LLMs updating this changelog from git history:
 
------
+- Only include changes relevant to end users (ordinary Anki users, not developers)
+- Heed the chronology and thus do NOT list "fixes" for things that were never released: they're not fixes from the user's perspective
+- Omit internal/technical changes (system diagnostics, refactoring, etc.)
+- Aggregate related small improvements into single descriptive lines
+- Keep entries concise: one line per feature/change, avoid technical jargon
+- Focus on user benefits: what can they do now? what's better for them?
+- This file must remain machine-parsable (Keep a Changelog format)
+- The use of em dashes or hyphen as punctuation is absolutely forbidden
+-->
 
-## Public Service Announcement (2022-05-18):
 
-### You can now download Review Heatmap [directly off of AnkiWeb](https://ankiweb.net/shared/info/1771074083)! Please use this installation method if you can as it's much simpler to follow and will allow you to automatically receive updates in the future.
+## [2.1.0] - Unreleased
 
-**IMPORTANT**: Releases of the add-on past v1.0.0 have only been extensively tested on Anki 2.1.49 and up. The AnkiWeb upload is therefore limited to Anki 2.1.49+ for the time being (but might be expanded to earlier releases in the future). 
+### Changed
+- Unified workload modes around a shared and more mathematically accurate formula family
+- Upgraded the fixed threshold scale to an adaptive scale based on median historical activity
+- Configured automatic references to refresh every 30 days to keep targets relevant as study habits evolve
+- Shifted the automatic target baseline to the 90th percentile to represent a more challenging and ambitious goal
+- Prefixed the Review Heatmap entry in the Tools menu with a green square icon
 
-If you are on an earlier Anki release there is no need to worry: Copying the AnkiWeb add-on code into the app will automatically download a compatible version of the add-on for you. However, please be aware that it will not include the latest changes below.
+### Fixed
+- Fixed an issue where the workload of individual decks was unfairly evaluated against collectionwide goals
 
------
+## [2.0.2] - 2026-09-14
 
-## [Unreleased]
+### Changed
+- Adjusted the wording of the popup presented on first installation
+
+## [2.0.1] - 2026-09-13
+
+### Fixed
+- Restored compatibility with Anki Qt5 builds
+
+## [2.0.0] - 2026-09-13
+
+### Added
+- Added workload measurement options that account for review length
+- Added a progress bar displaying today's workload completion compared to a reference day
+- Added in-app palette editing controls to customize workload colors
+- Added a compact toolbar beside the heatmap for simpler control
+
+### Changed
+- Shifted to visually rewarding workload colors and continuous gradients
+- Simplified the selection of a reference day for target setting
+- Removed promotional UI elements and unneeded libraries
+
+### Fixed
+- Fixed an issue where clicking on a specific deck's historical data would ignore the current deck filter
+
+## [1.0.2] - 2025-10-06
+
+### Fixed
+- Fixed a timezone adjustment bug that caused incorrect display during Daylight Saving Time transitions
 
 ## [1.0.1] - 2022-05-24
-
-### [Download](https://ankiweb.net/shared/info/1771074083)
 
 ### Fixed
 
@@ -35,10 +79,6 @@ If you are on an earlier Anki release there is no need to worry: Copying the Ank
 - Added a workaround to enable compatibility with the Stats Plus add-on *(thanks to @MickyAnne, @kguy18, @swerage, and @agentca for the reports and testing)*
 
 ## [1.0.0] - 2022-05-15
-
-<center><img src="screenshots/1.0.0_logo.png"></center>
-
-### [Download](https://ankiweb.net/shared/info/1771074083)
 
 **IMPORTANT**: While likely compatible with earlier versions, this add-on release has only been extensively tested with Anki 2.1.49 and up. The AnkiWeb upload is therefore limited to Anki 2.1.49+ for the time being (but might be expanded to earlier releases in the future).
 
@@ -71,8 +111,6 @@ Temporary test release. Changelog entry merged into v1.0.0 changes.
 
 ## [1.0.0-beta.1] - 2020-04-30
 
-### [Download](https://github.com/glutanimate/review-heatmap/releases/tag/v1.0.0-beta.1)
-
 ### Added
 
 - Added support for **Anki 2.1.24** and up (database access, new hook system, new finder extensions)
@@ -92,10 +130,6 @@ Temporary test release. Changelog entry merged into v1.0.0 changes.
 - **Removed the `seen:` query phrase**. This had been deprecated in the past, and with Anki 2.1.24 now no longer supporting addon-provided queries for filtered decks, it no longer made sense to keep it.
 
 ## [0.7.0-beta.1] - 2018-10-28
-
-### [Download](https://github.com/glutanimate/review-heatmap/releases/tag/v0.7.0-beta.1)
-
-<center><img src="screenshots/0.7.0_logo.png"></center>
 
 ### Added
 
@@ -118,10 +152,6 @@ Temporary test release. Changelog entry merged into v1.0.0 changes.
     - all **themes** now come with beautiful **night mode versions** that are automatically switched on when Night Mode is active (requires Night Mode version 2.2.3 and up)
     - special thanks to [Michał Krassowski](https://github.com/krassowski) for laying the groundwork on Night Mode's side!
 - A **beautiful new UI** with updated buttons, new tooltips, and more polish than ever before
-
-<center><img src="screenshots/0.7.0_regular_year.png"></center>
-
-<center><img src="screenshots/0.7.0_night_mode_months.png"></center>
 
 
 ### Changed
@@ -151,8 +181,6 @@ Temporary test release. Changelog entry merged into v1.0.0 changes.
 
 
 ## [0.6.1-anki21-alpha] - 2018-09-23
-
-### [Download](https://github.com/glutanimate/review-heatmap/releases/tag/v0.6.1-anki21-alpha)
 
 ### Added
 
@@ -207,20 +235,3 @@ Temporary test release. Changelog entry merged into v1.0.0 changes.
 ## 0.1.0 - 2016-12-31
 
 First release of Review Heatmap.
-
-[Unreleased]: https://github.com/glutanimate/review-heatmap/compare/v1.0.1...HEAD
-[1.0.1]: https://github.com/glutanimate/review-heatmap/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/glutanimate/review-heatmap/compare/v1.0.0-beta.1...v1.0.0
-[1.0.0-beta.1]: https://github.com/glutanimate/review-heatmap/compare/v0.7.0-beta.1...v1.0.0-beta.1
-[0.7.0-beta.1]: https://github.com/glutanimate/review-heatmap/compare/v0.6.1-anki21-alpha...v0.7.0-beta.1
-[0.6.1-anki21-alpha]: https://github.com/glutanimate/review-heatmap/compare/v0.6.0...v0.6.1-anki21-alpha
-[0.6.0]: https://github.com/glutanimate/review-heatmap/compare/v0.5.2...v0.6.0
-[0.5.2]: https://github.com/glutanimate/review-heatmap/compare/v0.5.1...v0.5.2
-[0.5.1]: https://github.com/glutanimate/review-heatmap/compare/39f686fd8dbfe532e97ff9c4a8189a684a011492...v0.5.1
-[0.5.0]: https://github.com/glutanimate/review-heatmap/compare/22fcaa60d71967a453473de0b1f1fe970438ad08...v0.5.0
-
-
------
-
-The format of this file is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

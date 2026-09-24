@@ -120,6 +120,7 @@ def main():
             shutil.rmtree(generated)
     copy_resources(root, package)
     compile_forms(root, package)
+    shutil.copy2(root / "CHANGELOG.md", package / "CHANGELOG.md")
     shutil.copy2(root / "LICENSE", package / "LICENSE.txt")
     shutil.copy2(root / "resources" / "LICENSES_ICONS.md", package / "LICENSES_ICONS.txt")
     shutil.copy2(root / "src" / "web" / "_vendor" / "LICENSES.txt", package / "LICENSES_WEB.txt")
