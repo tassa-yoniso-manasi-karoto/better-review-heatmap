@@ -39,7 +39,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from aqt.qt import (
-    QAction, QApplication, QComboBox, QDate, QDateEdit, QDoubleSpinBox, QFormLayout,
+    QAction, QApplication, QComboBox, QDate, QDateEdit, QDialog, QDialogButtonBox,
+    QDoubleSpinBox, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QPushButton, QSize, QTimer, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -54,7 +55,7 @@ from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_m
 from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
-    reference_from_day, saved_reference, automatic_reference,
+    reference_from_day, saved_reference, set_reference, automatic_reference,
     AUTO_REFERENCE_PERCENTILE, AUTO_REFERENCE_REFRESH_DAYS,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
@@ -62,6 +63,54 @@ from ..libaddon.platform import PLATFORM
 from ..times import daystart_epoch
 from .forms import options as qtform_options
 from .gradient import GradientDialog
+
+
+class CustomWeightsDialog(QDialog):
+    def __init__(self, conf, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Custom workload weights")
+        layout = QVBoxLayout(self)
+        presets = ["Preset weights (reviews / time):"]
+        for metric in ("time", "workload"):
+            review, time_weight = metric_weights(metric)
+            presets.append(f"{METRICS[metric]['label']}: {review:g} / {time_weight:g}")
+        layout.addWidget(QLabel("\n".join(presets), self))
+        form = QFormLayout()
+        self.reviewWeight = QDoubleSpinBox(self)
+        self.timeWeight = QDoubleSpinBox(self)
+        for spin, value in zip(
+            (self.reviewWeight, self.timeWeight), metric_weights("custom", conf),
+        ):
+            spin.setRange(0, 1)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.05)
+            spin.setKeyboardTracking(False)
+            spin.setValue(value)
+        form.addRow("Review exponent", self.reviewWeight)
+        form.addRow("Time exponent", self.timeWeight)
+        layout.addLayout(form)
+        layout.addWidget(QLabel(
+            "Changing either exponent adjusts the other; their total is 1.", self,
+        ))
+        self.reviewWeight.valueChanged.connect(
+            lambda value: self._adjustOther(self.timeWeight, value),
+        )
+        self.timeWeight.valueChanged.connect(
+            lambda value: self._adjustOther(self.reviewWeight, value),
+        )
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _adjustOther(spin, value):
+        blocked = spin.blockSignals(True)
+        spin.setValue(round(1 - value, 2))
+        spin.blockSignals(blocked)
 
 
 class RevHmOptions(OptionsDialog):
@@ -86,7 +135,6 @@ class RevHmOptions(OptionsDialog):
             ),
         ),
         ("form.cbTodayProgress", (("value", {"dataPath": "profile/show_today_progress"}),)),
-        ("spinCustomTimeWeight", (("value", {"dataPath": "synced/custom_time_weight"}),)),
         (
             "form.selHmColor",
             (
@@ -181,30 +229,16 @@ class RevHmOptions(OptionsDialog):
         choices = QFormLayout()
         self.selActivityMetric = QComboBox(tab)
         self.selActivityScale = QComboBox(tab)
-        choices.addRow("Color by", self.selActivityMetric)
+        metric_row = QHBoxLayout()
+        metric_row.addWidget(self.selActivityMetric, 1)
+        self.btnCustomWeights = QPushButton("Edit weights…", tab)
+        metric_row.addWidget(self.btnCustomWeights)
+        choices.addRow("Color by", metric_row)
         choices.addRow("Color scale", self.selActivityScale)
         self.form.gridLayout.removeWidget(self.form.label)
         self.form.gridLayout.removeWidget(self.form.selHmColor)
         choices.addRow(self.form.label, self.form.selHmColor)
         layout.addLayout(choices)
-
-        self.labActivityDescription = QLabel(tab)
-        self.labActivityDescription.setWordWrap(True)
-        layout.addWidget(self.labActivityDescription)
-
-        self.customGroup = QGroupBox("Custom workload", tab)
-        custom_layout = QFormLayout(self.customGroup)
-        self.spinCustomReviewWeight = QDoubleSpinBox(self.customGroup)
-        self.spinCustomTimeWeight = QDoubleSpinBox(self.customGroup)
-        for spin in (self.spinCustomReviewWeight, self.spinCustomTimeWeight):
-            spin.setRange(0, 1)
-            spin.setDecimals(2)
-            spin.setSingleStep(0.05)
-            spin.setKeyboardTracking(False)
-        custom_layout.addRow("Review exponent", self.spinCustomReviewWeight)
-        custom_layout.addRow("Time exponent", self.spinCustomTimeWeight)
-        custom_layout.addRow(QLabel("Changing either exponent adjusts the other; their total is 1."))
-        layout.addWidget(self.customGroup)
 
         self.referenceGroup = QGroupBox(SCALES["baseline"]["label"], tab)
         reference_layout = QVBoxLayout(self.referenceGroup)
@@ -317,40 +351,7 @@ class RevHmOptions(OptionsDialog):
         self.referenceGroup.setVisible(use_baseline)
         self.form.cbTodayProgress.setEnabled(use_baseline)
         self.btnEditGradient.setVisible(use_baseline)
-        self.customGroup.setVisible(metric == "custom")
-        custom_review, custom_time = metric_weights("custom", conf)
-        for spin, value in ((self.spinCustomReviewWeight, custom_review),
-                            (self.spinCustomTimeWeight, custom_time)):
-            blocked = spin.blockSignals(True)
-            spin.setValue(value)
-            spin.blockSignals(blocked)
-        self._last_custom_weight = custom_time
-        descriptions = {
-            "reviews": "Classic uses the original review counts and average-based color scale.",
-            "time": (
-                "Equal review and time influence (0.5 / 0.5). Each answer earns "
-                "the square root of its recorded minutes; credits are added for the day."
-            ),
-            "workload": (
-                "Review and time exponents are 0.6 / 0.4. Each answer earns its "
-                "recorded minutes raised to 0.4; credits are added for the day."
-            ),
-            "custom": (
-                f"Review and time exponents are {custom_review:.2f} / {custom_time:.2f}. "
-                "Each answer earns its recorded minutes raised to the time exponent; "
-                "credits are added for the day."
-            ),
-            "recorded_time": "Colors use total Anki-recorded minutes, without a review-count adjustment.",
-        }
-        description = descriptions[metric]
-        if not classic and not use_baseline:
-            description += (
-                " Classic compares each day with the median score of active days "
-                "in the included history. Date and history limits apply; calendar "
-                "navigation does not change the benchmark. Theme intensity shows "
-                "relative activity, not goal achievement."
-            )
-        self.labActivityDescription.setText(description)
+        self.btnCustomWeights.setVisible(metric == "custom")
         migrate_activity_references(
             conf, lambda day: ActivityReporter(self.mw.col, self.getData()).reference_history(
                 day, with_durations=True, deck_id=deck_id,
@@ -445,23 +446,18 @@ class RevHmOptions(OptionsDialog):
             self._onReferenceDateChanged(date)
 
     def _setReference(self, conf, reference):
-        if not isinstance(conf.get("activity_baselines"), dict):
-            conf["activity_baselines"] = {}
-        conf["activity_baselines"][baseline_key(conf, self.selReferenceScope.currentData())] = reference
+        set_reference(conf, reference, self.selReferenceScope.currentData())
         self._refreshActivitySettings()
 
-    def _onCustomWeightChanged(self, value, is_time):
-        if not self._activity_ready:
+    def _onEditCustomWeights(self):
+        conf = self.getData()["synced"]
+        dialog = CustomWeightsDialog(conf, self)
+        result = dialog.exec()
+        time_weight = round(dialog.timeWeight.value(), 2)
+        dialog.deleteLater()
+        if result != QDialog.DialogCode.Accepted:
             return
-        data = self.getData()
-        conf = data["synced"]
-        old_conf = dict(conf, custom_time_weight=self._last_custom_weight)
-        time_weight = round(value if is_time else 1 - value, 2)
-        for spin, weight in ((self.spinCustomTimeWeight, time_weight),
-                             (self.spinCustomReviewWeight, 1 - time_weight)):
-            blocked = spin.blockSignals(True)
-            spin.setValue(weight)
-            spin.blockSignals(blocked)
+        old_conf = dict(conf)
         conf["custom_time_weight"] = time_weight
         if metric_name(conf) == "custom":
             # Preserve every scope's chosen day when the shared weights change.
@@ -500,12 +496,7 @@ class RevHmOptions(OptionsDialog):
         self.selReferenceScope.currentIndexChanged.connect(self._onReferenceScopeChanged)
         self.btnAutoReference.clicked.connect(self._onAutomaticReference)
         self.btnEditGradient.clicked.connect(self._onEditGradient)
-        self.spinCustomTimeWeight.valueChanged.connect(
-            lambda value: self._onCustomWeightChanged(value, True),
-        )
-        self.spinCustomReviewWeight.valueChanged.connect(
-            lambda value: self._onCustomWeightChanged(value, False),
-        )
+        self.btnCustomWeights.clicked.connect(self._onEditCustomWeights)
 
     # Actions:
 

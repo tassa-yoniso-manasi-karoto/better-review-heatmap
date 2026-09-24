@@ -10,7 +10,7 @@ from review_heatmap.metrics import (
     automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
     legacy_reference, metric_weights, migrate_activity_references,
-    reference_from_day, saved_reference, show_reference_reminder,
+    reference_from_day, saved_reference, set_reference, show_reference_reminder,
 )
 
 
@@ -155,6 +155,50 @@ def test_reference_and_reminder_scopes_are_independent():
     assert not show_reference_reminder(dict(conf, activity_scale="adaptive"), 2)
     conf["activity_baselines"][baseline_key(conf, 2)] = manual
     assert not show_reference_reminder(conf, 2)
+
+
+@pytest.mark.parametrize("source_metric", ["time", "workload", "custom"])
+def test_existing_manual_day_is_recovered_for_other_workload_formulas(source_metric):
+    row = (1, 3, 270000, [(15000, 2), (240000, 1)])
+    conf = {"activity_metric": source_metric, "custom_time_weight": 0.7}
+    original = reference_from_day(row, source_metric, "selected", conf)
+    conf["activity_baselines"] = {baseline_key(conf): original}
+    for metric in ("time", "workload", "custom"):
+        target = dict(conf, activity_metric=metric, custom_time_weight=0.3)
+        if baseline_key(target) != baseline_key(conf):
+            # A previously automatic target must not hide the manual selection.
+            target["activity_baselines"][baseline_key(target)] = dict(
+                original, source="automatic", day=2,
+            )
+            assert migrate_activity_references(target, lambda day: [row])
+        reference = saved_reference(target)
+        assert reference["day"] == 1 and reference["source"] == "selected"
+        assert reference["value"] == pytest.approx(
+            activity_value(3, 270000, metric, row[3], target)
+        )
+    assert conf["activity_baselines"][baseline_key(conf)] == original
+
+
+def test_shared_manual_day_respects_scope_filters_and_explicit_automatic_choice():
+    conf = {"activity_metric": "workload"}
+    row = (1, 3, 270000, [(15000, 2), (240000, 1)])
+    set_reference(conf, reference_from_day(row, "workload", "selected"), 1)
+    custom = dict(conf, activity_metric="custom", custom_time_weight=0.8)
+    assert not migrate_activity_references(custom, lambda day: [row])
+    assert not migrate_activity_references(custom, lambda day: [row], 2)
+    assert not migrate_activity_references(dict(custom, limhist=30), lambda day: [row], 1)
+    assert not migrate_activity_references(custom, lambda day: [], 1)
+    assert saved_reference(custom, 1) is None
+    assert legacy_reference(custom, 1)["day"] == 1  # do not silently pick P90
+    assert migrate_activity_references(custom, lambda day: [row], 1)
+    automatic = reference_from_day((2, *row[1:]), "custom", "automatic", custom)
+    set_reference(custom, automatic, 1)
+    assert not migrate_activity_references(custom, lambda day: pytest.fail("keep auto"), 1)
+    assert saved_reference(custom, 1) == automatic
+    manual = reference_from_day((3, *row[1:]), "custom", "selected", custom)
+    set_reference(custom, manual, 1)
+    assert migrate_activity_references(conf, lambda day: [(day, *row[1:])], 1)
+    assert saved_reference(conf, 1)["day"] == 3
 
 
 def test_reference_requires_positive_time_and_discount_never_compounds():

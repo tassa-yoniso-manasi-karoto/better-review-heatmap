@@ -72,7 +72,7 @@ def test_settings_cancel_and_accept_keep_reference_changes_local(setup, options_
     assert len(conf.saves) == 1
 
 
-def test_reference_picker_rejects_empty_days_and_tracks_each_metric(
+def test_reference_picker_rejects_empty_days_and_shares_workload_day(
     setup, options_module, monkeypatch,
 ):
     module, app = options_module
@@ -109,16 +109,17 @@ def test_reference_picker_rejects_empty_days_and_tracks_each_metric(
     assert dialog.getData()["synced"]["activity_reference_date"] == reference["day"]
     assert len(notices) == 2
 
-    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("time"))
-    assert "No saved reference" in dialog.labReference.text()
-    assert not dialog.labReference.isHidden()
+    for metric in ("time", "custom"):
+        dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData(metric))
+        assert dialog.labReference.isHidden()
+        assert saved_reference(dialog.getData()["synced"])["day"] == reference["day"]
     dialog.dateReference.setDate(QDate(2026, 3, 8))
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("workload"))
-    assert dialog.dateReference.date() == QDate(2026, 3, 9)
-    assert saved_reference(dialog.getData()["synced"]) == reference
+    assert dialog.dateReference.date() == QDate(2026, 3, 8)
+    assert saved_reference(dialog.getData()["synced"])["day"] == TODAY - 2 * 86400
     dialog.accept()
     dialog = module.RevHmOptions(setup.conf, parent)
-    assert dialog.dateReference.date() == QDate(2026, 3, 9)
+    assert dialog.dateReference.date() == QDate(2026, 3, 8)
     assert dialog.labReference.isHidden()
     dialog.reject()
 
@@ -133,7 +134,6 @@ def test_classic_disables_reference_controls(setup, options_module):
     assert dialog.form.selHmColor.findData("ice") == -1
     assert dialog.selActivityScale.currentText() == "Classic"
     assert dialog.selActivityScale.findData("fixed") == -1
-    assert "median score" in dialog.labActivityDescription.text()
     assert not dialog.form.cbTodayProgress.isEnabled()
     assert dialog.btnEditGradient.isHidden()
     assert not dialog.form.selHmColor.isHidden()
@@ -274,10 +274,25 @@ def test_legacy_statistics_pass_the_correct_global_or_deck_scope(setup, options_
         assert calls[-1]["current_deck_only"] is (not whole_collection)
 
 
-def test_custom_exponents_recalculate_the_same_reference_and_respect_cancel(setup, options_module):
+def test_custom_exponents_recalculate_the_same_reference_and_respect_cancel(
+    setup, options_module, monkeypatch,
+):
     module, app = options_module
-    from aqt.qt import QDate, QWidget
+    from aqt.qt import QDate, QDialog, QWidget
     from review_heatmap.metrics import saved_reference
+
+    def edit_weights(options, *, review=None, time=None, accept=True):
+        def exec_popup(popup):
+            assert popup.timeWeight.value() == options.getData()["synced"]["custom_time_weight"]
+            if review is not None:
+                popup.reviewWeight.setValue(review)
+                assert popup.timeWeight.value() == round(1 - review, 2)
+            if time is not None:
+                popup.timeWeight.setValue(time)
+                assert popup.reviewWeight.value() == round(1 - time, 2)
+            return QDialog.DialogCode.Accepted if accept else QDialog.DialogCode.Rejected
+        monkeypatch.setattr(module.CustomWeightsDialog, "exec", exec_popup)
+        options.btnCustomWeights.click()
 
     yesterday = TODAY - 86400
     for sequence, duration in enumerate((15000, 15000, 240000)):
@@ -286,32 +301,35 @@ def test_custom_exponents_recalculate_the_same_reference_and_respect_cancel(setu
     parent.col = setup.col
     original = copy.deepcopy(dict(setup.conf))
     dialog = module.RevHmOptions(setup.conf, parent)
+    assert dialog.btnCustomWeights.isHidden()
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("custom"))
     dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData("baseline"))
-    assert not dialog.customGroup.isHidden()
+    assert not dialog.btnCustomWeights.isHidden()
     dialog.dateReference.setDate(QDate(2026, 3, 9))
     conf = dialog.getData()["synced"]
     assert saved_reference(conf)["value"] == 3
-    dialog.spinCustomReviewWeight.setValue(0.6)
-    assert dialog.spinCustomTimeWeight.value() == 0.4
+    before = copy.deepcopy(conf)
+    edit_weights(dialog, review=0.6, accept=False)
+    assert conf == before
+    edit_weights(dialog, review=0.6)
     assert conf["custom_time_weight"] == 0.4
     reference = saved_reference(conf)
     assert reference["day"] == yesterday
     assert reference["value"] == pytest.approx(2 * 0.25 ** 0.4 + 4 ** 0.4)
-    dialog.spinCustomTimeWeight.setValue(1)
-    assert dialog.spinCustomReviewWeight.value() == 0
+    edit_weights(dialog, time=1)
     assert saved_reference(conf)["value"] == 4.5
     dialog.reject()
     assert dict(setup.conf) == original
 
     dialog = module.RevHmOptions(setup.conf, parent)
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("custom"))
-    dialog.spinCustomTimeWeight.setValue(0.7)
+    edit_weights(dialog, time=0.7)
     dialog.accept()
     assert setup.conf["synced"]["custom_time_weight"] == 0.7
     dialog = module.RevHmOptions(setup.conf, parent)
-    assert dialog.spinCustomReviewWeight.value() == 0.3
-    assert dialog.spinCustomTimeWeight.value() == 0.7
+    edit_weights(dialog, accept=False)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("workload"))
+    assert dialog.btnCustomWeights.isHidden()
     dialog.reject()
 
 

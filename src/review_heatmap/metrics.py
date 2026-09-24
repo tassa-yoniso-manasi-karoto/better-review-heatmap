@@ -105,6 +105,9 @@ def legacy_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict
     references = conf.get("activity_baselines", {})
     if not isinstance(references, dict):
         return None
+    shared = workload_reference_day(conf, deck_id)
+    if shared is not None:
+        return shared  # Recalculate this day using the active formula's durations.
     pending = references.get(baseline_key(conf, deck_id))
     if isinstance(pending, dict) and pending.get("needs_durations"):
         return pending
@@ -160,12 +163,71 @@ def saved_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]
     reference = references.get(baseline_key(conf, deck_id))
     if not isinstance(reference, dict) or reference.get("needs_durations"):
         return None
+    shared = workload_reference_day(conf, deck_id)
+    if shared is not None and (
+        reference.get("day") != shared["day"] or reference.get("source") != "selected"
+    ):
+        return None
     try:
         value = float(reference["value"])
         int(reference["day"])
     except (KeyError, ValueError, TypeError, OverflowError):
         return None
     return reference if math.isfinite(value) and value > 0 else None
+
+
+def _workload_day_key(parts):
+    if not isinstance(parts, list) or len(parts) < 7 or parts[1] not in (
+        "time", "workload", "custom",
+    ):
+        return None
+    scope = parts[-1:] if isinstance(parts[-1], list) else []
+    return json.dumps(["workload-day", *parts[2:7], *scope], separators=(",", ":"))
+
+
+def workload_reference_day(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]:
+    """Share a manual day, but never its formula-specific score or deck scope."""
+    references = conf.get("activity_baselines", {})
+    key = baseline_key(conf, deck_id)
+    shared_key = _workload_day_key(json.loads(key))
+    if shared_key is None or not isinstance(references, dict):
+        return None
+    if shared_key in references:
+        selected = references[shared_key]
+        # An explicit automatic choice disables inheritance from old manual picks.
+        return selected if isinstance(selected, dict) and selected.get("source") == "selected" else None
+    # Recover existing installations without deleting their old snapshots.
+    # Prefer this mode's own manual choice if older modes disagree.
+    parts = json.loads(key)
+    candidates = [key]
+    for version in (2, 1):
+        candidates.append(json.dumps([version, *parts[1:]], separators=(",", ":")))
+    candidates.extend(reversed(references))
+    for candidate in candidates:
+        try:
+            if _workload_day_key(json.loads(candidate)) != shared_key:
+                continue
+            reference = references[candidate]
+            if reference.get("source") != "selected":
+                continue
+            int(reference["day"])
+            value = float(reference["value"])
+            if math.isfinite(value) and value > 0:
+                return reference
+        except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+            continue
+    return None
+
+
+def set_reference(conf: Dict, reference: Dict, deck_id: Optional[int] = None):
+    """Save an explicit pick; workload modes share the selected day."""
+    if not isinstance(conf.get("activity_baselines"), dict):
+        conf["activity_baselines"] = {}
+    key = baseline_key(conf, deck_id)
+    conf["activity_baselines"][key] = reference
+    shared_key = _workload_day_key(json.loads(key))
+    if shared_key is not None:
+        conf["activity_baselines"][shared_key] = dict(reference)
 
 
 def reference_from_day(row: Sequence, metric: str, source: str,
