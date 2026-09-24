@@ -3,6 +3,13 @@
 Test formula changes without Anki or an add-on build. Read [DESIGN.md](DESIGN.md)
 for current decisions, their rationale, and deferred work.
 
+## Suggesting commit messages
+
+- When writing commits focus on the WHY, not on the WHAT (the what is self obvious in the diff of the commit)
+- IMPORTANT: when writing the commit message each line shouldn't go beyond 80 characters
+- Do NOT write commit messages in the "conventional commit" style i.e. do not prefix with "feat: ", "fix: " or whatnot
+- When writing detailed list of changed in the git descriptions, use one line per change and preceed it by a bullet point "∙"
+
 ## Files
 
 - Tool: `scripts/metrics_cli.py`

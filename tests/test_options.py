@@ -125,10 +125,17 @@ def test_classic_disables_reference_controls(setup, options_module):
     parent = QWidget()
     parent.col = setup.col
     dialog = module.RevHmOptions(setup.conf, parent)
+    assert dialog.selActivityScale.currentData() == "adaptive"
+    assert dialog.selActivityScale.currentText() == "Adaptive"
+    assert dialog.selActivityScale.findData("fixed") == -1
+    assert "median score" in dialog.labActivityDescription.text()
+    assert dialog.form.cbTodayProgress.isEnabled()
+    assert not dialog.btnEditGradient.isHidden()
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("reviews"))
     assert not dialog.selActivityScale.isEnabled()
     assert not dialog.form.cbTodayProgress.isEnabled()
     assert dialog.referenceGroup.isHidden()
+    assert dialog.btnEditGradient.isHidden()
     dialog.reject()
 
 

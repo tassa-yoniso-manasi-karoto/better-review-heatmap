@@ -5,7 +5,8 @@ from copy import deepcopy
 import pytest
 
 from review_heatmap.metrics import (
-    activity_levels, activity_value, automatic_reference, baseline_key,
+    activity_levels, activity_value, adaptive_anchor, activity_color,
+    automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
     legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference,
@@ -133,16 +134,28 @@ def test_reference_is_an_actual_day_and_ignores_zero_duration():
     assert automatic_reference(rows[:6], "workload") is None
 
 
-def test_reference_requires_positive_time_and_applies_only_when_supplied():
+def test_reference_requires_positive_time_and_discount_never_compounds():
     assert reference_from_day((1, 100, 0), "time", "selected") is None
     reference = reference_from_day((1, 120, 2700000), "time", "selected")
-    assert activity_levels("time")[5] == 45
-    assert activity_levels("time", reference) == list(range(1, 10))
+    assert activity_levels() == list(range(1, 10))
     assert baseline_value(reference) == pytest.approx(0.85 * math.sqrt(5400))
     reference["value"] = 90
     assert baseline_value(reference) == pytest.approx(76.5)
     assert reference["value"] == 90  # applying the discount never compounds it
-    assert activity_levels("time")[5] == 45
+
+
+def test_adaptive_uses_median_without_discount_or_absolute_pace_anchor():
+    scores = [1, 2, 3, 100]
+    anchor = adaptive_anchor(scores)
+    assert anchor == 2.5
+    assert adaptive_anchor([]) is None
+    assert adaptive_anchor([0]) is None
+    assert adaptive_anchor([0.01]) == 0.01  # no absolute floor for light users
+    assert activity_color(anchor, anchor) == "#74ba58"
+    assert activity_color(anchor - 1e-8, anchor) == "#378f36"
+    for factor in (0.01, 60):
+        scaled_anchor = adaptive_anchor([score * factor for score in scores])
+        assert activity_color(2 * factor, scaled_anchor) == activity_color(2, anchor)
 
 
 def test_baseline_palette_has_a_white_reference_and_gentler_threshold():

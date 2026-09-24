@@ -23,18 +23,15 @@ is 0).
 | Recorded time | $T$ | Dedicated time-only mode. |
 
 “Linear” means equal input influence in the UI, not mathematical linearity.
-Exact score doubling is no longer a design requirement.
+Exact score doubling is not a design requirement but keeping scores as factors of 1 in log space is.
 
 Durations use minutes; additional pace-anchor calibration remains undecided.
 
 ## Scope
 
 - Preserve review history, settings, selected reference dates, and history filters.
-- Use Anki's recorded time; users remain responsible for their timer cap.
 - Preserve the intentional below/above-target color jump.
 - Defer individual-deck changes and special zero-time handling.
-- Removing automatic reference selection in favor of mandatory manual day
-  selection is decided, but implementation is deferred.
 - Keep room for a future Experimental mode; concentration or burstiness
   adjustments are deferred.
 - Reuse the shared calculations in the existing CLI.
@@ -42,5 +39,11 @@ Durations use minutes; additional pace-anchor calibration remains undecided.
 ## Mixing credit
 
 Use the per-answer sum directly. Pooling fast and slow answers adds no extra
-credit, so no bonus cap or cram-day threshold is applied. The earlier 25% bonus
-condition and 250-answer/150-minute thresholds are superseded.
+credit, so no bonus cap or cram-day threshold is applied. 
+
+## Recorded time
+
+Use Anki's recorded durations as-is as scoring inputs. Unusual recorded times,
+interruptions, and timer-cap choices are the user's responsibility. Do not
+smooth, replace, or otherwise correct durations based on presumed interruptions
+or historical timing norms.

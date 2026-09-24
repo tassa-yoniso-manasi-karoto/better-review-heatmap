@@ -222,9 +222,9 @@ class RevHmOptions(OptionsDialog):
         self.dateReference.setMaximumDate(QDate.currentDate())
         day_layout.addRow("Reference day", self.dateReference)
         reference_layout.addLayout(day_layout)
-        self.btnEditGradient = QPushButton("Edit gradient colors…", self.referenceGroup)
-        reference_layout.addWidget(self.btnEditGradient)
         layout.addWidget(self.referenceGroup)
+        self.btnEditGradient = QPushButton("Edit gradient colors…", tab)
+        layout.addWidget(self.btnEditGradient)
 
         timing = QLabel(
             "Hover over a past day to see recorded study time and reviews. "
@@ -246,7 +246,8 @@ class RevHmOptions(OptionsDialog):
         self.selActivityScale.setEnabled(not classic)
         use_baseline = not classic and conf.get("activity_scale") == "baseline"
         self.referenceGroup.setVisible(use_baseline)
-        self.form.cbTodayProgress.setEnabled(not classic and use_baseline)
+        self.form.cbTodayProgress.setEnabled(not classic)
+        self.btnEditGradient.setVisible(not classic)
         self.customGroup.setVisible(metric == "custom")
         custom_review, custom_time = metric_weights("custom", conf)
         for spin, value in ((self.spinCustomReviewWeight, custom_review),
@@ -273,6 +274,12 @@ class RevHmOptions(OptionsDialog):
             "recorded_time": "Colors use total Anki-recorded minutes, without a review-count adjustment.",
         }
         description = descriptions[metric]
+        if not classic and not use_baseline:
+            description += (
+                " Adaptive compares each day with the median score of active days "
+                "in the included history. Date and history limits apply; calendar "
+                "navigation does not change the benchmark."
+            )
         self.labActivityDescription.setText(description)
         migrate_activity_references(
             conf, lambda day: ActivityReporter(self.mw.col, self.getData()).reference_history(
@@ -294,13 +301,13 @@ class RevHmOptions(OptionsDialog):
             self.labReference.setText(
                 "The saved reference's review durations are unavailable. "
                 "Choose another reference day. The old snapshot is preserved; "
-                "the fixed scale is used until then."
+                "Adaptive is used until then."
             )
         else:
             self.labReference.setText(
                 "No saved reference. Automatic selection needs at least 7 completed "
                 "study days with recorded time in the last 60 days. Until then, "
-                "the fixed scale is used."
+                "Adaptive is used."
             )
         self._last_reference_date = self.dateReference.date()
         conf["activity_reference_date"] = self._getReferenceDate(None)

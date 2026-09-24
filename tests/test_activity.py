@@ -171,7 +171,8 @@ def test_render_preserves_raw_totals_streaks_and_forecast_scale(setup):
         assert values[str(TODAY + 86400)] == -200
         assert "68 cards" in html  # original count-based active-day average
         if metric == "time":
-            assert values[str(TODAY)] == pytest.approx(5400 ** 0.5)
+            assert renderer._activity_scores(report)[TODAY] == pytest.approx(5400 ** 0.5)
+            assert options["dayColors"][str(TODAY)] != "#ffffff"
         elif metric == "workload":
             assert values[str(TODAY)] > values[str(TODAY - 86400)]
     assert snapshots["reviews"]["legend"][:10] == snapshots["workload"]["legend"][:10]
@@ -184,11 +185,11 @@ def test_zero_time_days_remain_visible_and_clickable(setup):
     setup.conf["synced"]["activity_metric"] = "workload"
     html = renderer._generate_heatmap_elm(report, [], False)
     values = json.loads(re.search(r"reviewHeatmap.create\((.+)\);", html)[1])
-    assert 0 < values[str(TODAY)] < 0.001
+    assert values[str(TODAY)] == 1
     assert report.stats.streak_cur.value == 1
 
 
-def test_baseline_is_saved_once_and_fixed_scale_never_uses_it(setup):
+def test_baseline_is_saved_once_and_adaptive_never_uses_it(setup):
     for age in range(1, 9):
         add_review(setup, TODAY - age * 86400, milliseconds=age * 60000)
     renderer = make_renderer(setup)
@@ -198,8 +199,10 @@ def test_baseline_is_saved_once_and_fixed_scale_never_uses_it(setup):
     add_review(setup, TODAY - 86400, milliseconds=99999999, sequence=1)
     assert renderer._activity_legend([]) == levels
     assert len(setup.conf.saves) == 1
-    setup.conf["synced"]["activity_scale"] = "fixed"
-    assert renderer._activity_legend([]) == [2, 5, 10, 20, 30, 45, 60, 90, 120]
+    setup.conf["synced"]["activity_scale"] = "adaptive"
+    assert renderer._baseline_reference() is None
+    assert renderer._activity_legend([]) == list(range(1, 10))
+    assert len(setup.conf.saves) == 1
 
 
 def test_mixed_durations_reach_heatmap_progress_and_reference_migration(setup):
@@ -229,10 +232,11 @@ def test_mixed_durations_reach_heatmap_progress_and_reference_migration(setup):
     html = renderer._generate_heatmap_elm(report, [], False)
     options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
     assert options["dayColors"][str(TODAY)] == progress["color"]
-    conf["activity_scale"] = "fixed"
+    conf["activity_scale"] = "adaptive"
     html = renderer._generate_heatmap_elm(report, [], False)
     values = json.loads(re.search(r"reviewHeatmap.create\((.+)\);", html)[1])
-    assert values[str(TODAY)] == 3
+    assert values[str(TODAY)] == 6  # exactly the median, without the 85% discount
+    assert renderer._today_progress(report)["percent"] == 100
 
 
 def test_missing_legacy_reference_is_not_replaced_by_automatic_selection(setup):
@@ -249,7 +253,7 @@ def test_missing_legacy_reference_is_not_replaced_by_automatic_selection(setup):
         "day": TODAY - 20 * 86400, "value": 30, "source": "selected",
     }
     before = copy.deepcopy(conf)
-    assert make_renderer(setup)._activity_legend([]) == [2, 5, 10, 20, 30, 45, 60, 90, 120]
+    assert make_renderer(setup)._activity_legend([]) == list(range(1, 10))
     assert saved_reference(conf) is None
     assert conf == before
     assert not setup.conf.saves
@@ -281,8 +285,51 @@ def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
     assert options["history"][str(reference_day)] == [100, 6000000]
     assert "rh-baseline" in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
     assert conf["activity_baselines"][baseline_key(conf)] == reference
-    conf["activity_scale"] = "fixed"
+    conf["activity_scale"] = "adaptive"
+    assert renderer._baseline_reference() is None
+    conf["activity_metric"] = "reviews"
     assert "rh-baseline" not in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
+
+
+def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
+    from review_heatmap.metrics import activity_color
+
+    for age, count in ((400, 1), (10, 2), (2, 3), (0, 100)):
+        for sequence in range(count):
+            add_review(setup, TODAY - age * 86400, milliseconds=60000, sequence=sequence)
+    # Forecast cards and days without reviews must not affect the median.
+    setup.db.connection.execute("INSERT INTO cards VALUES (1, 1, 101, 2)")
+    report = setup.reporter.get_report(limfcst=2)
+    renderer = make_renderer(setup)
+    conf = setup.conf["synced"]
+    assert conf["activity_scale"] == "adaptive"
+    progress = renderer._today_progress(report)
+    assert progress["scale"] == "adaptive"
+    assert progress["percent"] == 4000  # 100 / median(1, 2, 3, 100)
+    html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
+    options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
+    assert options["dayColors"][str(TODAY - 10 * 86400)] == activity_color(2, 2.5)
+    assert options["dayColors"][str(TODAY)] == progress["color"]
+    assert "#ffffff" not in options["dayColors"].values()
+    assert str(TODAY + 86400) not in options["dayColors"]
+    assert conf["activity_baselines"] == {}
+    assert not setup.conf.saves
+    conf["limhist"] = 3
+    filtered = setup.reporter.get_report(limfcst=2)
+    assert renderer._today_progress(filtered)["percent"] == pytest.approx(10000 / 51.5)
+
+
+def test_fixed_setting_migrates_without_changing_saved_references(setup):
+    conf = setup.conf
+    conf["synced"].update(activity_scale="fixed", activity_baselines={"legacy": {"day": TODAY}})
+    before = copy.deepcopy(dict(conf))
+    setup.modules.config.ensure_activity_defaults(conf)
+    expected = copy.deepcopy(before)
+    expected["synced"]["activity_scale"] = "adaptive"
+    assert dict(conf) == expected
+    conf["synced"]["activity_scale"] = "baseline"
+    setup.modules.config.ensure_activity_defaults(conf)
+    assert conf["synced"]["activity_scale"] == "baseline"
 
 
 def test_cache_expires_on_day_rollover_or_configuration_change(setup, monkeypatch):
@@ -383,7 +430,7 @@ def test_today_progress_matches_workload_baseline_and_calendar_color(setup, revi
 
 def test_today_progress_visibility_and_missing_baseline(setup):
     renderer = make_renderer(setup)
-    assert renderer._today_progress(None) is None  # fixed scale has no baseline
+    assert renderer._today_progress(None) is None  # adaptive has no history yet
     setup.conf["synced"]["activity_scale"] = "baseline"
     assert renderer._today_progress(None) == {"percent": None, "color": "", "context": ""}
     assert renderer._today_progress_script(setup.modules.renderer.HeatmapView.overview, None) == ""

@@ -7,7 +7,8 @@ import json
 import math
 from colorsys import hls_to_rgb
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from statistics import median
+from typing import Dict, Iterable, List, Optional, Sequence
 
 
 METRICS = {
@@ -18,18 +19,10 @@ METRICS = {
     "recorded_time": {"label": "Recorded time", "time_weight": 1.0},
 }
 SCALES = {
-    "fixed": {"label": "Fixed scale"},
+    "adaptive": {"label": "Adaptive"},
     "baseline": {"label": "Automatic baseline"},
 }
 
-# Nine boundaries preserve the existing ten activity shades. These fixed
-# scales never depend on another day's activity or on the visible date range.
-FIXED_LEVELS = {
-    "time": (2, 5, 10, 20, 30, 45, 60, 90, 120),
-    "workload": (2, 5, 10, 20, 30, 45, 60, 90, 120),
-    "custom": (2, 5, 10, 20, 30, 45, 60, 90, 120),
-    "recorded_time": (1, 5, 10, 20, 30, 45, 60, 90, 120),
-}
 FORMULA_VERSION = 3
 DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
 BASELINE_FRACTION = 0.85
@@ -192,12 +185,22 @@ def automatic_reference(rows: Sequence[Sequence], metric: str,
     return candidates[math.ceil(0.75 * len(candidates)) - 1]
 
 
-def activity_levels(metric: str, reference: Optional[Dict] = None) -> List[float]:
-    if reference is not None:
-        # Baseline days are assigned palette levels, leaving the underlying
-        # counts, recorded time, and saved reference snapshot untouched.
-        return list(range(1, 10))
-    return list(FIXED_LEVELS[metric])
+def adaptive_anchor(scores: Iterable[float]) -> Optional[float]:
+    """Median score of active days supplied by the caller's history range.
+
+    Empty days and forecasts are excluded by the caller. This selects a color
+    benchmark only; neither recorded durations nor daily scores are modified.
+    """
+    values = list(scores)
+    if not values:
+        return None
+    anchor = float(median(values))
+    return anchor if math.isfinite(anchor) and anchor > 0 else None
+
+
+def activity_levels() -> List[float]:
+    """Calendar palette levels; actual scores are colored against an anchor."""
+    return list(range(1, 10))
 
 
 def baseline_value(reference: Dict) -> float:
@@ -263,7 +266,13 @@ def baseline_color(value: float, reference: Dict, reference_day: bool = False,
     """Interpolate continuously; white marks only the reference date."""
     if reference_day:
         return "#ffffff"
-    ratio = max(0.0, value / baseline_value(reference))
+    return activity_color(value, baseline_value(reference), gradient)
+
+
+def activity_color(value: float, anchor: Optional[float],
+                   gradient: Optional[Dict] = None) -> str:
+    """Shared continuous gradient for adaptive and reference-day scales."""
+    ratio = max(0.0, value / anchor) if anchor else 0.0
     side = "below" if ratio < 1 else "above"
     stops = gradient_stops(gradient, side)
     opacity = gradient_opacity(gradient, side, ratio)
@@ -292,9 +301,13 @@ def baseline_color_level(value: float, reference: Dict, reference_day: bool = Fa
     white marker even though its full workload exceeds the reduced baseline.
     Other days exactly at baseline enter the first lighter-green shade.
     """
-    ratio = value / baseline_value(reference)
     if reference_day:
         return 5
+    return activity_color_level(value, baseline_value(reference))
+
+
+def activity_color_level(value: float, anchor: Optional[float]) -> int:
+    ratio = value / anchor if anchor else 0.0
     if ratio < 1:
         return max(1, min(4, math.ceil(ratio * 4)))
     for level, threshold in enumerate(ABOVE_BASELINE_FACTORS, start=6):

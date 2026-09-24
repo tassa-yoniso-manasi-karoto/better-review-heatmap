@@ -168,10 +168,13 @@ export function updateTodayProgress(data: TodayProgress | null): void {
       fill.style.width = `${bounded}%`;
       fill.style.backgroundColor = state.color;
       label.textContent = text;
-      wrapper.title = `Today's activity: ${text} of baseline. ` +
-        "100% is 85% of the reference day's activity. Uses the heatmap's included decks.";
+      const target = data.scale === "adaptive" ? "adaptive benchmark" : "baseline";
+      wrapper.title = `Today's activity: ${text} of ${target}. ` +
+        (data.scale === "adaptive"
+          ? "100% is the median active-day score in the heatmap's included history."
+          : "100% is 85% of the reference day's activity. Uses the heatmap's included decks.");
       track.setAttribute("aria-valuenow", String(bounded));
-      track.setAttribute("aria-valuetext", `${text} of activity baseline`);
+      track.setAttribute("aria-valuetext", `${text} of ${target}`);
     }, () => wrapper.isConnected);
   }
 }

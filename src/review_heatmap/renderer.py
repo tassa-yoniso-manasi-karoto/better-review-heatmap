@@ -45,6 +45,9 @@ from .activity import ActivityReport, ActivityReporter, StatsEntry, StatsType
 from .config import heatmap_modes
 from .libaddon.platform import PLATFORM
 from .metrics import (
+    adaptive_anchor,
+    activity_color,
+    activity_color_level,
     activity_levels,
     activity_value,
     legacy_reference,
@@ -268,7 +271,7 @@ class HeatmapRenderer:
                     self._config["synced"] = conf
                     # Persist only the reference/settings. Avoid a recursive UI reset.
                     self._config.save("synced", profile_unload=True)
-        return activity_levels(metric, reference)
+        return activity_levels()
 
     def _get_css_classes(self, view: HeatmapView) -> List[str]:
         conf = self._config["synced"]
@@ -278,7 +281,7 @@ class HeatmapRenderer:
             f"{CSS_MODE_PREFIX}-{conf['mode']}",
             f"{CSS_VIEW_PREFIX}-{view.name}",
         ]
-        if self._baseline_reference() is not None:
+        if metric_name(conf) != "reviews":
             classes.append("rh-baseline")
         return classes
 
@@ -287,6 +290,16 @@ class HeatmapRenderer:
         if metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline":
             return saved_reference(conf)
         return None
+
+    def _activity_scores(self, report: ActivityReport) -> Dict[int, float]:
+        conf = self._config["synced"]
+        metric = metric_name(conf)
+        return {
+            day: activity_value(count, report.review_time.get(day, 0), metric,
+                                (report.review_durations or {}).get(day), conf)
+            for day, count in report.activity.items()
+            if count > 0 and day <= report.today // 1000
+        }
 
     def _today_progress_script(
         self, view: HeatmapView, report: Optional[ActivityReport]
@@ -300,31 +313,38 @@ class HeatmapRenderer:
         if (
             not self._config["profile"].get("show_today_progress", True)
             or metric_name(conf) == "reviews"
-            or conf.get("activity_scale") != "baseline"
         ):
             return None
         reference = self._baseline_reference()
-        if reference is None:
+        use_baseline = conf.get("activity_scale") == "baseline"
+        if use_baseline and reference is None:
             return {"percent": None, "color": "", "context": ""}
+        scores = self._activity_scores(report) if report else {}
+        anchor = baseline_value(reference) if reference else adaptive_anchor(scores.values())
+        if anchor is None:
+            return None
         today = report.today // 1000 if report else self._reporter._today
         # Today's forecast is negative; only completed reviews contribute.
-        count = max(0, report.activity.get(today, 0)) if report else 0
-        milliseconds = report.review_time.get(today, 0) if report else 0
-        durations = (report.review_durations or {}).get(today) if report else None
-        value = activity_value(count, milliseconds, metric_name(conf), durations, conf)
+        value = scores.get(today, 0)
         # Do not animate between different profiles, days, filters or targets.
         context = json.dumps([
-            self._progress_session, today, baseline_key(conf), reference["day"],
-            baseline_value(reference), self._config["local"].get("baseline_gradient"),
+            self._progress_session, today, baseline_key(conf),
+            conf.get("activity_scale"), reference["day"] if reference else None,
+            anchor, self._config["local"].get("baseline_gradient"),
         ], sort_keys=True)
-        return {
+        progress = {
             "context": sha256(context.encode("utf-8")).hexdigest(),
-            "percent": 100 * value / baseline_value(reference),
+            "percent": 100 * value / anchor,
             "color": baseline_color(
                 value, reference, reference_day=today == int(reference["day"]),
                 gradient=self._config["local"].get("baseline_gradient"),
+            ) if reference else activity_color(
+                value, anchor, self._config["local"].get("baseline_gradient"),
             ),
         }
+        if not use_baseline:
+            progress["scale"] = "adaptive"
+        return progress
 
     def _generate_heatmap_elm(
         self, report: ActivityReport, dynamic_legend, current_deck_only: bool
@@ -344,10 +364,7 @@ class HeatmapRenderer:
             "offset": report.offset,
             "legend": dynamic_legend,
             "whole": not current_deck_only,
-            "showPaletteButton": (
-                metric != "reviews"
-                and self._config["synced"].get("activity_scale") == "baseline"
-            ),
+            "showPaletteButton": metric != "reviews",
             "dayColors": {},
             "history": {
                 day: [report.activity[day], milliseconds]
@@ -356,15 +373,14 @@ class HeatmapRenderer:
         }
 
         reference = self._baseline_reference()
+        scores = self._activity_scores(report) if metric != "reviews" else {}
+        anchor = adaptive_anchor(scores.values()) if reference is None else None
         activity = {}
         for day, count in report.activity.items():
             if count <= 0 or metric == "reviews":
                 activity[day] = count
                 continue
-            value = activity_value(
-                count, report.review_time.get(day, 0), metric,
-                (report.review_durations or {}).get(day), self._config["synced"],
-            )
+            value = scores.get(day, 0)
             if reference is not None:
                 options["dayColors"][day] = baseline_color(
                     value, reference, reference_day=day == int(reference["day"]),
@@ -374,8 +390,10 @@ class HeatmapRenderer:
                     value, reference, reference_day=day == int(reference["day"])
                 )
             else:
-                # A reviewed day with zero recorded time remains visible/clickable.
-                activity[day] = max(1e-9, value)
+                options["dayColors"][day] = activity_color(
+                    value, anchor, self._config["local"].get("baseline_gradient"),
+                )
+                activity[day] = activity_color_level(value, anchor)
 
         return HTML_HEATMAP.format(
             options=json.dumps(options), data=json.dumps(activity)

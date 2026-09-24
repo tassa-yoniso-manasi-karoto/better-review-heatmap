@@ -85,7 +85,7 @@ config_defaults: Dict[str, Dict] = {
         "limresched": True,
         "limdecks": [],
         "activity_metric": "workload",
-        "activity_scale": "fixed",
+        "activity_scale": "adaptive",
         "activity_reference_date": 0,
         "activity_baselines": {},
         "custom_time_weight": 0.5,
@@ -125,6 +125,11 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
                 changed = True
         if changed:
             manager[storage] = values
+
+    synced = manager["synced"]
+    if synced.get("activity_scale") == "fixed":
+        synced["activity_scale"] = "adaptive"
+        manager["synced"] = synced
 
     local = manager["local"]
     if local.get("baseline_gradient_version", 1) < 2:

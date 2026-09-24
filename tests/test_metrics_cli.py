@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from review_heatmap.metrics import (
-    METRICS, activity_levels, activity_value,
+    METRICS, activity_color, activity_value,
     baseline_color, baseline_value, reference_from_day,
 )
 
@@ -28,7 +28,7 @@ def test_json_scores_match_direct_metric_calls():
     assert proc.returncode == 0, proc.stderr
     data = json.loads(proc.stdout)
 
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["inputs"] == {"reviews": 100, "minutes": 10.0, "milliseconds": 600000}
     assert data["reference"] is None
     assert data["duration_model"] == "equal-duration assumption"
@@ -38,10 +38,8 @@ def test_json_scores_match_direct_metric_calls():
         assert res["label"] == meta["label"]
         expected_score = activity_value(100, 600000, metric_key)
         assert res["score"] == pytest.approx(expected_score)
-        if metric_key == "reviews":
-            assert res["fixed_thresholds"] is None
-        else:
-            assert res["fixed_thresholds"] == list(activity_levels(metric_key))
+        assert res["scale"] == ("classic" if metric_key == "reviews" else "adaptive")
+        assert "fixed_thresholds" not in res
         assert res["reference_score"] is None
         assert res["target_score"] is None
         assert res["ratio"] is None
@@ -64,7 +62,7 @@ def test_reference_and_color_against_direct_calls():
     # Classic metric marks reference calculations as null
     classic = data["results"]["reviews"]
     assert classic["score"] == 120.0
-    assert classic["fixed_thresholds"] is None
+    assert classic["scale"] == "classic"
     assert classic["reference_score"] is None
     assert classic["target_score"] is None
     assert classic["ratio"] is None
@@ -74,6 +72,7 @@ def test_reference_and_color_against_direct_calls():
     # Workload metrics match direct calls
     for metric_key in ("time", "workload", "custom", "recorded_time"):
         res = data["results"][metric_key]
+        assert res["scale"] == "baseline"
         score = activity_value(120, 1800000, metric_key)
         ref = reference_from_day((0, 150, 2700000), metric_key, "cli")
         assert ref is not None
@@ -130,6 +129,27 @@ def test_individual_durations_and_custom_exponents_use_exact_scores():
     assert data["results"]["recorded_time"]["score"] == 4.5
 
 
+def test_adaptive_cli_uses_supplied_daily_durations_and_ignores_empty_days(tmp_path):
+    history = tmp_path / "days.json"
+    history.write_text(json.dumps([[15000, 60000], [], [15000, 15000, 240000], [60000] * 50]))
+    args = ["--durations-ms", "15000", "15000", "240000", "--history-json", str(history)]
+    proc = run_cli([*args, "--json"])
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["history_days"] == 3
+    linear = data["results"]["time"]
+    assert linear["scale"] == "adaptive"
+    assert linear["target_score"] == 3  # median of 1.5, 3, 50; no 85% discount
+    assert linear["reference_score"] is None
+    assert linear["ratio"] == 1
+    assert linear["color"] == activity_color(3, 3)
+    assert "Target (median)" in run_cli(args).stdout
+    conflict = run_cli([*args, "--reference-durations-ms", "60000"])
+    assert conflict.returncode == 2
+    history.write_text('[[-1]]')
+    assert run_cli(args).returncode == 2
+
+
 def test_zero_activity_and_empty_color():
     proc = run_cli([
         "--reviews", "0", "--minutes", "0",
@@ -144,7 +164,7 @@ def test_zero_activity_and_empty_color():
     for res in data["results"].values():
         assert res["score"] == 0.0
         assert res["color"] is None
-        if res["fixed_thresholds"] is not None:
+        if res["scale"] != "classic":
             assert res["ratio"] == 0.0
             assert res["percent"] == 0.0
 
@@ -189,7 +209,7 @@ def test_subprocess_from_another_dir_with_python_s(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     data = json.loads(proc.stdout)
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["inputs"]["reviews"] == 100
     assert data["inputs"]["milliseconds"] == 600000
     assert "workload" in data["results"]

@@ -96,7 +96,7 @@
           <item>
            <widget class="QCheckBox" name="cbTodayProgress">
             <property name="toolTip">
-             <string>Available with workload or recorded time and Automatic baseline. 100% is 85% of your reference day's activity. Uses the same included decks and colors as the heatmap.</string>
+             <string>Available with workload or recorded time. 100% is the median active-day score in Adaptive, or 85% of your reference day's score in Automatic baseline. Uses the heatmap's included history and colors.</string>
             </property>
             <property name="text">
              <string>Show activity progress beside Anki's daily study summary</string>
@@ -106,7 +106,7 @@
           <item>
            <widget class="QLabel" name="labTodayProgressHelp">
             <property name="text">
-             <string>Progress uses the selected activity measure and Automatic baseline. The bar is full at 85% of the reference day's activity; its percentage can exceed 100%.</string>
+             <string>Progress uses the selected activity measure and color scale. Its percentage can exceed 100%.</string>
             </property>
             <property name="wordWrap">
              <bool>true</bool>

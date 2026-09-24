@@ -171,7 +171,7 @@ class _CommandHandler:
     @_register_command_handler("palettevisible")
     def palette_visible(self, payload: None, context: SUPPORTED_CONTEXT_TYPES) -> bool:
         conf = self._config["synced"]
-        return metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline"
+        return metric_name(conf) != "reviews"
 
     @_register_command_handler("contrib")
     def contrib(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:

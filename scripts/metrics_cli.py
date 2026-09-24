@@ -7,6 +7,7 @@ actual functions without launching Anki. Totals assume equal answer durations.
 Usage examples:
     python scripts/metrics_cli.py --reviews 100 --minutes 10
     python scripts/metrics_cli.py --durations-ms 15000 15000 180000 --json
+    python scripts/metrics_cli.py --durations-ms 15000 60000 --history-json days.json
     python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json
     python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json
 """
@@ -39,6 +40,7 @@ def create_parser() -> argparse.ArgumentParser:
             "Usage examples:\n"
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10\n"
             "  python scripts/metrics_cli.py --durations-ms 15000 15000 180000 --json\n"
+            "  python scripts/metrics_cli.py --durations-ms 15000 60000 --history-json days.json\n"
             "  python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json\n"
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json\n"
         ),
@@ -85,6 +87,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--reference-durations-ms", type=int, nargs="+",
                         help="Individual reference-day durations; count is inferred if omitted.")
+    parser.add_argument(
+        "--history-json", type=Path,
+        help=("Adaptive history: a JSON array of days, each an array of answer durations "
+              "in milliseconds. Supply the full included history, including the evaluated "
+              "day if applicable. Empty days are ignored. Example: [[15000,60000],[30000]]."),
+    )
     parser.add_argument("--review-exponent", type=float,
                         help="Custom mode's review exponent (0–1); complements time exponent.")
     parser.add_argument("--time-exponent", type=float,
@@ -157,6 +165,21 @@ def parse_and_validate(parser: argparse.ArgumentParser, argv: Optional[Sequence[
                 "cannot supply a valid workload reference."
             )
 
+    args.history_durations_ms = None
+    if args.history_json is not None:
+        if has_ref_rev:
+            parser.error("Use --history-json for Adaptive or a reference day, not both.")
+        try:
+            history = json.loads(args.history_json.read_text(encoding="utf-8"))
+            if not isinstance(history, list) or any(
+                not isinstance(day, list) or any(type(d) is not int or d < 0 for d in day)
+                for day in history
+            ):
+                raise ValueError("expected an array of daily arrays of nonnegative integer durations")
+        except (OSError, ValueError) as exc:
+            parser.error(f"Invalid --history-json: {exc}")
+        args.history_durations_ms = history
+
     return args
 
 
@@ -171,6 +194,7 @@ def evaluate(
     durations_ms: Optional[Sequence[int]] = None,
     ref_durations_ms: Optional[Sequence[int]] = None,
     custom_time_weight: Optional[float] = None,
+    history_durations_ms: Optional[Sequence[Sequence[int]]] = None,
 ) -> Dict[str, Any]:
     has_reference = ref_reviews is not None and ref_time_ms is not None and ref_minutes is not None
 
@@ -188,20 +212,9 @@ def evaluate(
         if not math.isfinite(score):
             raise ValueError(f"Nonfinite score produced for metric {key}: {score}")
 
-        if key == "reviews":
-            results[key] = {
-                "label": label,
-                "score": score,
-                "fixed_thresholds": None,
-                "reference_score": None,
-                "target_score": None,
-                "ratio": None,
-                "percent": None,
-                "color": None,
-                "palette": None,
-            }
-        else:
-            fixed_thresholds = list(metrics.activity_levels(key))
+        ref_score = target_score = ratio = percent = color = None
+        scale = "classic" if key == "reviews" else "baseline" if has_reference else "adaptive"
+        if key != "reviews":
             if has_reference:
                 row = (0, ref_reviews, ref_time_ms)
                 if ref_durations_ms is not None:
@@ -211,47 +224,38 @@ def evaluate(
                     raise ValueError(f"Unable to create reference for metric {key}")
                 ref_score = float(ref["value"])
                 target_score = float(metrics.baseline_value(ref))
-                if target_score <= 0 or not math.isfinite(target_score):
-                    raise ValueError(f"Invalid target score for metric {key}: {target_score}")
+            elif history_durations_ms is not None:
+                target_score = metrics.adaptive_anchor([
+                    metrics.activity_value(len(day), sum(day), key,
+                                           list(Counter(day).items()), conf)
+                    for day in history_durations_ms if day
+                ])
+            if target_score is not None:
                 ratio = score / target_score
                 percent = 100.0 * ratio
                 if not math.isfinite(ratio) or not math.isfinite(percent):
                     raise ValueError(f"Nonfinite ratio/percent for metric {key}")
 
                 if reviews > 0:
-                    color = metrics.baseline_color(score, ref, reference_day=False)
-                else:
-                    color = None
+                    color = metrics.activity_color(score, target_score)
 
-                results[key] = {
-                    "label": label,
-                    "score": score,
-                    "fixed_thresholds": fixed_thresholds,
-                    "reference_score": ref_score,
-                    "target_score": target_score,
-                    "ratio": ratio,
-                    "percent": percent,
-                    "color": color,
-                    "palette": "bundled_default",
-                }
-            else:
-                results[key] = {
-                    "label": label,
-                    "score": score,
-                    "fixed_thresholds": fixed_thresholds,
-                    "reference_score": None,
-                    "target_score": None,
-                    "ratio": None,
-                    "percent": None,
-                    "color": None,
-                    "palette": None,
-                }
+        results[key] = {
+            "label": label,
+            "score": score,
+            "scale": scale,
+            "reference_score": ref_score,
+            "target_score": target_score,
+            "ratio": ratio,
+            "percent": percent,
+            "color": color,
+            "palette": "bundled_default" if target_score is not None else None,
+        }
 
         review_weight, time_weight = metrics.metric_weights(key, conf)
         results[key]["exponents"] = {"reviews": review_weight, "time": time_weight}
 
     data: Dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "metric_source_path": str(METRICS_PATH),
         "duration_model": "individual" if durations_ms is not None else "equal-duration assumption",
         "reference_duration_model": (
@@ -267,7 +271,9 @@ def evaluate(
             "minutes": ref_minutes,
             "milliseconds": ref_time_ms,
         } if has_reference else None,
-        "palette": "bundled_default" if has_reference else None,
+        "history_days": sum(bool(day) for day in history_durations_ms)
+        if history_durations_ms is not None else None,
+        "palette": "bundled_default" if has_reference or history_durations_ms is not None else None,
         "results": results,
     }
     return data
@@ -296,11 +302,16 @@ def format_table(data: Dict[str, Any]) -> str:
             f"[palette: {data.get('palette')}]"
         )
         lines.append(f"Reference durations: {data['reference_duration_model']}")
+    elif data["history_days"] is not None:
+        lines.append(f"Adaptive: median of {data['history_days']} active days in supplied history")
+    else:
+        lines.append("Supply --history-json to calculate Adaptive targets and colors.")
     lines.append("")
 
     results = data["results"]
-    if ref:
-        headers = ["Metric", "Score", "Ref Score", "Target (85%)", "Ratio", "Percent", "Color"]
+    if ref or data["history_days"] is not None:
+        target_label = "Target (85%)" if ref else "Target (median)"
+        headers = ["Metric", "Score", "Ref Score", target_label, "Ratio", "Percent", "Color"]
         rows: List[List[str]] = []
         for res in results.values():
             label = res["label"]
@@ -324,23 +335,13 @@ def format_table(data: Dict[str, Any]) -> str:
         for row in rows:
             lines.append("  ".join(val.ljust(col_widths[i]) for i, val in enumerate(row)))
 
-        threshold_lines = []
-        for res in results.values():
-            if res["fixed_thresholds"]:
-                thresh_str = ", ".join(str(x) for x in res["fixed_thresholds"])
-                threshold_lines.append(f"  {res['label']}: [{thresh_str}]")
-        if threshold_lines:
-            lines.append("")
-            lines.append("Fixed scale thresholds:")
-            lines.extend(threshold_lines)
     else:
-        headers = ["Metric", "Score", "Fixed Thresholds"]
+        headers = ["Metric", "Score"]
         rows = []
         for res in results.values():
             label = res["label"]
             score_str = _format_num(res["score"], 2)
-            thresh_str = ", ".join(str(x) for x in res["fixed_thresholds"]) if res["fixed_thresholds"] else "-"
-            rows.append([label, score_str, thresh_str])
+            rows.append([label, score_str])
 
         col_widths = [len(h) for h in headers]
         for row in rows:
@@ -389,6 +390,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             durations_ms=args.durations_ms,
             ref_durations_ms=args.reference_durations_ms,
             custom_time_weight=args.time_exponent,
+            history_durations_ms=args.history_durations_ms,
         )
     except (ValueError, OverflowError) as exc:
         sys.stderr.write(f"Error during calculation: {exc}\n")
