@@ -14,17 +14,20 @@ from test_activity import Config, TODAY, add_review, setup
 def options_module(addon_modules, monkeypatch):
     qt = pytest.importorskip("aqt.qt")
     uic = pytest.importorskip("PyQt6.uic")
+    from anki.lang import set_lang
+    set_lang("en_US")  # translation backend only; no collection is opened
     app = qt.QApplication.instance() or qt.QApplication([])
     # Compile the existing designer form in memory. No build outputs or Anki
     # installation are needed, and no collection is opened.
-    generated = io.StringIO()
-    uic.compileUi(str(Path(__file__).resolve().parents[1] / "designer/options.ui"), generated)
-    form = ModuleType("review_heatmap.gui.forms.options")
-    exec(generated.getvalue().replace("import icons_rc", ""), form.__dict__)
     package = ModuleType("review_heatmap.gui.forms")
-    package.options = form
+    for name in ("options", "contrib"):
+        generated = io.StringIO()
+        uic.compileUi(str(Path(__file__).resolve().parents[1] / f"designer/{name}.ui"), generated)
+        form = ModuleType(f"review_heatmap.gui.forms.{name}")
+        exec(generated.getvalue().replace("import icons_rc", ""), form.__dict__)
+        setattr(package, name, form)
+        monkeypatch.setitem(sys.modules, form.__name__, form)
     monkeypatch.setitem(sys.modules, "review_heatmap.gui.forms", package)
-    monkeypatch.setitem(sys.modules, "review_heatmap.gui.forms.options", form)
     module = importlib.import_module("review_heatmap.gui.options")
     yield module, app
 
@@ -83,7 +86,7 @@ def test_reference_picker_rejects_empty_days_and_tracks_each_metric(
     }
     monkeypatch.setattr(
         module.ActivityReporter, "reference_history",
-        lambda self, day, with_durations=False: rows.get(day, []),
+        lambda self, day, with_durations=False, deck_id=None: rows.get(day, []),
     )
     parent = QWidget()
     parent.col = setup.col
@@ -137,6 +140,96 @@ def test_classic_disables_reference_controls(setup, options_module):
     assert dialog.referenceGroup.isHidden()
     assert dialog.btnEditGradient.isHidden()
     dialog.reject()
+
+
+def test_reference_picker_tracks_source_and_reminder_for_each_deck(
+    setup, options_module, monkeypatch,
+):
+    module, app = options_module
+    from aqt.qt import QWidget
+    from review_heatmap.metrics import baseline_key, reference_from_day, saved_reference
+
+    monkeypatch.setattr(module.ActivityReporter, "_today", property(lambda self: TODAY))
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    for age in range(1, 11):
+        add_review(setup, TODAY - age * 86400, cid=1, milliseconds=60000)
+        add_review(setup, TODAY - age * 86400, cid=2, milliseconds=age * 60000, sequence=1)
+    conf = setup.conf["synced"]
+    conf["activity_scale"] = "baseline"
+    global_ref = reference_from_day((TODAY - 2 * 86400, 2, 180000), "workload", "selected")
+    auto = reference_from_day((TODAY - 86400, 1, 60000), "workload", "automatic")
+    conf["activity_baselines"] = {baseline_key(conf): global_ref, baseline_key(conf, 1): auto}
+    original = copy.deepcopy(dict(setup.conf))
+    parent = QWidget()
+    parent.col = setup.col
+    dialog = module.RevHmOptions(setup.conf, parent, reference_deck_id=1, focus_reference=True)
+    pending = dialog.getData()["synced"]
+    assert dialog.selReferenceScope.currentData() == 1
+    assert dialog.form.tabWidget.currentIndex() == 1
+    assert "Automatically selected" in dialog.labReferenceSource.text()
+    dialog.btnUseReference.click()  # explicitly approve the same automatically chosen date
+    assert saved_reference(pending, 1)["source"] == "selected"
+    assert dialog.labReferenceSource.text() == "Selected by you."
+    assert saved_reference(pending) == global_ref
+    dialog.cbReferenceReminder.setChecked(False)
+    dialog.selReferenceScope.setCurrentIndex(dialog.selReferenceScope.findData(2))
+    assert dialog.cbReferenceReminder.isChecked()
+    dialog.btnAutoReference.click()
+    assert saved_reference(pending, 2)["percentile"] == 90
+    assert saved_reference(pending, 2)["day"] == TODAY - 9 * 86400
+    dialog.reject()
+    assert dict(setup.conf) == original
+
+    dialog = module.RevHmOptions(setup.conf, parent, reference_deck_id=1)
+    dialog.cbReferenceReminder.setChecked(False)
+    dialog.accept()
+    dialog = module.RevHmOptions(setup.conf, parent, reference_deck_id=1)
+    assert not dialog.cbReferenceReminder.isChecked()
+    dialog.selReferenceScope.setCurrentIndex(0)
+    assert dialog.cbReferenceReminder.isChecked()
+    assert saved_reference(dialog.getData()["synced"]) == global_ref
+    dialog.reject()
+
+
+def test_reference_bridge_uses_explicit_scope_and_saves_dismissal(
+    setup, options_module, monkeypatch,
+):
+    from aqt.qt import QWidget
+    from types import SimpleNamespace
+
+    bridge = importlib.import_module("review_heatmap.web_bridge")
+    calls = []
+    monkeypatch.setattr(bridge, "invoke_options_dialog", lambda **kwargs: calls.append(kwargs))
+    parent = QWidget()
+    handler = bridge._CommandHandler(SimpleNamespace(col=setup.col), setup.conf)
+    handler("choosereference", "deck:2", parent)
+    assert calls[-1] == {"parent": parent, "reference_deck_id": 2, "focus_reference": True}
+    handler("opts", "global", parent)
+    assert calls[-1]["reference_deck_id"] is None
+    assert handler("dismissreference", "deck:2", parent) is True
+    assert setup.conf["synced"]["activity_reference_reminders_dismissed"] == {"deck:2": True}
+    assert setup.conf.saves == [("synced", {"profile_unload": True})]
+    assert handler("dismissreference", "deck:999", parent) is False
+    assert handler("dismissreference", "deck:invalid", parent) is False
+    assert handler("dismissreference", None, parent) is False
+    assert len(setup.conf.saves) == 1
+
+
+def test_legacy_statistics_pass_the_correct_global_or_deck_scope(setup, options_module):
+    from types import SimpleNamespace
+
+    views = importlib.import_module("review_heatmap.views")
+    calls = []
+    injector = object.__new__(views.DeckStatsInjector)
+    injector._controller = SimpleNamespace(
+        render_for_view=lambda *args, **kwargs: calls.append(kwargs) or "heatmap",
+    )
+    for whole_collection in (True, False):
+        result = injector.on_collection_stats_due_graph(
+            SimpleNamespace(type=2, wholeCollection=whole_collection), lambda _: "statistics",
+        )
+        assert result == "statisticsheatmap"
+        assert calls[-1]["current_deck_only"] is (not whole_collection)
 
 
 def test_custom_exponents_recalculate_the_same_reference_and_respect_cancel(setup, options_module):

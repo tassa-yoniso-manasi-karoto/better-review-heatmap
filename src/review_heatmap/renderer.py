@@ -59,6 +59,9 @@ from .metrics import (
     baseline_value,
     metric_name,
     saved_reference,
+    reference_scope,
+    show_reference_reminder,
+    AUTO_REFERENCE_PERCENTILE,
 )
 from .web_content import (
     CSS_DISABLE_HEATMAP,
@@ -68,6 +71,7 @@ from .web_content import (
     CSS_THEME_PREFIX,
     CSS_VIEW_PREFIX,
     HTML_HEATMAP,
+    HTML_REFERENCE_REMINDER,
     HTML_INFO_NODATA,
     HTML_MAIN_ELEMENT,
     HTML_STREAK,
@@ -182,7 +186,8 @@ class HeatmapRenderer:
             )
 
         count_legend = self._dynamic_legend(report.stats.activity_daily_avg.value)
-        history_legend = self._activity_legend(count_legend)
+        deck_id = self._reference_deck_id(current_deck_only)
+        history_legend = self._activity_legend(count_legend, deck_id)
         stats_legend = self._stats_legend(count_legend)
         heatmap_legend = self._heatmap_legend(history_legend, count_legend)
 
@@ -192,6 +197,11 @@ class HeatmapRenderer:
             heatmap = self._generate_heatmap_elm(
                 report, heatmap_legend, current_deck_only
             )
+            if show_reference_reminder(self._config["synced"], deck_id):
+                heatmap = (
+                    '<div class="rh-heatmap-group">'
+                    + heatmap + HTML_REFERENCE_REMINDER + '</div>'
+                )
         else:
             heatmap = ""
             classes.append(CSS_DISABLE_HEATMAP)
@@ -245,7 +255,11 @@ class HeatmapRenderer:
         return repr((self._config["synced"], self._config["profile"],
                      self._config["local"]))
 
-    def _activity_legend(self, count_legend: List[float]) -> List[float]:
+    def _reference_deck_id(self, current_deck_only: bool) -> Optional[int]:
+        return int(self._mw.col.decks.current()["id"]) if current_deck_only else None
+
+    def _activity_legend(self, count_legend: List[float],
+                         deck_id: Optional[int] = None) -> List[float]:
         conf = self._config["synced"]
         metric = metric_name(conf)
         if metric == "reviews":
@@ -253,20 +267,26 @@ class HeatmapRenderer:
         reference = None
         if conf.get("activity_scale") == "baseline":
             if migrate_activity_references(
-                conf, lambda day: self._reporter.reference_history(day, with_durations=True),
+                conf, lambda day: self._reporter.reference_history(
+                    day, with_durations=True, deck_id=deck_id,
+                ), deck_id,
             ):
                 self._config["synced"] = conf
                 self._config.save("synced", profile_unload=True)
-            reference = saved_reference(conf)
-            if reference is None and legacy_reference(conf) is None:
-                reference = automatic_reference(
-                    self._reporter.reference_history(with_durations=True), metric, conf,
+            reference = saved_reference(conf, deck_id)
+            needs_selection = reference is None and legacy_reference(conf, deck_id) is None
+            needs_upgrade = reference is not None and reference.get("source") == "automatic" \
+                and reference.get("percentile") != AUTO_REFERENCE_PERCENTILE
+            if needs_selection or needs_upgrade:
+                selected = automatic_reference(
+                    self._reporter.reference_history(with_durations=True, deck_id=deck_id),
+                    metric, conf,
                 )
-                if reference is not None:
+                if selected is not None:
                     references = conf.get("activity_baselines")
                     if not isinstance(references, dict):
                         references = {}
-                    references[baseline_key(conf)] = reference
+                    references[baseline_key(conf, deck_id)] = selected
                     conf["activity_baselines"] = references
                     self._config["synced"] = conf
                     # Persist only the reference/settings. Avoid a recursive UI reset.
@@ -285,10 +305,10 @@ class HeatmapRenderer:
             classes.append("rh-baseline")
         return classes
 
-    def _baseline_reference(self) -> Optional[Dict]:
+    def _baseline_reference(self, deck_id: Optional[int] = None) -> Optional[Dict]:
         conf = self._config["synced"]
         if metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline":
-            return saved_reference(conf)
+            return saved_reference(conf, deck_id)
         return None
 
     def _activity_scores(self, report: ActivityReport) -> Dict[int, float]:
@@ -351,6 +371,7 @@ class HeatmapRenderer:
     ) -> str:
         mode = heatmap_modes[self._config["synced"]["mode"]]
         metric = metric_name(self._config["synced"])
+        deck_id = self._reference_deck_id(current_deck_only)
 
         # TODO: pass on "whole" to govern browser link "deck:current" addition
         options = {
@@ -364,6 +385,7 @@ class HeatmapRenderer:
             "offset": report.offset,
             "legend": dynamic_legend,
             "whole": not current_deck_only,
+            "referenceScope": reference_scope(deck_id),
             "showPaletteButton": metric != "reviews",
             "dayColors": {},
             "history": {
@@ -372,7 +394,7 @@ class HeatmapRenderer:
             },
         }
 
-        reference = self._baseline_reference()
+        reference = self._baseline_reference(deck_id)
         scores = self._activity_scores(report) if metric != "reviews" else {}
         anchor = adaptive_anchor(scores.values()) if reference is None else None
         activity = {}

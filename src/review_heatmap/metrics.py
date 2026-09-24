@@ -28,6 +28,7 @@ DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
 BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
+AUTO_REFERENCE_PERCENTILE = 90
 DEFAULT_BASELINE_GRADIENT = json.loads(
     Path(__file__).with_name("config.json").read_text(encoding="utf-8")
 )["baseline_gradient_default"]
@@ -72,8 +73,12 @@ def activity_value(reviews: int, milliseconds: int, metric: str,
     )
 
 
-def baseline_key(conf: Dict) -> str:
-    """References are specific to a measure and its included history."""
+def reference_scope(deck_id: Optional[int] = None) -> str:
+    return "global" if deck_id is None else f"deck:{int(deck_id)}"
+
+
+def baseline_key(conf: Dict, deck_id: Optional[int] = None) -> str:
+    """Keep global keys compatible; decks have independent references."""
     metric = metric_name(conf)
     parts = [
         1 if metric == "reviews" else FORMULA_VERSION,
@@ -86,20 +91,22 @@ def baseline_key(conf: Dict) -> str:
     ]
     if metric == "custom":
         parts.append(metric_weights(metric, conf)[1])
+    if deck_id is not None:
+        parts.append(["deck", int(deck_id)])
     return json.dumps(parts, separators=(",", ":"))
 
 
-def legacy_reference(conf: Dict) -> Optional[Dict]:
+def legacy_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]:
     """Find the active measure/filter snapshot without altering older versions."""
     references = conf.get("activity_baselines", {})
     if not isinstance(references, dict):
         return None
-    pending = references.get(baseline_key(conf))
+    pending = references.get(baseline_key(conf, deck_id))
     if isinstance(pending, dict) and pending.get("needs_durations"):
         return pending
     if metric_name(conf) not in ("time", "workload"):
         return None
-    parts = json.loads(baseline_key(conf))
+    parts = json.loads(baseline_key(conf, deck_id))
     for version in (2, 1):
         parts[0] = version
         reference = references.get(json.dumps(parts, separators=(",", ":")))
@@ -108,15 +115,16 @@ def legacy_reference(conf: Dict) -> Optional[Dict]:
     return None
 
 
-def migrate_activity_references(conf: Dict, read_day=None) -> bool:
+def migrate_activity_references(conf: Dict, read_day=None,
+                                deck_id: Optional[int] = None) -> bool:
     """Upgrade the active snapshot using real durations, never inferred ones.
 
     A caller with an ActivityReporter supplies read_day. Other measures/filters
     migrate when used; original snapshots and existing v3 snapshots are retained.
     """
-    if read_day is None or saved_reference(conf) is not None:
+    if read_day is None or saved_reference(conf, deck_id) is not None:
         return False
-    reference = legacy_reference(conf)
+    reference = legacy_reference(conf, deck_id)
     if reference is None:
         return False
     try:
@@ -136,16 +144,16 @@ def migrate_activity_references(conf: Dict, read_day=None) -> bool:
         if updated is not None:
             migrated = dict(reference, **updated)
             migrated.pop("needs_durations", None)
-            conf["activity_baselines"][baseline_key(conf)] = migrated
+            conf["activity_baselines"][baseline_key(conf, deck_id)] = migrated
             return True
     return False
 
 
-def saved_reference(conf: Dict) -> Optional[Dict]:
+def saved_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]:
     references = conf.get("activity_baselines", {})
     if not isinstance(references, dict):
         return None
-    reference = references.get(baseline_key(conf))
+    reference = references.get(baseline_key(conf, deck_id))
     if not isinstance(reference, dict) or reference.get("needs_durations"):
         return None
     try:
@@ -181,8 +189,20 @@ def automatic_reference(rows: Sequence[Sequence], metric: str,
     )
     if len(candidates) < MIN_REFERENCE_DAYS:
         return None
-    # Nearest-rank 75th percentile selects an actual, completed study day.
-    return candidates[math.ceil(0.75 * len(candidates)) - 1]
+    # Nearest-rank P90 selects an actual, completed study day.
+    reference = candidates[math.ceil(AUTO_REFERENCE_PERCENTILE / 100 * len(candidates)) - 1]
+    return dict(reference, percentile=AUTO_REFERENCE_PERCENTILE)
+
+
+def show_reference_reminder(conf: Dict, deck_id: Optional[int] = None) -> bool:
+    reference = saved_reference(conf, deck_id)
+    dismissed = conf.get("activity_reference_reminders_dismissed", {})
+    return (
+        metric_name(conf) != "reviews"
+        and conf.get("activity_scale") == "baseline"
+        and reference is not None and reference.get("source") == "automatic"
+        and not dismissed.get(reference_scope(deck_id), False)
+    )
 
 
 def adaptive_anchor(scores: Iterable[float]) -> Optional[float]:

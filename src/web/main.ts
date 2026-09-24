@@ -297,12 +297,22 @@ class ReviewHeatmap {
     if (event.shiftKey) {
       bridgeCommand("revhm_themeswitch");
     } else {
-      bridgeCommand("revhm_opts");
+      bridgeCommand(`revhm_opts:${this.options.referenceScope}`);
     }
   }
 
   public onHmGradient() {
     bridgeCommand("revhm_gradient");
+  }
+
+  public onChooseReference() {
+    bridgeCommand(`revhm_choosereference:${this.options.referenceScope}`);
+  }
+
+  public onDismissReference(button: HTMLButtonElement) {
+    bridgeCommand(`revhm_dismissreference:${this.options.referenceScope}`, saved => {
+      if (saved === true) button.closest(".rh-reference-reminder")?.remove();
+    });
   }
 
 }

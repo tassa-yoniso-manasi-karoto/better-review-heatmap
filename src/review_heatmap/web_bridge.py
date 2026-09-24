@@ -43,7 +43,7 @@ from aqt.qt import QWidget
 from aqt.stats import DeckStats
 
 from .config import heatmap_colors, heatmap_modes
-from .metrics import metric_name
+from .metrics import metric_name, reference_scope
 from .gui.contrib import invoke_contributions_dialog
 from .gui.extra import invoke_snanki
 from .gui.options import invoke_options_dialog
@@ -158,9 +158,50 @@ class _CommandHandler:
         browser.onSearchActivated()
 
     @_register_command_handler("opts")
-    def opts(self, payload: None, context: SUPPORTED_CONTEXT_TYPES) -> None:
+    def opts(self, payload: Optional[str], context: SUPPORTED_CONTEXT_TYPES) -> None:
         parent = self._get_context_parent(context)
-        invoke_options_dialog(parent=parent)
+        try:
+            deck_id = self._reference_deck(payload or "global")
+        except ValueError:
+            return
+        invoke_options_dialog(parent=parent, reference_deck_id=deck_id)
+
+    @_register_command_handler("choosereference")
+    def choose_reference(self, payload: str, context: SUPPORTED_CONTEXT_TYPES) -> None:
+        try:
+            deck_id = self._reference_deck(payload)
+        except ValueError:
+            return
+        invoke_options_dialog(parent=self._get_context_parent(context),
+                              reference_deck_id=deck_id, focus_reference=True)
+
+    @_register_command_handler("dismissreference")
+    def dismiss_reference(self, payload: str, context: SUPPORTED_CONTEXT_TYPES) -> bool:
+        try:
+            deck_id = self._reference_deck(payload)
+        except ValueError:
+            return False
+        conf = self._config["synced"]
+        conf.setdefault("activity_reference_reminders_dismissed", {})[
+            reference_scope(deck_id)
+        ] = True
+        self._config["synced"] = conf
+        # The caller removes this banner; other views pick up the saved state
+        # on their next render without resetting the user's current page.
+        self._config.save("synced", profile_unload=True)
+        return True
+
+    def _reference_deck(self, scope: str) -> Optional[int]:
+        if scope == "global":
+            return None
+        if isinstance(scope, str) and scope.startswith("deck:"):
+            try:
+                deck_id = int(scope[5:])
+            except ValueError:
+                raise ValueError("Invalid reference scope") from None
+            if any(int(deck["id"]) == deck_id for deck in self._mw.col.decks.all()):
+                return deck_id
+        raise ValueError("Unknown reference scope")
 
     @_register_command_handler("gradient")
     def gradient(self, payload: None, context: SUPPORTED_CONTEXT_TYPES) -> None:

@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from aqt.qt import (
-    QAction, QApplication, QComboBox, QDate, QDateEdit, QDoubleSpinBox, QFormLayout,
+    QAction, QApplication, QCheckBox, QComboBox, QDate, QDateEdit, QDoubleSpinBox, QFormLayout,
     QGroupBox, QHBoxLayout, QLabel, QPushButton, QTimer, QVBoxLayout, QWidget,
 )
 
@@ -53,7 +53,8 @@ from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_m
 from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
-    reference_from_day, saved_reference,
+    reference_from_day, saved_reference, reference_scope, automatic_reference,
+    AUTO_REFERENCE_PERCENTILE,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
@@ -85,14 +86,6 @@ class RevHmOptions(OptionsDialog):
         ),
         ("form.cbTodayProgress", (("value", {"dataPath": "profile/show_today_progress"}),)),
         ("spinCustomTimeWeight", (("value", {"dataPath": "synced/custom_time_weight"}),)),
-        (
-            "dateReference",
-            (("value", {
-                "dataPath": "synced/activity_reference_date",
-                "setter": "_setReferenceDate",
-                "getter": "_getReferenceDate",
-            }),),
-        ),
         (
             "form.selHmColor",
             (
@@ -135,7 +128,8 @@ class RevHmOptions(OptionsDialog):
         ),
     )
 
-    def __init__(self, config, mw, parent=None, **kwargs):
+    def __init__(self, config, mw, parent=None, reference_deck_id=None,
+                 focus_reference=False, **kwargs):
         # Mediator methods defined in mapped_widgets might need access to
         # certain instance attributes. As super().__init__ calls these
         # mediator methods it is important that we set the attributes
@@ -143,6 +137,7 @@ class RevHmOptions(OptionsDialog):
         self.parent = parent or mw
         self.mw = mw
         self._activity_ready = False
+        self._initial_reference_deck = reference_deck_id
         ensure_activity_defaults(config)
         super(RevHmOptions, self).__init__(
             self._mapped_widgets,
@@ -155,6 +150,9 @@ class RevHmOptions(OptionsDialog):
         self._data = deepcopy(self._data)
         self._activity_ready = True
         self._refreshActivitySettings()
+        if focus_reference:
+            self.form.tabWidget.setCurrentIndex(1)
+            self.dateReference.setFocus()
         # Instance methods that modify the initialized UI should either be
         # called from self._setupUI or from here
 
@@ -211,6 +209,19 @@ class RevHmOptions(OptionsDialog):
         )
         explanation.setWordWrap(True)
         reference_layout.addWidget(explanation)
+        self.selReferenceScope = QComboBox(self.referenceGroup)
+        self.selReferenceScope.addItem("Global heatmap (all included decks)", None)
+        for deck in sorted(self.mw.col.decks.all(), key=lambda d: d.get("name", "").casefold()):
+            self.selReferenceScope.addItem(deck.get("name", f"Deck {deck['id']}"), int(deck["id"]))
+        self.selReferenceScope.setCurrentIndex(max(
+            0, self.selReferenceScope.findData(self._initial_reference_deck),
+        ))
+        scope_layout = QFormLayout()
+        scope_layout.addRow("Reference for", self.selReferenceScope)
+        reference_layout.addLayout(scope_layout)
+        self.labReferenceSource = QLabel(self.referenceGroup)
+        self.labReferenceSource.setWordWrap(True)
+        reference_layout.addWidget(self.labReferenceSource)
         self.labReference = QLabel(self.referenceGroup)
         self.labReference.setWordWrap(True)
         reference_layout.addWidget(self.labReference)
@@ -220,8 +231,21 @@ class RevHmOptions(OptionsDialog):
         self.dateReference.setKeyboardTracking(False)
         self.dateReference.setDisplayFormat("yyyy-MM-dd")
         self.dateReference.setMaximumDate(QDate.currentDate())
+        self.dateReference.setDate(QDate.currentDate().addDays(-1))
         day_layout.addRow("Reference day", self.dateReference)
         reference_layout.addLayout(day_layout)
+        reference_actions = QHBoxLayout()
+        self.btnUseReference = QPushButton("Use this day", self.referenceGroup)
+        self.btnAutoReference = QPushButton(
+            f"Choose automatically (P{AUTO_REFERENCE_PERCENTILE})", self.referenceGroup,
+        )
+        reference_actions.addWidget(self.btnUseReference)
+        reference_actions.addWidget(self.btnAutoReference)
+        reference_layout.addLayout(reference_actions)
+        self.cbReferenceReminder = QCheckBox(
+            "Remind me when this heatmap uses an automatic reference", self.referenceGroup,
+        )
+        reference_layout.addWidget(self.cbReferenceReminder)
         layout.addWidget(self.referenceGroup)
         self.btnEditGradient = QPushButton("Edit gradient colors…", tab)
         layout.addWidget(self.btnEditGradient)
@@ -241,6 +265,7 @@ class RevHmOptions(OptionsDialog):
         if not self._activity_ready:
             return
         conf = self.getData()["synced"]
+        deck_id = self.selReferenceScope.currentData()
         metric = metric_name(conf)
         classic = metric == "reviews"
         self.selActivityScale.setEnabled(not classic)
@@ -283,16 +308,29 @@ class RevHmOptions(OptionsDialog):
         self.labActivityDescription.setText(description)
         migrate_activity_references(
             conf, lambda day: ActivityReporter(self.mw.col, self.getData()).reference_history(
-                day, with_durations=True,
-            ),
+                day, with_durations=True, deck_id=deck_id,
+            ), deck_id,
         )
-        reference = saved_reference(conf)
+        reference = saved_reference(conf, deck_id)
         self.labReference.setVisible(not reference)
+        self.labReferenceSource.setVisible(bool(reference))
+        blocked = self.cbReferenceReminder.blockSignals(True)
+        self.cbReferenceReminder.setChecked(not conf.get(
+            "activity_reference_reminders_dismissed", {},
+        ).get(reference_scope(deck_id), False))
+        self.cbReferenceReminder.blockSignals(blocked)
         if reference:
+            source = reference.get("source")
+            self.labReferenceSource.setText(
+                f"Automatically selected (P{reference.get('percentile', 75)}). "
+                "Choose a day yourself to match your study goal."
+                if source == "automatic" else
+                "Selected by you." if source == "selected" else "Saved reference day."
+            )
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
             self._displayReferenceDate(QDate(day.year, day.month, day.day))
-        elif legacy_reference(conf) is not None:
-            previous = legacy_reference(conf)
+        elif legacy_reference(conf, deck_id) is not None:
+            previous = legacy_reference(conf, deck_id)
             try:
                 day = datetime.fromtimestamp(int(previous["day"]), timezone.utc).date()
                 self._displayReferenceDate(QDate(day.year, day.month, day.day))
@@ -305,12 +343,39 @@ class RevHmOptions(OptionsDialog):
             )
         else:
             self.labReference.setText(
-                "No saved reference. Automatic selection needs at least 7 completed "
+                f"No saved reference. Automatic P{AUTO_REFERENCE_PERCENTILE} selection "
+                "needs at least 7 completed "
                 "study days with recorded time in the last 60 days. Until then, "
                 "Adaptive is used."
             )
         self._last_reference_date = self.dateReference.date()
-        conf["activity_reference_date"] = self._getReferenceDate(None)
+        if deck_id is None:
+            conf["activity_reference_date"] = self._getReferenceDate(None)
+
+    def _onReferenceScopeChanged(self, *args):
+        if self._activity_ready:
+            self._displayReferenceDate(QDate.currentDate().addDays(-1))
+            self._refreshActivitySettings()
+
+    def _onReminderChanged(self, checked):
+        if self._activity_ready:
+            conf = self.getData()["synced"]
+            conf.setdefault("activity_reference_reminders_dismissed", {})[
+                reference_scope(self.selReferenceScope.currentData())
+            ] = not checked
+
+    def _onAutomaticReference(self):
+        data = self.getData()
+        conf = data["synced"]
+        rows = ActivityReporter(self.mw.col, data).reference_history(
+            with_durations=True, deck_id=self.selReferenceScope.currentData(),
+        )
+        reference = automatic_reference(rows, metric_name(conf), conf)
+        if reference is None:
+            showInfo("Automatic selection needs at least 7 completed study days "
+                     "with recorded time in the last 60 days for this heatmap.", parent=self)
+            return
+        self._setReference(conf, reference)
 
     def _displayReferenceDate(self, date):
         blocked = self.dateReference.blockSignals(True)
@@ -325,7 +390,9 @@ class RevHmOptions(OptionsDialog):
         data = self.getData()
         conf = data["synced"]
         day = int(datetime(date.year(), date.month(), date.day(), tzinfo=timezone.utc).timestamp())
-        rows = ActivityReporter(self.mw.col, data).reference_history(day, with_durations=True)
+        rows = ActivityReporter(self.mw.col, data).reference_history(
+            day, with_durations=True, deck_id=self.selReferenceScope.currentData(),
+        )
         reference = reference_from_day(rows[0], metric_name(conf), "selected", conf) if rows else None
         if reference is None:
             self._displayReferenceDate(self._last_reference_date)
@@ -337,7 +404,7 @@ class RevHmOptions(OptionsDialog):
     def _setReference(self, conf, reference):
         if not isinstance(conf.get("activity_baselines"), dict):
             conf["activity_baselines"] = {}
-        conf["activity_baselines"][baseline_key(conf)] = reference
+        conf["activity_baselines"][baseline_key(conf, self.selReferenceScope.currentData())] = reference
         self._refreshActivitySettings()
 
     def _onCustomWeightChanged(self, value, is_time):
@@ -346,7 +413,6 @@ class RevHmOptions(OptionsDialog):
         data = self.getData()
         conf = data["synced"]
         old_conf = dict(conf, custom_time_weight=self._last_custom_weight)
-        previous = saved_reference(old_conf) or legacy_reference(old_conf)
         time_weight = round(value if is_time else 1 - value, 2)
         for spin, weight in ((self.spinCustomTimeWeight, time_weight),
                              (self.spinCustomReviewWeight, 1 - time_weight)):
@@ -354,12 +420,16 @@ class RevHmOptions(OptionsDialog):
             spin.setValue(weight)
             spin.blockSignals(blocked)
         conf["custom_time_weight"] = time_weight
-        if metric_name(conf) == "custom" and previous and saved_reference(conf) is None:
-            # Keep the chosen day even if its underlying records have since
-            # disappeared. Never substitute a newly automatic reference for it.
-            conf.setdefault("activity_baselines", {})[baseline_key(conf)] = dict(
-                previous, needs_durations=True,
-            )
+        if metric_name(conf) == "custom":
+            # Preserve every scope's chosen day when the shared weights change.
+            # Each snapshot is recalculated lazily when its heatmap is used.
+            for index in range(self.selReferenceScope.count()):
+                deck_id = self.selReferenceScope.itemData(index)
+                previous = saved_reference(old_conf, deck_id) or legacy_reference(old_conf, deck_id)
+                if previous and saved_reference(conf, deck_id) is None:
+                    conf.setdefault("activity_baselines", {})[baseline_key(conf, deck_id)] = dict(
+                        previous, needs_durations=True,
+                    )
         self._refreshActivitySettings()
 
     def _onAccept(self):
@@ -381,6 +451,12 @@ class RevHmOptions(OptionsDialog):
         self.selActivityScale.currentIndexChanged.connect(self._refreshActivitySettings)
         self.form.tabWidget.currentChanged.connect(self._refreshActivitySettings)
         self.dateReference.dateChanged.connect(self._onReferenceDateChanged)
+        self.selReferenceScope.currentIndexChanged.connect(self._onReferenceScopeChanged)
+        self.btnUseReference.clicked.connect(
+            lambda: self._onReferenceDateChanged(self.dateReference.date()),
+        )
+        self.btnAutoReference.clicked.connect(self._onAutomaticReference)
+        self.cbReferenceReminder.toggled.connect(self._onReminderChanged)
         self.btnEditGradient.clicked.connect(self._onEditGradient)
         self.spinCustomTimeWeight.valueChanged.connect(
             lambda value: self._onCustomWeightChanged(value, True),
@@ -486,9 +562,11 @@ class RevHmOptions(OptionsDialog):
         return widget_val
 
 
-def invoke_options_dialog(parent: Optional[QWidget] = None) -> int:
+def invoke_options_dialog(parent: Optional[QWidget] = None, reference_deck_id=None,
+                          focus_reference=False) -> int:
     """Call settings dialog"""
-    dialog = RevHmOptions(config, mw, parent=parent)
+    dialog = RevHmOptions(config, mw, parent=parent, reference_deck_id=reference_deck_id,
+                         focus_reference=focus_reference)
     return dialog.exec()
 
 

@@ -40,6 +40,7 @@ export interface ReviewHeatmapOptions {
   offset: number;
   legend: number[];
   whole: boolean;
+  referenceScope: string;
   showPaletteButton: boolean;
   dayColors: { [timestamp: number]: string };
   history: { [timestamp: number]: [reviews: number, milliseconds: number] };

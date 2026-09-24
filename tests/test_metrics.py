@@ -9,7 +9,7 @@ from review_heatmap.metrics import (
     automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
     legacy_reference, metric_weights, migrate_activity_references,
-    reference_from_day, saved_reference,
+    reference_from_day, saved_reference, show_reference_reminder,
 )
 
 
@@ -128,10 +128,32 @@ def test_reference_upgrade_preserves_newer_selections_and_invalid_old_entries():
 def test_reference_is_an_actual_day_and_ignores_zero_duration():
     rows = [(day, day, day * 60000) for day in range(1, 9)] + [(9, 500, 0)]
     reference = automatic_reference(rows, "workload")
-    assert reference["day"] == 6
-    assert reference["reviews"] == 6
+    assert reference["day"] == 8
+    assert reference["reviews"] == 8
     assert reference["source"] == "automatic"
+    assert reference["percentile"] == 90
     assert automatic_reference(rows[:6], "workload") is None
+    assert automatic_reference([(day, day, day * 60000) for day in range(1, 11)],
+                               "workload")["day"] == 9
+
+
+def test_reference_and_reminder_scopes_are_independent():
+    conf = {"activity_metric": "workload", "activity_scale": "baseline"}
+    auto = reference_from_day((1, 20, 1200000), "workload", "automatic")
+    manual = dict(auto, source="selected")
+    conf["activity_baselines"] = {baseline_key(conf): manual, baseline_key(conf, 1): auto}
+    assert saved_reference(conf) == manual
+    assert saved_reference(conf, 1) == auto
+    assert saved_reference(conf, 2) is None  # never inherit the global selection
+    assert not show_reference_reminder(conf)
+    assert show_reference_reminder(conf, 1)
+    conf["activity_baselines"][baseline_key(conf, 2)] = auto
+    conf["activity_reference_reminders_dismissed"] = {"deck:1": True}
+    assert not show_reference_reminder(conf, 1)
+    assert show_reference_reminder(conf, 2)
+    assert not show_reference_reminder(dict(conf, activity_scale="adaptive"), 2)
+    conf["activity_baselines"][baseline_key(conf, 2)] = manual
+    assert not show_reference_reminder(conf, 2)
 
 
 def test_reference_requires_positive_time_and_discount_never_compounds():

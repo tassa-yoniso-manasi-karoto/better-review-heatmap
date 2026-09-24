@@ -530,5 +530,62 @@ select.hm-sel:active, select.hm-sel:focus {
     stroke-width: 0.5px;
 }
 
+.rh-heatmap-group {
+    display: inline-block;
+}
+.rh-reference-reminder {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    /* Let the heatmap set the group width; this card only fills it. */
+    width: 0;
+    min-width: 100%;
+    margin: 6px auto;
+    padding: 6px 10px;
+    border: 1px solid rgba(110, 210, 255, 0.09);
+    border-radius: 14px;
+    background: rgba(80, 200, 255, 0.04);
+    color: #bfc3cb;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.rh-reference-icon {
+    place-self: center;
+    font-size: 16px;
+    line-height: 1;
+}
+.rh-reference-message {
+    min-width: 0;
+    text-align: left;
+}
+.rh-container .rh-reference-reminder > button {
+    all: unset;
+    box-sizing: border-box;
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 9px;
+    border: 1px solid rgba(190, 196, 207, 0.04);
+    border-radius: 999px;
+    background: rgba(190, 196, 207, 0.045);
+    color: inherit;
+    font: inherit;
+    line-height: 1.3;
+    text-align: center;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.rh-container .rh-reference-reminder > button:hover {
+    background: rgba(190, 196, 207, 0.09);
+    border-color: rgba(190, 196, 207, 0.08);
+}
+.rh-container .rh-reference-reminder > button:focus-visible {
+    outline: 1px solid rgba(190, 196, 207, 0.65);
+    outline-offset: 2px;
+}
+
 /* Platform-specific adjustments / workarounds */
 /* ################################################################### */

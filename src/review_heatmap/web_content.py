@@ -87,6 +87,18 @@ HTML_HEATMAP: str = f"""
 </script>
 """
 
+HTML_REFERENCE_REMINDER: str = """
+<div class="rh-reference-reminder" role="note">
+    <span class="rh-reference-icon" aria-hidden="true">⚠️</span>
+    <span class="rh-reference-message">
+        An automatically selected reference day is being used.<br>
+        It is better to manually pick a day that fits your study goal.
+    </span>
+    <button type="button" onclick="reviewHeatmap.onChooseReference();">Choose reference day</button>
+    <button type="button" onclick="reviewHeatmap.onDismissReference(this);">Do not remind</button>
+</div>
+"""
+
 HTML_STREAK: str = """
 <div class="streak">
     <span class="streak-info">Daily average:</span>

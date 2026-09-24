@@ -88,6 +88,7 @@ config_defaults: Dict[str, Dict] = {
         "activity_scale": "adaptive",
         "activity_reference_date": 0,
         "activity_baselines": {},
+        "activity_reference_reminders_dismissed": {},
         "custom_time_weight": 0.5,
         "version": ADDON.VERSION,
     },
@@ -114,7 +115,8 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
     """
     for storage, keys in (
         ("synced", ("activity_metric", "activity_scale", "activity_reference_date",
-                    "activity_baselines", "custom_time_weight")),
+                    "activity_baselines", "custom_time_weight",
+                    "activity_reference_reminders_dismissed")),
         ("profile", ("time_notice_seen", "show_today_progress")),
     ):
         values = manager[storage]

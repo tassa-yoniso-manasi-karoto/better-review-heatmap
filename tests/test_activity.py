@@ -205,6 +205,77 @@ def test_baseline_is_saved_once_and_adaptive_never_uses_it(setup):
     assert len(setup.conf.saves) == 1
 
 
+def test_global_and_deck_heatmaps_choose_their_own_days_and_show_reminders(setup, monkeypatch):
+    from review_heatmap.metrics import baseline_key, reference_from_day, saved_reference
+
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    conf = setup.conf["synced"]
+    conf.update(activity_scale="baseline", activity_metric="recorded_time")
+    for age in range(1, 11):
+        add_review(setup, TODAY - age * 86400, cid=1, milliseconds=age * 60000)
+        add_review(setup, TODAY - age * 86400, cid=2,
+                   milliseconds=(11 - age) * 120000, sequence=1)
+    renderer = make_renderer(setup)
+    view = setup.modules.renderer.HeatmapView
+    global_html = renderer.render(view.deckbrowser, limfcst=0)
+    global_ref = copy.deepcopy(saved_reference(conf))
+    assert global_ref["day"] == TODAY - 2 * 86400
+    assert global_ref["percentile"] == 90
+    assert 'class="rh-reference-reminder"' in global_html
+    assert '"referenceScope": "global"' in global_html
+
+    deck_html = renderer.render(view.overview, current_deck_only=True, limfcst=0)
+    deck_ref = saved_reference(conf, 1)
+    assert deck_ref["day"] == TODAY - 9 * 86400
+    assert deck_ref["value"] == 9
+    assert '"referenceScope": "deck:1"' in deck_html
+    assert 'class="rh-reference-reminder"' in deck_html
+    assert saved_reference(conf) == global_ref
+
+    # Statistics for the same deck use the same reference and dismissal state.
+    conf["activity_reference_reminders_dismissed"]["deck:1"] = True
+    assert 'class="rh-reference-reminder"' not in renderer.render(
+        view.stats, current_deck_only=True, limfcst=0,
+    )
+    assert 'class="rh-reference-reminder"' in renderer.render(view.deckbrowser, limfcst=0)
+    monkeypatch.setattr(setup.col.decks, "current", lambda: {"id": 2})
+    monkeypatch.setattr(setup.col.decks, "get_current_id", lambda: 2)
+    assert 'class="rh-reference-reminder"' in renderer.render(
+        view.overview, current_deck_only=True, limfcst=0,
+    )
+    assert saved_reference(conf, 2)["day"] == TODAY - 2 * 86400
+
+    manual = reference_from_day((TODAY - 5 * 86400, 1, 360000, [(360000, 1)]),
+                                "recorded_time", "selected")
+    conf["activity_baselines"][baseline_key(conf, 2)] = manual
+    assert 'class="rh-reference-reminder"' not in renderer.render(
+        view.overview, current_deck_only=True, limfcst=0,
+    )
+    assert saved_reference(conf, 2) == manual
+
+
+def test_old_automatic_selection_upgrades_to_p90_but_manual_dates_do_not(setup):
+    from review_heatmap.metrics import baseline_key, saved_reference
+
+    conf = setup.conf["synced"]
+    conf.update(activity_scale="baseline", activity_metric="recorded_time")
+    for age in range(1, 11):
+        add_review(setup, TODAY - age * 86400, milliseconds=age * 60000)
+    key = baseline_key(conf)
+    conf["activity_baselines"][key] = {
+        "day": TODAY - 8 * 86400, "value": 8, "source": "automatic",
+    }
+    renderer = make_renderer(setup)
+    renderer._activity_legend([])
+    assert saved_reference(conf)["day"] == TODAY - 9 * 86400
+    assert saved_reference(conf)["percentile"] == 90
+    conf["activity_baselines"][key] = {
+        "day": TODAY - 3 * 86400, "value": 3, "source": "selected",
+    }
+    renderer._activity_legend([])
+    assert saved_reference(conf)["day"] == TODAY - 3 * 86400
+
+
 def test_mixed_durations_reach_heatmap_progress_and_reference_migration(setup):
     from review_heatmap.metrics import baseline_key, saved_reference
 

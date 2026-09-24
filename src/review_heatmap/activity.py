@@ -162,18 +162,19 @@ class ActivityReporter:
         return activity_report
 
     def reference_history(self, day: Optional[int] = None,
-                          with_durations: bool = False) -> List[Sequence]:
+                          with_durations: bool = False,
+                          deck_id: Optional[int] = None) -> List[Sequence]:
         """Read reference candidates independently of the displayed calendar range.
 
-        All configured history/deck filters still apply. A reference is shared
-        across views so a given amount of work has the same shade in each deck.
+        Use the same included cards as the global or deck-specific heatmap.
+        Explicit deck IDs let the picker read another deck without selecting it.
         """
         conf = self._config["synced"]
         history_limit = self._get_conf_history_limit(conf["limhist"], conf["limdate"])
         start = day if day is not None else self._today - 60 * 86400
         stop = day + 86400 if day is not None else self._today
         return self._cards_done(start=max(start, history_limit or 0), stop=stop,
-                                with_durations=with_durations)
+                                with_durations=with_durations, deck_id=deck_id)
 
     def set_collection(self, col: "Collection"):
         # NOTE: Binding the collection is dangerous if we ever persist ActivityReporter
@@ -404,10 +405,13 @@ class ActivityReporter:
             dids = self.__get_active_deck_ids()
         return ids2str(dids)
 
-    def _revlog_limit(self, current_deck_only: bool) -> str:
+    def _revlog_limit(self, current_deck_only: bool,
+                      deck_id: Optional[int] = None) -> str:
         excluded_dids = self._config["synced"]["limdecks"]
         ignore_deleted = self._config["synced"]["limcdel"]
-        if not current_deck_only:
+        if deck_id is not None:
+            dids = self._col.decks.deck_and_child_ids(deck_id)
+        elif not current_deck_only:
             if excluded_dids:
                 dids = self._valid_decks(excluded_dids)
             elif ignore_deleted:
@@ -488,6 +492,7 @@ GROUP BY day ORDER BY day""".format(
         current_deck_only: bool = False,
         stop: Optional[int] = None,
         with_durations: bool = False,
+        deck_id: Optional[int] = None,
     ) -> List[Sequence]:
         """
         start: timestamp in seconds to start reporting from
@@ -520,7 +525,7 @@ GROUP BY day ORDER BY day""".format(
         if self._ignore_rescheduled_entries:
             lims.append("ease >= 1")
 
-        deck_limit = self._revlog_limit(current_deck_only)
+        deck_limit = self._revlog_limit(current_deck_only, deck_id)
         if deck_limit:
             lims.append(deck_limit)
 
