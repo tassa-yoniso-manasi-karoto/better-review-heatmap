@@ -441,7 +441,9 @@ class HeatmapRenderer:
         dynamic_levels = self._get_dynamic_levels(dynamic_legend)
         stats_formatting = self._stats_formatting
 
-        format_dict: Dict[str, str] = {}
+        conf = self._config["synced"]
+        use_baseline = metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline"
+        format_dict: Dict[str, str] = {"theme_class": " rh-theme-lime" if use_baseline else ""}
         stats_entry: StatsEntry
 
         for name, stats_entry in data.stats._asdict().items():

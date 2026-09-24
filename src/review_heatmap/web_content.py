@@ -100,7 +100,7 @@ HTML_REFERENCE_REMINDER: str = """
 """
 
 HTML_STREAK: str = """
-<div class="streak">
+<div class="streak{theme_class}">
     <span class="streak-info">Daily average:</span>
     <span title="Average reviews on active days"
         class="sstats {class_activity_daily_avg}">{text_activity_daily_avg}</span>

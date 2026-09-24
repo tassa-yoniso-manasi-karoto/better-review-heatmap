@@ -403,7 +403,7 @@ def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
     from review_heatmap.metrics import baseline_key, reference_from_day
 
     conf = setup.conf["synced"]
-    conf.update(activity_metric="workload", activity_scale="baseline")
+    conf.update(activity_metric="workload", activity_scale="baseline", colors="ice")
     reference_day = TODAY - 4 * 86400
     reference = reference_from_day((reference_day, 100, 6000000), "workload", "selected")
     conf["activity_baselines"] = {baseline_key(conf): reference}
@@ -425,8 +425,12 @@ def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
     assert options["history"][str(reference_day)] == [100, 6000000]
     assert "rh-baseline" in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
     assert conf["activity_baselines"][baseline_key(conf)] == reference
+    assert 'class="streak rh-theme-lime"' in renderer._generate_stats_elm(report, list(range(10)))
+    assert conf["colors"] == "ice"
     conf["activity_scale"] = "adaptive"
     assert renderer._baseline_reference() is None
+    assert 'class="streak"' in renderer._generate_stats_elm(report, list(range(10)))
+    assert conf["colors"] == "ice"
     conf["activity_metric"] = "reviews"
     assert "rh-baseline" not in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
 
