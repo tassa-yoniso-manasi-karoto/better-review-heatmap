@@ -145,6 +145,63 @@ def test_reference_history_excludes_today_and_obeys_history_limits(setup):
     assert setup.reporter.reference_history() == [(TODAY - 86400, 1, 30000)]
 
 
+def test_first_reviews_use_lifetime_answers_then_dates_and_current_decks(setup, monkeypatch):
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)",
+                                   [(1, 1), (2, 2), (3, 1)])
+    add_review(setup, TODAY - 90 * 86400, cid=1)
+    add_review(setup, TODAY - 2 * 86400, cid=1)  # not new within a shorter date range
+    add_review(setup, TODAY - 2 * 86400, cid=2, sequence=1)
+    add_review(setup, TODAY - 86400, cid=2)
+    add_review(setup, TODAY - 9 * 86400, cid=3, ease=0)  # rescheduling is not an answer
+    add_review(setup, TODAY - 86400, cid=3, sequence=1)
+    add_review(setup, TODAY, cid=3)  # learning/relearning does not count twice
+    add_review(setup, TODAY - 86400, cid=99, sequence=2)  # deleted card
+    start = TODAY - 10 * 86400
+    assert setup.reporter.first_reviews(start=start) == [
+        (TODAY - 2 * 86400, 1), (TODAY - 86400, 2),
+    ]
+    assert setup.reporter.first_reviews(start=start, deck_id=1) == [(TODAY - 86400, 1)]
+    assert setup.reporter.first_reviews(start=start, deck_id=2, card_ids=True) == [
+        (TODAY - 2 * 86400, 2),
+    ]
+    setup.conf["synced"]["limcdel"] = True
+    setup.conf["synced"]["limdecks"] = [2]
+    assert setup.reporter.first_reviews(start=start) == [(TODAY - 86400, 1)]
+    setup.db.connection.execute("UPDATE cards SET did = 1 WHERE id = 2")
+    assert setup.reporter.first_reviews(start=start, deck_id=2) == []
+    assert setup.reporter.first_reviews(start=start, current_deck_only=True) == [
+        (TODAY - 2 * 86400, 1), (TODAY - 86400, 1),
+    ]
+    setup.db.connection.execute("UPDATE cards SET did = 2 WHERE id = 2")
+    monkeypatch.setattr(setup.col.decks, "deck_and_child_ids", lambda did: [1, 2] if did == 1 else [2])
+    assert len(setup.reporter.first_reviews(start=start, deck_id=1)) == 2
+
+
+def test_new_card_layer_has_ice_counts_and_no_forecasts_without_changing_normal_mode(setup):
+    from review_heatmap.metrics import adaptive_color, baseline_key
+
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, 1, 101, 2)", [(1,), (2,)])
+    add_review(setup, TODAY - 2 * 86400, cid=1, milliseconds=240000)
+    add_review(setup, TODAY - 2 * 86400, cid=1, sequence=1)
+    add_review(setup, TODAY - 86400, cid=2)
+    add_review(setup, TODAY, cid=2)
+    conf = setup.conf["synced"]
+    conf.update(activity_scale="baseline", activity_metric="workload", colors="magenta")
+    reference = {"day": TODAY - 2 * 86400, "value": 20, "source": "selected"}
+    conf["activity_baselines"][baseline_key(conf)] = reference
+    original = copy.deepcopy(conf)
+    html = make_renderer(setup).render(setup.modules.renderer.HeatmapView.deckbrowser, limfcst=2)
+    options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
+    assert options["firstReviews"] == {str(TODAY - 2 * 86400): 1, str(TODAY - 86400): 1}
+    assert set(options["firstReviewColors"].values()) == {adaptive_color(1, 1, "ice")}
+    assert options["dayColors"][str(reference["day"])] == "#ffffff"
+    assert options["theme"] == "magenta"
+    assert 'New cards/day:' in html and 'Daily average:' in html
+    assert html.index('title="Go back') < html.index('title="Today"') < html.index('title="Go forward')
+    assert html.index('title="Go forward') < html.index('id="review-heatmap-new-cards"')
+    assert conf == original
+
+
 def make_renderer(setup):
     return setup.modules.renderer.HeatmapRenderer(
         SimpleNamespace(col=setup.col), setup.reporter, setup.conf,
@@ -515,7 +572,8 @@ def test_additive_settings_migration_preserves_existing_data(addon_modules):
     addon_modules.config.ensure_activity_defaults(conf)
     for storage, values in previous.items():
         for key, value in values.items():
-            assert conf[storage][key] == value
+            expected = "lime" if storage == "synced" and key == "colors" else value
+            assert conf[storage][key] == expected
     assert conf["synced"]["activity_metric"] == "workload"
     assert conf["profile"]["show_today_progress"] is True
     assert conf["profile"]["time_notice_seen"] is False

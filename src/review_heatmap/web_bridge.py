@@ -43,6 +43,7 @@ from aqt.qt import QWidget
 from aqt.stats import DeckStats
 
 from .config import heatmap_colors, heatmap_modes
+from .activity import ActivityReporter
 from .metrics import metric_name, reference_scope
 from .gui.contrib import invoke_contributions_dialog
 from .gui.extra import invoke_snanki
@@ -166,6 +167,21 @@ class _CommandHandler:
             return
         invoke_options_dialog(parent=parent, reference_deck_id=deck_id)
 
+    @_register_command_handler("firstreviews")
+    def browse_first_reviews(self, payload: str, context: SUPPORTED_CONTEXT_TYPES) -> None:
+        try:
+            scope, timestamp = payload.rsplit(",", 1)
+            deck_id = self._reference_deck(scope)
+            day = int(timestamp)
+            if day < 0 or day % 86400:
+                return
+        except (AttributeError, TypeError, ValueError):
+            return
+        rows = ActivityReporter(self._mw.col, self._config).first_reviews(
+            start=day, stop=day + 86400, deck_id=deck_id, card_ids=True,
+        )
+        self.browse("cid:" + (",".join(str(row[1]) for row in rows) or "0"), context)
+
     @_register_command_handler("choosereference")
     def choose_reference(self, payload: str, context: SUPPORTED_CONTEXT_TYPES) -> None:
         try:
@@ -232,7 +248,8 @@ class _CommandHandler:
     @_register_command_handler("themeswitch")
     def cycle_hm_themes(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:
         themes = list(heatmap_colors.keys())
-        cur_idx = themes.index(self._config["synced"]["colors"])
+        color = self._config["synced"]["colors"]
+        cur_idx = themes.index(color) if color in themes else -1
         new_idx = (cur_idx + 1) % len(themes)
         self._config["synced"]["colors"] = themes[new_idx]
         self._config.save()

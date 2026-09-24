@@ -110,6 +110,7 @@ class ActivityReport(NamedTuple):
     stats: StatsReport
     review_time: Dict[int, int]
     review_durations: Optional[Dict[int, List[Tuple[int, int]]]] = None
+    first_reviews: Optional[Dict[int, int]] = None
 
 
 class ActivityReporter:
@@ -154,6 +155,9 @@ class ActivityReporter:
                 review_time={row[0]: row[2] for row in history_rows},
                 review_durations={row[0]: row[3] for row in history_rows},
             )
+            activity_report = activity_report._replace(first_reviews=dict(
+                self.first_reviews(start=history_start, current_deck_only=current_deck_only)
+            ))
         else:
             raise NotImplementedError(
                 "activity type {} not implemented".format(activity_type)
@@ -175,6 +179,34 @@ class ActivityReporter:
         stop = day + 86400 if day is not None else self._today
         return self._cards_done(start=max(start, history_limit or 0), stop=stop,
                                 with_durations=with_durations, deck_id=deck_id)
+
+    def first_reviews(self, start: Optional[int] = None, stop: Optional[int] = None,
+                      current_deck_only: bool = False, deck_id: Optional[int] = None,
+                      card_ids: bool = False) -> List[Sequence[int]]:
+        """Count each card's earliest recorded answer, before applying date limits.
+
+        Reschedules are not answers. Deck membership is current, matching the
+        normal heatmap, and a reset/relearning never makes a card new again.
+        """
+        deck_limit = self._revlog_limit(current_deck_only, deck_id)
+        limits = []
+        if start is not None:
+            limits.append(f"day >= {int(start)}")
+        if stop is not None:
+            limits.append(f"day < {int(stop)}")
+        where = "WHERE " + " AND ".join(limits) if limits else ""
+        return self._db.all(f"""
+WITH first_answers AS (
+    SELECT cid, MIN(id) AS id FROM revlog
+    WHERE ease >= 1 {('AND ' + deck_limit) if deck_limit else ''}
+    GROUP BY cid
+)
+SELECT CAST(STRFTIME('%s', id / 1000 - {self._offset * 3600}, 'unixepoch',
+                     'localtime', 'start of day') AS int) AS day,
+       {'cid' if card_ids else 'COUNT()'}
+FROM first_answers {where}
+{'ORDER BY cid' if card_ids else 'GROUP BY day ORDER BY day'}
+""")
 
     def set_collection(self, col: "Collection"):
         # NOTE: Binding the collection is dangerous if we ever persist ActivityReporter

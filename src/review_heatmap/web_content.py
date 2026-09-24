@@ -65,12 +65,16 @@ HTML_HEATMAP: str = f"""
         <div title="Go back\n(Shift-click for first year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'prev');" class="hm-btn">
             <img src="{WEB_BASE}/assets/left.svg" />
         </div>
-        <div title="Go forward\n(Shift-click for last year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'next');" class="hm-btn">
-            <img src="{WEB_BASE}/assets/right.svg" />
-        </div>
         <div title="Today" onclick="reviewHeatmap.onHmHome(event, this);" class="hm-btn hm-today">
             <img src="{WEB_BASE}/assets/circle.svg" />
         </div>
+        <div title="Go forward\n(Shift-click for last year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'next');" class="hm-btn">
+            <img src="{WEB_BASE}/assets/right.svg" />
+        </div>
+        <button id="review-heatmap-new-cards" type="button" class="hm-new-cards" role="switch" title="Show first reviews of new cards" aria-label="Show first reviews of new cards" aria-checked="false" onclick="reviewHeatmap.onToggleNewCards();">
+            <span class="hm-switch-review" aria-hidden="true">review</span>
+            <span class="hm-switch-new" aria-hidden="true">new</span>
+        </button>
         <div class="hm-settings-row">
             <div class="hm-btn" title="Options" onclick="reviewHeatmap.onHmOpts(event, this);">
                 <img src="{WEB_BASE}/assets/options.svg" />
@@ -118,6 +122,19 @@ HTML_STREAK: str = """
 
 HTML_INFO_NODATA: str = """
 No activity data to show (<span class="linkspan" onclick='pycmd("revhm_opts");'>options</span>).
+"""
+
+HTML_NEW_CARD_STREAK: str = """
+<div class="streak">
+    <span class="streak-info">New cards/day:</span>
+    <span class="sstats {class_activity_daily_avg}">{text_activity_daily_avg}</span>
+    <span class="streak-info">Days with new cards:</span>
+    <span class="sstats {class_pct_days_active}">{text_pct_days_active}%</span>
+    <span class="streak-info">Longest streak:</span>
+    <span title="Consecutive days with first reviews" class="sstats {class_streak_max}">{text_streak_max}</span>
+    <span class="streak-info">Current streak:</span>
+    <span title="Consecutive days with first reviews" class="sstats {class_streak_cur}">{text_streak_cur}</span>
+</div>
 """
 
 HTML_TODAY_PROGRESS: str = """

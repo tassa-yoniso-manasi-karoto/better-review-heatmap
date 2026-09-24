@@ -50,7 +50,6 @@ __all__ = ["heatmap_colors", "heatmap_modes", "config_defaults", "config"]
 heatmap_colors: Dict[str, Dict[str, str]] = {
     "lime": {"label": "Lime"},
     "olive": {"label": "Olive"},
-    "ice": {"label": "Ice"},
     "magenta": {"label": "Magenta"},
     "flame": {"label": "Flame"},
 }
@@ -129,6 +128,9 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
             manager[storage] = values
 
     synced = manager["synced"]
+    if synced.get("colors") == "ice":
+        synced["colors"] = "lime"
+        manager["synced"] = synced
     if synced.get("activity_scale") == "fixed":
         synced["activity_scale"] = "adaptive"
         manager["synced"] = synced

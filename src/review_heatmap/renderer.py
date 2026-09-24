@@ -64,6 +64,7 @@ from .metrics import (
     show_reference_reminder,
     AUTO_REFERENCE_PERCENTILE,
     AUTO_REFERENCE_REFRESH_DAYS,
+    ADAPTIVE_FACTORS,
 )
 from .web_content import (
     CSS_DISABLE_HEATMAP,
@@ -77,6 +78,7 @@ from .web_content import (
     HTML_INFO_NODATA,
     HTML_MAIN_ELEMENT,
     HTML_STREAK,
+    HTML_NEW_CARD_STREAK,
     HTML_TODAY_PROGRESS,
 )
 
@@ -209,7 +211,18 @@ class HeatmapRenderer:
             classes.append(CSS_DISABLE_HEATMAP)
 
         if prefs["display"][view.name] or prefs["statsvis"]:
-            stats = self._generate_stats_elm(report, stats_legend)
+            stats = '<div class="rh-review-stats">' + self._generate_stats_elm(report, stats_legend) + '</div>'
+            first_reviews = report.first_reviews or {}
+            if first_reviews:
+                first_report = self._reporter._get_activity(sorted(first_reviews.items()))
+                first_legend = self._stats_legend([
+                    factor * (adaptive_anchor(first_reviews.values()) or 1)
+                    for factor in ADAPTIVE_FACTORS
+                ])
+                first_stats = self._generate_stats_elm(first_report, first_legend, first_reviews=True)
+            else:
+                first_stats = '<div class="streak">No first reviews in the included history.</div>'
+            stats += '<div class="rh-new-card-stats">' + first_stats + '</div>'
         else:
             stats = ""
             classes.append(CSS_DISABLE_STATS)
@@ -380,6 +393,8 @@ class HeatmapRenderer:
         mode = heatmap_modes[self._config["synced"]["mode"]]
         metric = metric_name(self._config["synced"])
         deck_id = self._reference_deck_id(current_deck_only)
+        first_reviews = report.first_reviews or {}
+        first_anchor = adaptive_anchor(first_reviews.values()) or 1
 
         # TODO: pass on "whole" to govern browser link "deck:current" addition
         options = {
@@ -394,6 +409,16 @@ class HeatmapRenderer:
             "legend": dynamic_legend,
             "whole": not current_deck_only,
             "referenceScope": reference_scope(deck_id),
+            "viewSession": self._progress_session,
+            "theme": self._config["synced"]["colors"],
+            "firstReviews": first_reviews,
+            "firstReviewColors": {
+                day: adaptive_color(count, first_anchor, "ice", theme_manager.night_mode)
+                for day, count in first_reviews.items()
+            },
+            "firstReviewLegend": self._heatmap_legend([
+                factor * first_anchor for factor in ADAPTIVE_FACTORS
+            ]),
             "showPaletteButton": metric != "reviews" and
                                  self._config["synced"].get("activity_scale") == "baseline",
             "dayColors": {},
@@ -430,7 +455,8 @@ class HeatmapRenderer:
             options=json.dumps(options), data=json.dumps(activity)
         )
 
-    def _generate_stats_elm(self, data: ActivityReport, dynamic_legend) -> str:
+    def _generate_stats_elm(self, data: ActivityReport, dynamic_legend,
+                            first_reviews: bool = False) -> str:
         dynamic_levels = self._get_dynamic_levels(dynamic_legend)
         stats_formatting = self._stats_formatting
 
@@ -459,7 +485,8 @@ class HeatmapRenderer:
             format_dict["class_" + name] = css_class
             format_dict["text_" + name] = label
 
-        return HTML_STREAK.format(**format_dict)
+        template = HTML_NEW_CARD_STREAK if first_reviews else HTML_STREAK
+        return template.format(**format_dict)
 
     def _get_dynamic_levels(self, dynamic_legend) -> List[Tuple[int, str]]:
         return list(zip(dynamic_legend, self._css_colors))

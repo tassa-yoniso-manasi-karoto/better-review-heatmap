@@ -3,7 +3,7 @@ const { after, test } = require("node:test");
 const { mkdtempSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
-const { buildSync } = require("esbuild");
+const { build, buildSync } = require("esbuild");
 
 const temporary = mkdtempSync(join(tmpdir(), "review-heatmap-web-"));
 const outfile = join(temporary, "activity.cjs");
@@ -16,6 +16,100 @@ buildSync({
 });
 const { calendarDayKey, formatRecordedTime, reviewSummary } = require(outfile);
 after(() => rmSync(temporary, { recursive: true, force: true }));
+
+test("first-review toggle preserves the calendar page and restores normal colors and data", async t => {
+  const target = join(temporary, "heatmap.cjs");
+  await build({
+    entryPoints: [resolve(__dirname, "../src/web/main.ts")], bundle: true,
+    platform: "node", format: "cjs", outfile: target, loader: { ".css": "text" },
+    plugins: [{ name: "calendar-fixture", setup(builder) {
+      builder.onLoad({ filter: /cal-heatmap\.js$/ }, () => ({ contents: `
+        export class CalHeatMap {
+          page = "previous year";
+          root = { selectAll: () => ({ style: (_, color) => { this.cellColor = color; } }) };
+          init(options) { this.options = options; globalThis.testCalendar = this; options.afterLoad(); }
+          setLegend(legend) { this.options.legend = legend; }
+          update(data) { this.options.data = data; this.options.afterUpdate(); }
+          highlight() {}
+        }
+      ` }));
+    } }],
+  });
+  const names = ["document", "window", "sessionStorage", "pycmd", "ReviewHeatmap", "testCalendar"];
+  const original = Object.fromEntries(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  t.after(() => {
+    for (const name of names) {
+      if (original[name]) Object.defineProperty(globalThis, name, original[name]);
+      else delete globalThis[name];
+    }
+  });
+  const classes = new Set(["rh-container", "rh-baseline", "rh-theme-magenta"]);
+  const container = { classList: {
+    contains: name => classes.has(name),
+    toggle: (name, value) => value ? classes.add(name) : classes.delete(name),
+  } };
+  const toggle = { attributes: {}, style: { setProperty(name, value) { this[name] = value; } },
+    setAttribute(name, value) { this.attributes[name] = value; } };
+  const palette = {};
+  const elements = {
+    "cal-heatmap": { closest: () => container },
+    "review-heatmap-new-cards": toggle, "review-heatmap-palette": palette,
+  };
+  const storage = new Map(), commands = [];
+  globalThis.document = { createElement: () => ({}), head: { appendChild() {} },
+    getElementById: id => elements[id] };
+  let refreshPalette;
+  globalThis.window = { setInterval: callback => { refreshPalette = callback; } };
+  globalThis.sessionStorage = { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) };
+  globalThis.pycmd = (command, callback) => { commands.push(command); callback?.(true); };
+  require(target);
+  const day = Date.UTC(2026, 2, 9) / 1000;
+  const cell = { t: new Date(2026, 2, 9).getTime(), v: 2 };
+  const options = {
+    domain: "year", subdomain: "day", range: 1, start: day * 1000,
+    stop: (day + 86400) * 1000, today: day * 1000, offset: 4,
+    legend: [1, 2, 3], firstReviewLegend: [0.5, 1, 2],
+    referenceScope: "global", viewSession: "collection-a", theme: "magenta",
+    showPaletteButton: true, dayColors: { [day]: "#ffffff" },
+    firstReviews: { [day]: 2 }, firstReviewColors: { [day]: "#4a95e8" }, history: {},
+  };
+  const normal = { [day]: 5, [day + 86400]: -20 };
+  const heatmap = new globalThis.ReviewHeatmap(options);
+  assert.equal(toggle.style["--rh-review-accent"], "116, 186, 88"); // Lime in Baseline
+  assert.equal(toggle.style["--rh-new-accent"], "93, 162, 235"); // Ice
+  heatmap.create(normal);
+  const calendar = globalThis.testCalendar;
+  assert.equal(calendar.cellColor(cell), "#ffffff");
+  heatmap.onToggleNewCards();
+  assert.deepEqual(calendar.options.data, options.firstReviews);
+  assert.equal(calendar.page, "previous year");
+  assert.equal(calendar.cellColor(cell), "#4a95e8");
+  assert.equal(toggle.attributes["aria-checked"], "true");
+  assert(classes.has("rh-theme-ice") && !classes.has("rh-baseline"));
+  assert.equal(palette.hidden, false);
+  refreshPalette();
+  assert.equal(palette.hidden, false);
+  assert.match(calendar.options.subDomainTitleFormat(false, { date: "March 9" }, cell), /2.*new cards first reviewed/);
+  calendar.options.onClick(new Date(cell.t), 2);
+  assert.equal(commands.at(-1), `revhm_firstreviews:global,${day}`);
+  heatmap.onToggleNewCards();
+  assert.deepEqual(calendar.options.data, normal);
+  assert.deepEqual(calendar.options.legend, options.legend);
+  assert.equal(calendar.page, "previous year");
+  assert.equal(calendar.cellColor(cell), "#ffffff");
+  assert(classes.has("rh-theme-magenta") && classes.has("rh-baseline"));
+  assert.equal(palette.hidden, false);
+  // The same scope remembers its layer on redraw; other decks start normally.
+  heatmap.onToggleNewCards();
+  classes.add("rh-baseline");
+  new globalThis.ReviewHeatmap(options).create(normal);
+  assert.deepEqual(globalThis.testCalendar.options.data, options.firstReviews);
+  new globalThis.ReviewHeatmap({ ...options, referenceScope: "deck:2" }).create(normal);
+  assert.deepEqual(globalThis.testCalendar.options.data, normal);
+  new globalThis.ReviewHeatmap({ ...options, showPaletteButton: false }).create(normal);
+  assert.equal(palette.hidden, true);
+  assert.equal(toggle.style["--rh-review-accent"], "234, 78, 156"); // Current Magenta theme
+});
 
 // Minimal DOM and frame clock: exercise navigation without waiting in real time.
 function progressPage(t) {

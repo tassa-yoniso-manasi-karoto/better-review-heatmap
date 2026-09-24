@@ -130,6 +130,7 @@ def test_classic_disables_reference_controls(setup, options_module):
     parent.col = setup.col
     dialog = module.RevHmOptions(setup.conf, parent)
     assert dialog.selActivityScale.currentData() == "adaptive"
+    assert dialog.form.selHmColor.findData("ice") == -1
     assert dialog.selActivityScale.currentText() == "Classic"
     assert dialog.selActivityScale.findData("fixed") == -1
     assert "median score" in dialog.labActivityDescription.text()
@@ -230,6 +231,30 @@ def test_reference_bridge_uses_explicit_scope_and_saves_dismissal(
     assert handler("dismissreference", "deck:invalid", parent) is False
     assert handler("dismissreference", None, parent) is False
     assert len(setup.conf.saves) == 1
+
+
+def test_first_review_browser_selects_only_new_cards_in_the_requested_scope(setup, options_module, monkeypatch):
+    from aqt.qt import QWidget
+    from types import SimpleNamespace
+
+    bridge = importlib.import_module("review_heatmap.web_bridge")
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)",
+                                   [(1, 1), (2, 2), (3, 1)])
+    yesterday = TODAY - 86400
+    add_review(setup, TODAY - 2 * 86400, cid=1)
+    for cid in (1, 2, 3):
+        add_review(setup, yesterday, cid=cid, sequence=cid)
+    handler = bridge._CommandHandler(SimpleNamespace(col=setup.col), setup.conf)
+    searches = []
+    monkeypatch.setattr(handler, "browse", lambda query, context: searches.append(query))
+    parent = QWidget()
+    handler("firstreviews", f"global,{yesterday}", parent)
+    assert searches == ["cid:2,3"]
+    handler("firstreviews", f"deck:1,{yesterday}", parent)
+    assert searches[-1] == "cid:3"
+    for payload in ("deck:999,0", "global,invalid", "global,-1", None):
+        handler("firstreviews", payload, parent)
+    assert len(searches) == 2
 
 
 def test_legacy_statistics_pass_the_correct_global_or_deck_scope(setup, options_module):

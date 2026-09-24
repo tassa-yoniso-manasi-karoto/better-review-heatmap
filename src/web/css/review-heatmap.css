@@ -73,7 +73,7 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 }
 .heatmap-controls {
     display: grid;
-    grid-template-columns: repeat(2, 24px);
+    grid-template-columns: repeat(3, 24px);
     gap: 8px;
     margin-left: 8px;
 }
@@ -147,12 +147,110 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 .hm-btn[hidden] {
     display: none;
 }
-.hm-today {
-    grid-column: 1 / 3;
+.rh-container .hm-new-cards {
+    all: unset;
+    --rh-switch-accent: var(--rh-review-accent);
+    box-sizing: border-box;
+    position: relative;
+    display: block;
+    grid-column: 1 / -1;
     justify-self: center;
+    width: 68px;
+    height: 22px;
+    padding: 2px;
+    border: 1px solid rgba(var(--rh-switch-accent), 0.4);
+    border-radius: 999px;
+    background: rgba(180, 180, 180, 0.1);
+    color: rgba(191, 195, 203, 0.5);
+    font: inherit;
+    font-size: 10px;
+    line-height: 1;
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+    overflow: hidden;
+    transition: border-color 240ms ease;
+}
+.night_mode .rh-container .hm-new-cards {
+    background: rgba(0, 0, 0, 0.12);
+}
+.rh-container .hm-new-cards:hover,
+.rh-container .hm-new-cards:active {
+    transform: none;
+    translate: none;
+    box-shadow: none;
+}
+.rh-container .hm-new-cards::before {
+    content: "";
+    box-sizing: border-box;
+    position: absolute;
+    top: 2px;
+    left: calc(100% - 18px);
+    width: 16px;
+    height: 16px;
+    border: 1px solid rgba(var(--rh-switch-accent), 0.15);
+    border-radius: 50%;
+    background: rgba(var(--rh-switch-accent), 0.75);
+    z-index: 1;
+    transition: left 240ms ease, background-color 240ms ease,
+                border-color 240ms ease;
+}
+.hm-new-cards > span {
+    box-sizing: border-box;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: clip-path 240ms ease;
+    pointer-events: none;
+}
+.hm-new-cards .hm-switch-review {
+    padding: 0 20px 0 2px;
+    color: rgba(var(--rh-review-accent), 0.6);
+    clip-path: inset(0 18px 0 0);
+}
+.hm-new-cards .hm-switch-new {
+    padding: 0 2px 0 20px;
+    color: rgba(var(--rh-new-accent), 0.6);
+    clip-path: inset(0 0 0 calc(100% - 2px));
+}
+.rh-container .hm-new-cards[aria-checked="true"] {
+    --rh-switch-accent: var(--rh-new-accent);
+}
+.hm-new-cards[aria-checked="true"]::before {
+    left: 2px;
+}
+.hm-new-cards[aria-checked="true"] .hm-switch-review {
+    clip-path: inset(0 calc(100% - 2px) 0 0);
+}
+.hm-new-cards[aria-checked="true"] .hm-switch-new {
+    clip-path: inset(0 0 0 18px);
+}
+.rh-container .hm-new-cards:hover::before {
+    background: rgba(var(--rh-switch-accent), 0.9);
+}
+.rh-container .hm-new-cards:focus-visible {
+    outline: 1px solid rgba(var(--rh-switch-accent), 0.5);
+    outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+    .rh-container .hm-new-cards,
+    .rh-container .hm-new-cards::before,
+    .hm-new-cards > span {
+        transition: none;
+    }
+}
+.rh-new-card-stats,
+.rh-container.rh-new-cards .rh-review-stats,
+.rh-container.rh-new-cards .rh-reference-reminder {
+    display: none;
+}
+.rh-container.rh-new-cards .rh-new-card-stats {
+    display: block;
 }
 .hm-settings-row {
-    grid-column: 1 / 3;
+    grid-column: 1 / -1;
     display: flex;
     justify-content: center;
     gap: 8px;

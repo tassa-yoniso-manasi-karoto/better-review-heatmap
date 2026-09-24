@@ -41,6 +41,11 @@ export interface ReviewHeatmapOptions {
   legend: number[];
   whole: boolean;
   referenceScope: string;
+  viewSession: string;
+  theme: string;
+  firstReviews: ReviewHeatmapData;
+  firstReviewColors: { [timestamp: number]: string };
+  firstReviewLegend: number[];
   showPaletteButton: boolean;
   dayColors: { [timestamp: number]: string };
   history: { [timestamp: number]: [reviews: number, milliseconds: number] };

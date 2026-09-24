@@ -31,7 +31,7 @@ Any modifications to this file must keep this entire header intact.
 
 import calHeatmapCss from "./_vendor/cal-heatmap.css";
 import reviewHeatmapCss from "./css/review-heatmap.css";
-import { themeCss } from "./themes";
+import { themeAccentRgb, themeCss } from "./themes";
 
 var __vite_style__ = document.createElement('style');
 __vite_style__.textContent = calHeatmapCss + "\n" + themeCss() + "\n" + reviewHeatmapCss;
@@ -58,11 +58,27 @@ class ReviewHeatmap {
   public static updateTodayProgress = updateTodayProgress;
   private heatmap: CalHeatMap | null;
   private paletteButton: HTMLElement | null;
+  private newCardsButton: HTMLElement | null;
+  private container: HTMLElement | null;
+  private baselineMode: boolean;
+  private showNewCards = false;
+  private reviewData: ReviewHeatmapData = {};
+  private layerStorageKey: string;
 
   constructor(private options: ReviewHeatmapOptions) {
     this.heatmap = null;
+    this.container = document.getElementById("cal-heatmap")?.closest(".rh-container") as HTMLElement | null;
+    this.baselineMode = this.container?.classList.contains("rh-baseline") || false;
+    this.newCardsButton = document.getElementById("review-heatmap-new-cards");
+    this.newCardsButton?.style.setProperty("--rh-review-accent",
+      themeAccentRgb(options.showPaletteButton ? "lime" : options.theme));
+    this.newCardsButton?.style.setProperty("--rh-new-accent", themeAccentRgb("ice"));
+    this.layerStorageKey = `rh-first-reviews:${options.viewSession}:${options.referenceScope}`;
+    try {
+      this.showNewCards = sessionStorage.getItem(this.layerStorageKey) === "true";
+    } catch { /* The toggle also works without web storage. */ }
     this.paletteButton = document.getElementById("review-heatmap-palette");
-    this.setPaletteVisibility(options.showPaletteButton);
+    this.updateLayerControls();
     window.setInterval(() => this.refreshPaletteVisibility(), 1000);
   }
 
@@ -78,6 +94,7 @@ class ReviewHeatmap {
   }
 
   public create(data: ReviewHeatmapData) {
+    this.reviewData = data;
     let calStartDate = applyDateOffset(new Date());
     let calMinDate = applyDateOffset(new Date(this.options.start));
     let calMaxDate = applyDateOffset(new Date(this.options.stop));
@@ -109,8 +126,8 @@ class ReviewHeatmap {
     }
 
     let heatmap = new CalHeatMap();
-    const dayColors = this.options.dayColors;
     const applyDayColors = () => {
+      const dayColors = this.showNewCards ? this.options.firstReviewColors : this.options.dayColors;
       // Inline fills survive the vendor's asynchronous class updates and
       // highlights. Calendar keys preserve the inherited DST correction.
       heatmap.root.selectAll(".graph-domain rect")
@@ -136,7 +153,7 @@ class ReviewHeatmap {
       highlight: calTodayDate,
       today: calTodayDate,
       start: calStartDate,
-      legend: this.options.legend,
+      legend: this.showNewCards ? this.options.firstReviewLegend : this.options.legend,
       displayLegend: false,
       domainLabelFormat: this.options.domLabForm,
       tooltip: true,
@@ -152,6 +169,13 @@ class ReviewHeatmap {
       ): string => {
         // format tooltips
         let tooltip: string;
+
+        if (this.showNewCards) {
+          const count = this.options.firstReviews[calendarDayKey(new Date(cellData.t))] || 0;
+          return count
+            ? `<b>${count.toLocaleString()}</b> new ${count === 1 ? "card" : "cards"} first reviewed on ${formatData.date}`
+            : `<b>No</b> first reviews on ${formatData.date}`;
+        }
 
         const recorded = this.options.history[calendarDayKey(new Date(cellData.t))];
         if (recorded && cellData.v >= 0) {
@@ -181,6 +205,12 @@ class ReviewHeatmap {
         if (nb === null || nb == 0) {
           // No cards for that day. Preserve highlight and return.
           heatmap.highlight(calTodayDate);
+          return;
+        }
+
+        if (this.showNewCards) {
+          bridgeCommand(`revhm_firstreviews:${this.options.referenceScope},${calendarDayKey(date)}`);
+          heatmap.highlight([calTodayDate, date]);
           return;
         }
 
@@ -260,10 +290,35 @@ class ReviewHeatmap {
 
         return results;
       },
-      data: data,
+      data: this.showNewCards ? this.options.firstReviews : data,
     });
 
     this.heatmap = heatmap;
+  }
+
+  private updateLayerControls() {
+    this.container?.classList.toggle("rh-new-cards", this.showNewCards);
+    this.container?.classList.toggle("rh-baseline", this.baselineMode && !this.showNewCards);
+    this.container?.classList.toggle(`rh-theme-${this.options.theme}`, !this.showNewCards);
+    this.container?.classList.toggle("rh-theme-ice", this.showNewCards);
+    this.newCardsButton?.setAttribute("aria-checked", String(this.showNewCards));
+    if (this.newCardsButton) {
+      const label = this.showNewCards ? "Show all reviews" : "Show first reviews of new cards";
+      this.newCardsButton.title = label;
+    }
+    this.setPaletteVisibility(this.options.showPaletteButton);
+  }
+
+  public onToggleNewCards() {
+    if (!this.heatmap) return;
+    this.showNewCards = !this.showNewCards;
+    try {
+      sessionStorage.setItem(this.layerStorageKey, String(this.showNewCards));
+    } catch { /* Optional persistence across page redraws. */ }
+    this.updateLayerControls();
+    this.heatmap.options.data = this.showNewCards ? this.options.firstReviews : this.reviewData;
+    this.heatmap.setLegend(this.showNewCards ? this.options.firstReviewLegend : this.options.legend);
+    this.heatmap.update(this.heatmap.options.data);
   }
 
   public onHmHome(event: KeyboardEvent, button) {
