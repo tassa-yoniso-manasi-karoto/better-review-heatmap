@@ -50,13 +50,23 @@ class ADDON:
     Property names need to be all-uppercase with no leading underscores
     """
 
-    NAME = "Review Heatmap"
+    NAME = "Better Review Heatmap"
     MODULE = "review_heatmap"
-    REPO = "review-heatmap"
+    REPO = "better-review-heatmap"
     ID = "1771074083"
     VERSION = __version__
     LICENSE = "GNU AGPLv3"
     AUTHORS = (
+        {
+            "name": "tassa-yoniso-manasi-karoto",
+            "years": "2026",
+            "contact": "https://github.com/tassa-yoniso-manasi-karoto/better-review-heatmap",
+        },
+        {
+            "name": "Oliver Cheng",
+            "years": "2025",
+            "contact": "https://github.com/olliecheng/review-heatmap",
+        },
         {
             "name": "Aristotelis P. (Glutanimate)",
             "years": "2016-2022",

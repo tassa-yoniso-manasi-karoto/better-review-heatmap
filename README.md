@@ -78,6 +78,7 @@ and restart.
 Based on the Anki add-on [Review Heatmap](https://github.com/glutanimate/review-heatmap/) by Glutanimate.
 
 Original add-on copyright © 2016–2022 Aristotelis P.
-([Glutanimate](https://glutanimate.com/)). Includes d3.js (BSD) and cal-heatmap
+([Glutanimate](https://glutanimate.com/)). Fork modifications copyright © 2026
+tassa-yoniso-manasi-karoto and © 2025 Oliver Cheng. Includes d3.js (BSD) and cal-heatmap
 (MIT). Distributed under GNU AGPLv3 with additional terms; see [LICENSE](LICENSE)
 and the bundled library notices.

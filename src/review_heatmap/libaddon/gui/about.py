@@ -99,7 +99,7 @@ debugging_template = """\
 """
 
 authors_template = """\
-<p>© {years} <a href="{contact}">{name}</a></p>\
+<div style="margin-bottom: 2px;">© {years} <a href="{contact}">{name}</a></div>\
 """
 
 libs_item_template = """\
