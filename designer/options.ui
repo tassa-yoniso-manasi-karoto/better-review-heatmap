@@ -194,7 +194,7 @@
      </widget>
      <widget class="QWidget" name="tab_2">
       <attribute name="title">
-       <string>&amp;Fine Tuning</string>
+       <string>&amp;Exclusions</string>
       </attribute>
       <layout class="QVBoxLayout" name="verticalLayout_2">
        <item>
@@ -423,6 +423,11 @@
         </widget>
        </item>
       </layout>
+     </widget>
+     <widget class="QWidget" name="tabChangelog">
+      <attribute name="title">
+       <string>&amp;Changelog</string>
+      </attribute>
      </widget>
      <widget class="QWidget" name="tab_3">
       <attribute name="title">

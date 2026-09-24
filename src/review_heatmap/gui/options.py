@@ -181,6 +181,9 @@ class RevHmOptions(OptionsDialog):
         self.selActivityMetric = QComboBox(tab)
         self.selActivityScale = QComboBox(tab)
         choices.addRow("Color by", self.selActivityMetric)
+        self.form.gridLayout.removeWidget(self.form.label)
+        self.form.gridLayout.removeWidget(self.form.selHmColor)
+        choices.addRow(self.form.label, self.form.selHmColor)
         choices.addRow("Color scale", self.selActivityScale)
         layout.addLayout(choices)
 
@@ -257,7 +260,7 @@ class RevHmOptions(OptionsDialog):
         timing.setWordWrap(True)
         layout.addWidget(timing)
         layout.addStretch()
-        self.form.tabWidget.insertTab(1, tab, "Activity")
+        self.form.tabWidget.insertTab(1, tab, "Display Mode")
 
     def _refreshActivitySettings(self, *args):
         if not self._activity_ready:
@@ -266,6 +269,9 @@ class RevHmOptions(OptionsDialog):
         deck_id = self.selReferenceScope.currentData()
         metric = metric_name(conf)
         classic = metric == "reviews"
+        show_color_scheme = metric in ("reviews", "recorded_time")
+        self.form.label.setVisible(show_color_scheme)
+        self.form.selHmColor.setVisible(show_color_scheme)
         self.selActivityScale.setEnabled(not classic)
         use_baseline = not classic and conf.get("activity_scale") == "baseline"
         self.referenceGroup.setVisible(use_baseline)
