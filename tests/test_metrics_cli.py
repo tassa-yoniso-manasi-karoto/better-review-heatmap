@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from review_heatmap.metrics import (
-    METRICS, activity_color, activity_value,
+    METRICS, adaptive_color, activity_value,
     baseline_color, baseline_value, reference_from_day,
 )
 
@@ -142,8 +142,12 @@ def test_adaptive_cli_uses_supplied_daily_durations_and_ignores_empty_days(tmp_p
     assert linear["target_score"] == 3  # median of 1.5, 3, 50; no 85% discount
     assert linear["reference_score"] is None
     assert linear["ratio"] == 1
-    assert linear["color"] == activity_color(3, 3)
-    assert "Target (median)" in run_cli(args).stdout
+    assert linear["color"] == adaptive_color(3, 3)
+    assert linear["palette"] == "lime_light"
+    assert "Typical (median)" in run_cli(args).stdout
+    themed = json.loads(run_cli([*args, "--theme", "ice", "--night-mode", "--json"]).stdout)
+    assert themed["results"]["time"]["color"] == adaptive_color(3, 3, "ice", True)
+    assert themed["results"]["time"]["palette"] == "ice_dark"
     conflict = run_cli([*args, "--reference-durations-ms", "60000"])
     assert conflict.returncode == 2
     history.write_text('[[-1]]')

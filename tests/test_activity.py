@@ -432,7 +432,7 @@ def test_baseline_colors_preserve_real_totals_and_leave_empty_days_alone(setup):
 
 
 def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
-    from review_heatmap.metrics import activity_color
+    from review_heatmap.metrics import adaptive_color
 
     for age, count in ((400, 1), (10, 2), (2, 3), (0, 100)):
         for sequence in range(count):
@@ -448,12 +448,21 @@ def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
     assert progress["percent"] == 4000  # 100 / median(1, 2, 3, 100)
     html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
     options = json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])
-    assert options["dayColors"][str(TODAY - 10 * 86400)] == activity_color(2, 2.5)
+    assert options["dayColors"][str(TODAY - 10 * 86400)] == adaptive_color(2, 2.5)
     assert options["dayColors"][str(TODAY)] == progress["color"]
     assert "#ffffff" not in options["dayColors"].values()
     assert str(TODAY + 86400) not in options["dayColors"]
     assert conf["activity_baselines"] == {}
     assert not setup.conf.saves
+    assert not options["showPaletteButton"]
+    assert "rh-baseline" not in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
+    # Adaptive ignores the goal gradient and follows the chosen original theme.
+    before = copy.deepcopy(options["dayColors"])
+    setup.conf["local"]["baseline_gradient"]["above"][0]["hsl"] = [0, 100, 50]
+    html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
+    assert json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])["dayColors"] == before
+    conf["colors"] = "ice"
+    assert renderer._today_progress(report)["color"] == adaptive_color(100, 2.5, "ice")
     conf["limhist"] = 3
     filtered = setup.reporter.get_report(limfcst=2)
     assert renderer._today_progress(filtered)["percent"] == pytest.approx(10000 / 51.5)

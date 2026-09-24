@@ -67,6 +67,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Individual recorded answer durations in milliseconds; gives exact per-answer sums.",
     )
     metric_choices = ["all"] + list(metrics.METRICS.keys())
+    parser.add_argument("--theme", choices=list(metrics.COLOR_THEMES), default="lime",
+                        help="Adaptive color theme (default: lime).")
+    parser.add_argument("--night-mode", action="store_true",
+                        help="Use the Adaptive theme's dark-background colors.")
     parser.add_argument(
         "--metric",
         choices=metric_choices,
@@ -195,8 +199,11 @@ def evaluate(
     ref_durations_ms: Optional[Sequence[int]] = None,
     custom_time_weight: Optional[float] = None,
     history_durations_ms: Optional[Sequence[Sequence[int]]] = None,
+    theme: str = "lime",
+    night_mode: bool = False,
 ) -> Dict[str, Any]:
     has_reference = ref_reviews is not None and ref_time_ms is not None and ref_minutes is not None
+    palette = "bundled_default" if has_reference else f"{theme}_{'dark' if night_mode else 'light'}"
 
     if metric_key == "all":
         keys = list(metrics.METRICS.keys())
@@ -237,7 +244,8 @@ def evaluate(
                     raise ValueError(f"Nonfinite ratio/percent for metric {key}")
 
                 if reviews > 0:
-                    color = metrics.activity_color(score, target_score)
+                    color = metrics.activity_color(score, target_score) if has_reference else \
+                        metrics.adaptive_color(score, target_score, theme, night_mode)
 
         results[key] = {
             "label": label,
@@ -248,7 +256,7 @@ def evaluate(
             "ratio": ratio,
             "percent": percent,
             "color": color,
-            "palette": "bundled_default" if target_score is not None else None,
+            "palette": palette if target_score is not None else None,
         }
 
         review_weight, time_weight = metrics.metric_weights(key, conf)
@@ -273,7 +281,7 @@ def evaluate(
         } if has_reference else None,
         "history_days": sum(bool(day) for day in history_durations_ms)
         if history_durations_ms is not None else None,
-        "palette": "bundled_default" if has_reference or history_durations_ms is not None else None,
+        "palette": palette if has_reference or history_durations_ms is not None else None,
         "results": results,
     }
     return data
@@ -303,14 +311,15 @@ def format_table(data: Dict[str, Any]) -> str:
         )
         lines.append(f"Reference durations: {data['reference_duration_model']}")
     elif data["history_days"] is not None:
-        lines.append(f"Adaptive: median of {data['history_days']} active days in supplied history")
+        lines.append(f"Adaptive: median of {data['history_days']} active days in supplied history "
+                     f"[palette: {data['palette']}]")
     else:
         lines.append("Supply --history-json to calculate Adaptive targets and colors.")
     lines.append("")
 
     results = data["results"]
     if ref or data["history_days"] is not None:
-        target_label = "Target (85%)" if ref else "Target (median)"
+        target_label = "Target (85%)" if ref else "Typical (median)"
         headers = ["Metric", "Score", "Ref Score", target_label, "Ratio", "Percent", "Color"]
         rows: List[List[str]] = []
         for res in results.values():
@@ -391,6 +400,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ref_durations_ms=args.reference_durations_ms,
             custom_time_weight=args.time_exponent,
             history_durations_ms=args.history_durations_ms,
+            theme=args.theme,
+            night_mode=args.night_mode,
         )
     except (ValueError, OverflowError) as exc:
         sys.stderr.write(f"Error during calculation: {exc}\n")

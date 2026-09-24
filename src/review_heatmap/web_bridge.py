@@ -207,12 +207,14 @@ class _CommandHandler:
     def gradient(self, payload: None, context: SUPPORTED_CONTEXT_TYPES) -> None:
         from .gui.gradient import GradientDialog
 
+        if not self.palette_visible(None, context):
+            return
         GradientDialog(self._config, self._get_context_parent(context)).exec()
 
     @_register_command_handler("palettevisible")
     def palette_visible(self, payload: None, context: SUPPORTED_CONTEXT_TYPES) -> bool:
         conf = self._config["synced"]
-        return metric_name(conf) != "reviews"
+        return metric_name(conf) != "reviews" and conf.get("activity_scale") == "baseline"
 
     @_register_command_handler("contrib")
     def contrib(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:

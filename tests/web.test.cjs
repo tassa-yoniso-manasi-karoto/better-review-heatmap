@@ -139,7 +139,7 @@ test("progress waits for visibility and skips unrelated or reduced-motion transi
   update({ ...data, context: "adaptive", scale: "adaptive", percent: 100 });
   assert.match(page.summary.children.at(-1).title, /median active-day score/);
   assert.doesNotMatch(page.summary.children.at(-1).title, /85%/);
-  assert.equal(page.visible().track.attributes["aria-valuetext"], "100% of adaptive benchmark");
+  assert.equal(page.visible().track.attributes["aria-valuetext"], "100% of typical daily activity");
   update(null);
   assert.equal(page.summary.children.length, 1);
 });

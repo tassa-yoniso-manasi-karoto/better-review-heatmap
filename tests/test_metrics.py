@@ -5,7 +5,8 @@ from copy import deepcopy
 import pytest
 
 from review_heatmap.metrics import (
-    activity_levels, activity_value, adaptive_anchor, activity_color,
+    activity_levels, activity_value, adaptive_anchor, activity_color, adaptive_color,
+    COLOR_THEMES,
     automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
     legacy_reference, metric_weights, migrate_activity_references,
@@ -173,11 +174,18 @@ def test_adaptive_uses_median_without_discount_or_absolute_pace_anchor():
     assert adaptive_anchor([]) is None
     assert adaptive_anchor([0]) is None
     assert adaptive_anchor([0.01]) == 0.01  # no absolute floor for light users
-    assert activity_color(anchor, anchor) == "#74ba58"
-    assert activity_color(anchor - 1e-8, anchor) == "#378f36"
+    for theme, colors in COLOR_THEMES.items():
+        for night in (False, True):
+            palette = colors[::-1] if night else colors
+            assert adaptive_color(anchor, anchor, theme, night) == palette[5]
+            # The median is an ordinary shade, not a goal-achievement jump.
+            assert adaptive_color(anchor - 1e-8, anchor, theme, night) == palette[5]
+            assert adaptive_color(anchor + 1e-8, anchor, theme, night) == palette[5]
+            assert adaptive_color(4 * anchor, anchor, theme, night) == palette[-1]
+            assert adaptive_color(0, anchor, theme, night) == palette[0]
     for factor in (0.01, 60):
         scaled_anchor = adaptive_anchor([score * factor for score in scores])
-        assert activity_color(2 * factor, scaled_anchor) == activity_color(2, anchor)
+        assert adaptive_color(2 * factor, scaled_anchor) == adaptive_color(2, anchor)
 
 
 def test_baseline_palette_has_a_white_reference_and_gentler_threshold():

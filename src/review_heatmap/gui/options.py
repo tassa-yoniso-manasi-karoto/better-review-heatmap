@@ -181,10 +181,10 @@ class RevHmOptions(OptionsDialog):
         self.selActivityMetric = QComboBox(tab)
         self.selActivityScale = QComboBox(tab)
         choices.addRow("Color by", self.selActivityMetric)
+        choices.addRow("Color scale", self.selActivityScale)
         self.form.gridLayout.removeWidget(self.form.label)
         self.form.gridLayout.removeWidget(self.form.selHmColor)
         choices.addRow(self.form.label, self.form.selHmColor)
-        choices.addRow("Color scale", self.selActivityScale)
         layout.addLayout(choices)
 
         self.labActivityDescription = QLabel(tab)
@@ -205,7 +205,7 @@ class RevHmOptions(OptionsDialog):
         custom_layout.addRow(QLabel("Changing either exponent adjusts the other; their total is 1."))
         layout.addWidget(self.customGroup)
 
-        self.referenceGroup = QGroupBox("Automatic baseline", tab)
+        self.referenceGroup = QGroupBox(SCALES["baseline"]["label"], tab)
         reference_layout = QVBoxLayout(self.referenceGroup)
         explanation = QLabel(
             "<b>Use a solid day of studying as your reference.</b><br> "
@@ -269,14 +269,14 @@ class RevHmOptions(OptionsDialog):
         deck_id = self.selReferenceScope.currentData()
         metric = metric_name(conf)
         classic = metric == "reviews"
-        show_color_scheme = metric in ("reviews", "recorded_time")
+        use_baseline = not classic and conf.get("activity_scale") == "baseline"
+        show_color_scheme = not use_baseline
         self.form.label.setVisible(show_color_scheme)
         self.form.selHmColor.setVisible(show_color_scheme)
         self.selActivityScale.setEnabled(not classic)
-        use_baseline = not classic and conf.get("activity_scale") == "baseline"
         self.referenceGroup.setVisible(use_baseline)
         self.form.cbTodayProgress.setEnabled(not classic)
-        self.btnEditGradient.setVisible(not classic)
+        self.btnEditGradient.setVisible(use_baseline)
         self.customGroup.setVisible(metric == "custom")
         custom_review, custom_time = metric_weights("custom", conf)
         for spin, value in ((self.spinCustomReviewWeight, custom_review),
@@ -305,9 +305,10 @@ class RevHmOptions(OptionsDialog):
         description = descriptions[metric]
         if not classic and not use_baseline:
             description += (
-                " Adaptive compares each day with the median score of active days "
+                " Classic compares each day with the median score of active days "
                 "in the included history. Date and history limits apply; calendar "
-                "navigation does not change the benchmark."
+                "navigation does not change the benchmark. Theme intensity shows "
+                "relative activity, not goal achievement."
             )
         self.labActivityDescription.setText(description)
         migrate_activity_references(
@@ -338,14 +339,14 @@ class RevHmOptions(OptionsDialog):
             self.labReference.setText(
                 "The saved reference's review durations are unavailable. "
                 "Choose another reference day. The old snapshot is preserved; "
-                "Adaptive is used until then."
+                "Classic is used until then."
             )
         else:
             self.labReference.setText(
                 f"No saved reference. Automatic P{AUTO_REFERENCE_PERCENTILE} selection "
                 "needs at least 7 completed "
                 "study days with recorded time in the last 60 days. Until then, "
-                "Adaptive is used."
+                "Classic is used."
             )
         self._last_reference_date = self.dateReference.date()
         if deck_id is None:

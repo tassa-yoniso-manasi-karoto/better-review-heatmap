@@ -130,11 +130,19 @@ def test_classic_disables_reference_controls(setup, options_module):
     parent.col = setup.col
     dialog = module.RevHmOptions(setup.conf, parent)
     assert dialog.selActivityScale.currentData() == "adaptive"
-    assert dialog.selActivityScale.currentText() == "Adaptive"
+    assert dialog.selActivityScale.currentText() == "Classic"
     assert dialog.selActivityScale.findData("fixed") == -1
     assert "median score" in dialog.labActivityDescription.text()
     assert dialog.form.cbTodayProgress.isEnabled()
-    assert not dialog.btnEditGradient.isHidden()
+    assert dialog.btnEditGradient.isHidden()
+    assert not dialog.form.selHmColor.isHidden()
+    for metric in ("time", "workload", "custom", "recorded_time"):
+        dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData(metric))
+        for scale in ("baseline", "adaptive"):
+            dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData(scale))
+            assert dialog.form.selHmColor.isHidden() == (scale == "baseline")
+            assert dialog.form.label.isHidden() == (scale == "baseline")
+            assert dialog.btnEditGradient.isHidden() == (scale == "adaptive")
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("reviews"))
     assert not dialog.selActivityScale.isEnabled()
     assert not dialog.form.cbTodayProgress.isEnabled()
@@ -203,6 +211,12 @@ def test_reference_bridge_uses_explicit_scope_and_saves_dismissal(
     monkeypatch.setattr(bridge, "invoke_options_dialog", lambda **kwargs: calls.append(kwargs))
     parent = QWidget()
     handler = bridge._CommandHandler(SimpleNamespace(col=setup.col), setup.conf)
+    for metric in ("reviews", "time", "workload", "custom", "recorded_time"):
+        for scale in ("adaptive", "baseline"):
+            setup.conf["synced"].update(activity_metric=metric, activity_scale=scale)
+            assert handler("palettevisible", None, parent) == (
+                metric != "reviews" and scale == "baseline"
+            )
     handler("choosereference", "deck:2", parent)
     assert calls[-1] == {"parent": parent, "reference_deck_id": 2, "focus_reference": True}
     handler("opts", "global", parent)

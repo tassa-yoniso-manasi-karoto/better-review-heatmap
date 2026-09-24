@@ -158,7 +158,7 @@ export function updateTodayProgress(data: TodayProgress | null): void {
     saveSeenProgress(null);
     fill.style.width = "0%";
     label.textContent = "No baseline";
-    wrapper.title = "Choose a reference day in Review Heatmap Options → Activity, " +
+    wrapper.title = "Choose a reference day in Review Heatmap Options → Display Mode, " +
       "or allow automatic selection after seven completed study days.";
     track.setAttribute("aria-valuetext", "No activity baseline available");
   } else {
@@ -168,10 +168,10 @@ export function updateTodayProgress(data: TodayProgress | null): void {
       fill.style.width = `${bounded}%`;
       fill.style.backgroundColor = state.color;
       label.textContent = text;
-      const target = data.scale === "adaptive" ? "adaptive benchmark" : "baseline";
+      const target = data.scale === "adaptive" ? "typical daily activity" : "baseline";
       wrapper.title = `Today's activity: ${text} of ${target}. ` +
         (data.scale === "adaptive"
-          ? "100% is the median active-day score in the heatmap's included history."
+          ? "100% is the median active-day score in the heatmap's included history, not a study goal."
           : "100% is 85% of the reference day's activity. Uses the heatmap's included decks.");
       track.setAttribute("aria-valuenow", String(bounded));
       track.setAttribute("aria-valuetext", `${text} of ${target}`);

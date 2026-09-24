@@ -40,14 +40,15 @@ from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Tuple
 from uuid import uuid4
 
 from aqt.main import AnkiQt
+from aqt.theme import theme_manager
 
 from .activity import ActivityReport, ActivityReporter, StatsEntry, StatsType
 from .config import heatmap_modes
 from .libaddon.platform import PLATFORM
 from .metrics import (
     adaptive_anchor,
-    activity_color,
-    activity_color_level,
+    adaptive_color,
+    adaptive_color_level,
     activity_levels,
     activity_value,
     legacy_reference,
@@ -192,7 +193,7 @@ class HeatmapRenderer:
         stats_legend = self._stats_legend(count_legend)
         heatmap_legend = self._heatmap_legend(history_legend, count_legend)
 
-        classes = self._get_css_classes(view)
+        classes = self._get_css_classes(view, deck_id)
 
         if prefs["display"][view.name]:
             heatmap = self._generate_heatmap_elm(
@@ -254,7 +255,7 @@ class HeatmapRenderer:
 
     def _settings_signature(self) -> str:
         return repr((self._config["synced"], self._config["profile"],
-                     self._config["local"]))
+                     self._config["local"], theme_manager.night_mode))
 
     def _reference_deck_id(self, current_deck_only: bool) -> Optional[int]:
         return int(self._mw.col.decks.current()["id"]) if current_deck_only else None
@@ -306,7 +307,7 @@ class HeatmapRenderer:
                     self._config.save("synced", profile_unload=True)
         return activity_levels()
 
-    def _get_css_classes(self, view: HeatmapView) -> List[str]:
+    def _get_css_classes(self, view: HeatmapView, deck_id: Optional[int] = None) -> List[str]:
         conf = self._config["synced"]
         classes = [
             f"{CSS_PLATFORM_PREFIX}-{PLATFORM}",
@@ -314,7 +315,7 @@ class HeatmapRenderer:
             f"{CSS_MODE_PREFIX}-{conf['mode']}",
             f"{CSS_VIEW_PREFIX}-{view.name}",
         ]
-        if metric_name(conf) != "reviews":
+        if self._baseline_reference(deck_id) is not None:
             classes.append("rh-baseline")
         return classes
 
@@ -364,6 +365,7 @@ class HeatmapRenderer:
             self._progress_session, today, baseline_key(conf),
             conf.get("activity_scale"), reference["day"] if reference else None,
             anchor, self._config["local"].get("baseline_gradient"),
+            conf["colors"], theme_manager.night_mode,
         ], sort_keys=True)
         progress = {
             "context": sha256(context.encode("utf-8")).hexdigest(),
@@ -371,8 +373,8 @@ class HeatmapRenderer:
             "color": baseline_color(
                 value, reference, reference_day=today == int(reference["day"]),
                 gradient=self._config["local"].get("baseline_gradient"),
-            ) if reference else activity_color(
-                value, anchor, self._config["local"].get("baseline_gradient"),
+            ) if reference else adaptive_color(
+                value, anchor, conf["colors"], theme_manager.night_mode,
             ),
         }
         if not use_baseline:
@@ -399,7 +401,8 @@ class HeatmapRenderer:
             "legend": dynamic_legend,
             "whole": not current_deck_only,
             "referenceScope": reference_scope(deck_id),
-            "showPaletteButton": metric != "reviews",
+            "showPaletteButton": metric != "reviews" and
+                                 self._config["synced"].get("activity_scale") == "baseline",
             "dayColors": {},
             "history": {
                 day: [report.activity[day], milliseconds]
@@ -425,10 +428,10 @@ class HeatmapRenderer:
                     value, reference, reference_day=day == int(reference["day"])
                 )
             else:
-                options["dayColors"][day] = activity_color(
-                    value, anchor, self._config["local"].get("baseline_gradient"),
+                options["dayColors"][day] = adaptive_color(
+                    value, anchor, self._config["synced"]["colors"], theme_manager.night_mode,
                 )
-                activity[day] = activity_color_level(value, anchor)
+                activity[day] = adaptive_color_level(value, anchor)
 
         return HTML_HEATMAP.format(
             options=json.dumps(options), data=json.dumps(activity)

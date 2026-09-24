@@ -96,7 +96,7 @@
           <item>
            <widget class="QCheckBox" name="cbTodayProgress">
             <property name="toolTip">
-             <string>Available with workload or recorded time. 100% is the median active-day score in Adaptive, or 85% of your reference day's score in Automatic baseline. Uses the heatmap's included history and colors.</string>
+             <string>Available with workload or recorded time. 100% is the median active-day score in Classic, or 85% of your reference day's score in Baseline. Uses the heatmap's included history and colors.</string>
             </property>
             <property name="text">
              <string>Show activity progress beside Anki's daily study summary</string>

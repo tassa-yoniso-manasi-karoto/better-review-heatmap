@@ -5,6 +5,7 @@ See LICENSE for the add-on's license and additional terms.
 
 import json
 import math
+from bisect import bisect_right
 from colorsys import hls_to_rgb
 from pathlib import Path
 from statistics import median
@@ -19,8 +20,8 @@ METRICS = {
     "recorded_time": {"label": "Recorded time", "time_weight": 1.0},
 }
 SCALES = {
-    "adaptive": {"label": "Adaptive"},
-    "baseline": {"label": "Automatic baseline"},
+    "adaptive": {"label": "Classic"},
+    "baseline": {"label": "Baseline (based on a reference day)"},
 }
 
 FORMULA_VERSION = 3
@@ -30,6 +31,8 @@ ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
 AUTO_REFERENCE_PERCENTILE = 90
 AUTO_REFERENCE_REFRESH_DAYS = 30
+ADAPTIVE_FACTORS = (0.125, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0)
+COLOR_THEMES = json.loads(Path(__file__).with_name("color_themes.json").read_text())
 DEFAULT_BASELINE_GRADIENT = json.loads(
     Path(__file__).with_name("config.json").read_text(encoding="utf-8")
 )["baseline_gradient_default"]
@@ -296,7 +299,7 @@ def baseline_color(value: float, reference: Dict, reference_day: bool = False,
 
 def activity_color(value: float, anchor: Optional[float],
                    gradient: Optional[Dict] = None) -> str:
-    """Shared continuous gradient for adaptive and reference-day scales."""
+    """Custom goal gradient, with the intentional jump at the target."""
     ratio = max(0.0, value / anchor) if anchor else 0.0
     side = "below" if ratio < 1 else "above"
     stops = gradient_stops(gradient, side)
@@ -339,3 +342,28 @@ def activity_color_level(value: float, anchor: Optional[float]) -> int:
         if ratio <= threshold:
             return level
     return 10
+
+
+def adaptive_color_level(value: float, anchor: Optional[float]) -> int:
+    ratio = max(0.0, value / anchor) if anchor else 0.0
+    return bisect_right(ADAPTIVE_FACTORS, ratio) + 1
+
+
+def adaptive_color(value: float, anchor: Optional[float], theme: str = "lime",
+                   night_mode: bool = False) -> str:
+    """Original theme shades, interpolated without a goal boundary at the median."""
+    colors = COLOR_THEMES.get(theme, COLOR_THEMES["lime"])
+    if night_mode:
+        colors = colors[::-1]
+    ratio = max(0.0, value / anchor) if anchor else 0.0
+    stops = list(zip((0.0,) + ADAPTIVE_FACTORS, colors))
+    for (start, low), (end, high) in zip(stops, stops[1:]):
+        if ratio <= end:
+            fraction = (ratio - start) / (end - start)
+            channels = (
+                round(int(low[i:i + 2], 16) * (1 - fraction)
+                      + int(high[i:i + 2], 16) * fraction)
+                for i in (1, 3, 5)
+            )
+            return "#" + "".join(f"{channel:02x}" for channel in channels)
+    return colors[-1]
