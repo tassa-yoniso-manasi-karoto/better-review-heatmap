@@ -33,6 +33,7 @@ def test_archive_contains_current_sources_and_qt6_forms():
             "gui/forms/qt6/options.py", "gui/forms/qt6/contrib.py",
             "gui/resources/review_heatmap/icons/help.svg", "web/anki-review-heatmap.js",
             "gui/resources/review_heatmap/icons/restore.svg", "web/assets/palette.svg",
+            "gui/resources/review_heatmap/icons/auto-reference.svg",
         ):
             assert filename in names
         assert not any("__pycache__" in name or name.endswith(".pyc") for name in names)

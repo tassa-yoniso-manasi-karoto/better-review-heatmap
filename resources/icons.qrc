@@ -8,6 +8,7 @@
     <file>icons/plus.svg</file>
     <file>icons/minus.svg</file>
     <file>icons/restore.svg</file>
+    <file>icons/auto-reference.svg</file>
     <file alias="icons/patreon.svg">icons/optional/patreon.svg</file>
     <file alias="icons/twitter.svg">icons/optional/twitter.svg</file>
     <file alias="icons/youtube.svg">icons/optional/youtube.svg</file>

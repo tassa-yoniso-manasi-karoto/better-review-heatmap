@@ -189,7 +189,7 @@ def test_zero_time_days_remain_visible_and_clickable(setup):
     assert report.stats.streak_cur.value == 1
 
 
-def test_baseline_is_saved_once_and_adaptive_never_uses_it(setup):
+def test_baseline_stays_stable_between_refreshes_and_adaptive_never_uses_it(setup):
     for age in range(1, 9):
         add_review(setup, TODAY - age * 86400, milliseconds=age * 60000)
     renderer = make_renderer(setup)
@@ -203,6 +203,75 @@ def test_baseline_is_saved_once_and_adaptive_never_uses_it(setup):
     assert renderer._baseline_reference() is None
     assert renderer._activity_legend([]) == list(range(1, 10))
     assert len(setup.conf.saves) == 1
+
+
+def test_automatic_reference_refreshes_after_30_days_without_using_today(setup, monkeypatch):
+    from review_heatmap.metrics import baseline_key, saved_reference
+
+    now = [TODAY]
+    monkeypatch.setattr(type(setup.reporter), "_today", property(lambda self: now[0]))
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="recorded_time", activity_scale="baseline")
+    for age in range(1, 11):
+        add_review(setup, TODAY - age * 86400, milliseconds=60000)
+    renderer = make_renderer(setup)
+    renderer._activity_legend([])
+    original = copy.deepcopy(saved_reference(conf))
+    assert original["selected_on"] == TODAY
+
+    for age in range(1, 11):
+        add_review(setup, TODAY + (30 - age) * 86400, milliseconds=600000)
+    now[0] = TODAY + 29 * 86400
+    renderer._activity_legend([])
+    assert saved_reference(conf) == original
+
+    now[0] += 86400
+    add_review(setup, now[0], milliseconds=99999999)
+    renderer._activity_legend([])
+    refreshed = copy.deepcopy(saved_reference(conf))
+    assert refreshed["value"] == 10
+    assert refreshed["day"] < now[0]
+    assert refreshed["selected_on"] == now[0]
+    assert len(setup.conf.saves) == 2
+    renderer._activity_legend([])
+    assert saved_reference(conf) == refreshed
+    assert len(setup.conf.saves) == 2
+
+    # A manual reference stays fixed even after the refresh interval expires.
+    manual = dict(refreshed, source="selected")
+    conf["activity_baselines"][baseline_key(conf)] = manual
+    now[0] += 30 * 86400
+    renderer._activity_legend([])
+    assert saved_reference(conf) == manual
+    assert len(setup.conf.saves) == 2
+
+
+def test_automatic_refresh_keeps_old_goal_with_sparse_history_and_retries_next_day(setup):
+    from review_heatmap.metrics import baseline_key, saved_reference
+
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="recorded_time", activity_scale="baseline")
+    key = baseline_key(conf, 1)
+    old = {"day": TODAY - 50 * 86400, "value": 3, "source": "automatic",
+           "percentile": 90, "selected_on": TODAY - 30 * 86400}
+    conf["activity_baselines"][key] = old
+    setup.db.connection.execute("INSERT INTO cards VALUES (1, 1, 0, 2)")
+    for age in range(1, 7):
+        add_review(setup, TODAY - age * 86400, milliseconds=60000)
+    renderer = make_renderer(setup)
+    renderer._activity_legend([], 1)
+    assert saved_reference(conf, 1) == dict(old, last_checked_on=TODAY)
+    renderer._activity_legend([], 1)
+    assert len(setup.conf.saves) == 1
+    assert saved_reference(conf) is None
+
+    # A failed attempt yesterday must not postpone recalibration a full month.
+    conf["activity_baselines"][key]["last_checked_on"] = TODAY - 86400
+    add_review(setup, TODAY - 7 * 86400, milliseconds=60000)
+    renderer._activity_legend([], 1)
+    assert saved_reference(conf, 1)["selected_on"] == TODAY
+    assert saved_reference(conf, 1)["value"] == 1
+    assert saved_reference(conf) is None
 
 
 def test_global_and_deck_heatmaps_choose_their_own_days_and_show_reminders(setup, monkeypatch):

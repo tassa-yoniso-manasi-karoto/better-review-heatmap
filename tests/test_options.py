@@ -17,6 +17,7 @@ def options_module(addon_modules, monkeypatch):
     from anki.lang import set_lang
     set_lang("en_US")  # translation backend only; no collection is opened
     app = qt.QApplication.instance() or qt.QApplication([])
+    qt.QDir.addSearchPath("review_heatmap", str(Path(__file__).resolve().parents[1] / "resources"))
     # Compile the existing designer form in memory. No build outputs or Anki
     # installation are needed, and no collection is opened.
     package = ModuleType("review_heatmap.gui.forms")
@@ -142,7 +143,7 @@ def test_classic_disables_reference_controls(setup, options_module):
     dialog.reject()
 
 
-def test_reference_picker_tracks_source_and_reminder_for_each_deck(
+def test_reference_picker_and_automatic_icon_keep_each_deck_independent(
     setup, options_module, monkeypatch,
 ):
     module, app = options_module
@@ -166,27 +167,27 @@ def test_reference_picker_tracks_source_and_reminder_for_each_deck(
     pending = dialog.getData()["synced"]
     assert dialog.selReferenceScope.currentData() == 1
     assert dialog.form.tabWidget.currentIndex() == 1
-    assert "Automatically selected" in dialog.labReferenceSource.text()
-    dialog.btnUseReference.click()  # explicitly approve the same automatically chosen date
+    assert not dialog.btnAutoReference.icon().isNull()
+    assert not dialog.btnAutoReference.text()
+    # Approve the already displayed automatic day using the calendar itself.
+    dialog.dateReference.calendarWidget().clicked.emit(dialog.dateReference.date())
     assert saved_reference(pending, 1)["source"] == "selected"
-    assert dialog.labReferenceSource.text() == "Selected by you."
     assert saved_reference(pending) == global_ref
-    dialog.cbReferenceReminder.setChecked(False)
     dialog.selReferenceScope.setCurrentIndex(dialog.selReferenceScope.findData(2))
-    assert dialog.cbReferenceReminder.isChecked()
     dialog.btnAutoReference.click()
     assert saved_reference(pending, 2)["percentile"] == 90
     assert saved_reference(pending, 2)["day"] == TODAY - 9 * 86400
+    assert saved_reference(pending, 2)["selected_on"] == TODAY
+    assert "Last calculated: 2026-03-10" in dialog.btnAutoReference.toolTip()
     dialog.reject()
     assert dict(setup.conf) == original
 
     dialog = module.RevHmOptions(setup.conf, parent, reference_deck_id=1)
-    dialog.cbReferenceReminder.setChecked(False)
+    dialog.dateReference.calendarWidget().clicked.emit(dialog.dateReference.date())
     dialog.accept()
     dialog = module.RevHmOptions(setup.conf, parent, reference_deck_id=1)
-    assert not dialog.cbReferenceReminder.isChecked()
+    assert saved_reference(dialog.getData()["synced"], 1)["source"] == "selected"
     dialog.selReferenceScope.setCurrentIndex(0)
-    assert dialog.cbReferenceReminder.isChecked()
     assert saved_reference(dialog.getData()["synced"]) == global_ref
     dialog.reject()
 

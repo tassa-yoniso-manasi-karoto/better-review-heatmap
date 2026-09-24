@@ -39,13 +39,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from aqt.qt import (
-    QAction, QApplication, QCheckBox, QComboBox, QDate, QDateEdit, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QHBoxLayout, QLabel, QPushButton, QTimer, QVBoxLayout, QWidget,
+    QAction, QApplication, QComboBox, QDate, QDateEdit, QDoubleSpinBox, QFormLayout,
+    QGroupBox, QHBoxLayout, QLabel, QPushButton, QSize, QTimer, QToolButton, QVBoxLayout, QWidget,
 )
 
 from anki.lang import _
 from aqt import mw
 from aqt.studydeck import StudyDeck
+from aqt.theme import theme_manager
 from aqt.utils import showInfo
 
 from ..activity import ActivityReporter
@@ -53,8 +54,8 @@ from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_m
 from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
-    reference_from_day, saved_reference, reference_scope, automatic_reference,
-    AUTO_REFERENCE_PERCENTILE,
+    reference_from_day, saved_reference, automatic_reference,
+    AUTO_REFERENCE_PERCENTILE, AUTO_REFERENCE_REFRESH_DAYS,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
@@ -219,9 +220,6 @@ class RevHmOptions(OptionsDialog):
         scope_layout = QFormLayout()
         scope_layout.addRow("Reference for", self.selReferenceScope)
         reference_layout.addLayout(scope_layout)
-        self.labReferenceSource = QLabel(self.referenceGroup)
-        self.labReferenceSource.setWordWrap(True)
-        reference_layout.addWidget(self.labReferenceSource)
         self.labReference = QLabel(self.referenceGroup)
         self.labReference.setWordWrap(True)
         reference_layout.addWidget(self.labReference)
@@ -232,20 +230,20 @@ class RevHmOptions(OptionsDialog):
         self.dateReference.setDisplayFormat("yyyy-MM-dd")
         self.dateReference.setMaximumDate(QDate.currentDate())
         self.dateReference.setDate(QDate.currentDate().addDays(-1))
-        day_layout.addRow("Reference day", self.dateReference)
+        self.btnAutoReference = QToolButton(self.referenceGroup)
+        self.btnAutoReference.setAutoRaise(True)
+        self.btnAutoReference.setIcon(theme_manager.icon_from_resources(
+            "review_heatmap:icons/auto-reference.svg",
+        ))
+        self.btnAutoReference.setIconSize(QSize(20, 20))
+        self.btnAutoReference.setFixedSize(28, 28)
+        self.btnAutoReference.setAccessibleName("Recalculate automatic reference")
+        date_row = QHBoxLayout()
+        date_row.setSpacing(8)
+        date_row.addWidget(self.dateReference, 1)
+        date_row.addWidget(self.btnAutoReference)
+        day_layout.addRow("Reference day", date_row)
         reference_layout.addLayout(day_layout)
-        reference_actions = QHBoxLayout()
-        self.btnUseReference = QPushButton("Use this day", self.referenceGroup)
-        self.btnAutoReference = QPushButton(
-            f"Choose automatically (P{AUTO_REFERENCE_PERCENTILE})", self.referenceGroup,
-        )
-        reference_actions.addWidget(self.btnUseReference)
-        reference_actions.addWidget(self.btnAutoReference)
-        reference_layout.addLayout(reference_actions)
-        self.cbReferenceReminder = QCheckBox(
-            "Remind me when this heatmap uses an automatic reference", self.referenceGroup,
-        )
-        reference_layout.addWidget(self.cbReferenceReminder)
         layout.addWidget(self.referenceGroup)
         self.btnEditGradient = QPushButton("Edit gradient colors…", tab)
         layout.addWidget(self.btnEditGradient)
@@ -313,20 +311,15 @@ class RevHmOptions(OptionsDialog):
         )
         reference = saved_reference(conf, deck_id)
         self.labReference.setVisible(not reference)
-        self.labReferenceSource.setVisible(bool(reference))
-        blocked = self.cbReferenceReminder.blockSignals(True)
-        self.cbReferenceReminder.setChecked(not conf.get(
-            "activity_reference_reminders_dismissed", {},
-        ).get(reference_scope(deck_id), False))
-        self.cbReferenceReminder.blockSignals(blocked)
+        tooltip = (
+            f"Recalculate automatic reference (P{AUTO_REFERENCE_PERCENTILE}).\n"
+            f"Automatic references refresh every {AUTO_REFERENCE_REFRESH_DAYS} days."
+        )
+        if reference and reference.get("source") == "automatic" and reference.get("selected_on"):
+            selected_on = datetime.fromtimestamp(reference["selected_on"], timezone.utc).date()
+            tooltip += f"\nLast calculated: {selected_on}."
+        self.btnAutoReference.setToolTip(tooltip)
         if reference:
-            source = reference.get("source")
-            self.labReferenceSource.setText(
-                f"Automatically selected (P{reference.get('percentile', 75)}). "
-                "Choose a day yourself to match your study goal."
-                if source == "automatic" else
-                "Selected by you." if source == "selected" else "Saved reference day."
-            )
             day = datetime.fromtimestamp(int(reference["day"]), timezone.utc).date()
             self._displayReferenceDate(QDate(day.year, day.month, day.day))
         elif legacy_reference(conf, deck_id) is not None:
@@ -357,20 +350,14 @@ class RevHmOptions(OptionsDialog):
             self._displayReferenceDate(QDate.currentDate().addDays(-1))
             self._refreshActivitySettings()
 
-    def _onReminderChanged(self, checked):
-        if self._activity_ready:
-            conf = self.getData()["synced"]
-            conf.setdefault("activity_reference_reminders_dismissed", {})[
-                reference_scope(self.selReferenceScope.currentData())
-            ] = not checked
-
     def _onAutomaticReference(self):
         data = self.getData()
         conf = data["synced"]
-        rows = ActivityReporter(self.mw.col, data).reference_history(
+        reporter = ActivityReporter(self.mw.col, data)
+        rows = reporter.reference_history(
             with_durations=True, deck_id=self.selReferenceScope.currentData(),
         )
-        reference = automatic_reference(rows, metric_name(conf), conf)
+        reference = automatic_reference(rows, metric_name(conf), conf, today=reporter._today)
         if reference is None:
             showInfo("Automatic selection needs at least 7 completed study days "
                      "with recorded time in the last 60 days for this heatmap.", parent=self)
@@ -390,6 +377,9 @@ class RevHmOptions(OptionsDialog):
         data = self.getData()
         conf = data["synced"]
         day = int(datetime(date.year(), date.month(), date.day(), tzinfo=timezone.utc).timestamp())
+        previous = saved_reference(conf, self.selReferenceScope.currentData())
+        if previous and previous.get("source") == "selected" and previous["day"] == day:
+            return
         rows = ActivityReporter(self.mw.col, data).reference_history(
             day, with_durations=True, deck_id=self.selReferenceScope.currentData(),
         )
@@ -400,6 +390,12 @@ class RevHmOptions(OptionsDialog):
             showInfo("No included reviews with recorded time for that day.", parent=self)
             return
         self._setReference(conf, reference)
+
+    def _onCalendarDateSelected(self, date):
+        # dateChanged may already have rejected an empty day and restored the
+        # picker; do not process that same invalid click a second time.
+        if date == self.dateReference.date():
+            self._onReferenceDateChanged(date)
 
     def _setReference(self, conf, reference):
         if not isinstance(conf.get("activity_baselines"), dict):
@@ -451,12 +447,11 @@ class RevHmOptions(OptionsDialog):
         self.selActivityScale.currentIndexChanged.connect(self._refreshActivitySettings)
         self.form.tabWidget.currentChanged.connect(self._refreshActivitySettings)
         self.dateReference.dateChanged.connect(self._onReferenceDateChanged)
+        # Clicking the already displayed automatic date also makes it manual.
+        self.dateReference.calendarWidget().clicked.connect(self._onCalendarDateSelected)
+        self.dateReference.calendarWidget().activated.connect(self._onCalendarDateSelected)
         self.selReferenceScope.currentIndexChanged.connect(self._onReferenceScopeChanged)
-        self.btnUseReference.clicked.connect(
-            lambda: self._onReferenceDateChanged(self.dateReference.date()),
-        )
         self.btnAutoReference.clicked.connect(self._onAutomaticReference)
-        self.cbReferenceReminder.toggled.connect(self._onReminderChanged)
         self.btnEditGradient.clicked.connect(self._onEditGradient)
         self.spinCustomTimeWeight.valueChanged.connect(
             lambda value: self._onCustomWeightChanged(value, True),

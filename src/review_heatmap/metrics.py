@@ -29,6 +29,7 @@ BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
 AUTO_REFERENCE_PERCENTILE = 90
+AUTO_REFERENCE_REFRESH_DAYS = 30
 DEFAULT_BASELINE_GRADIENT = json.loads(
     Path(__file__).with_name("config.json").read_text(encoding="utf-8")
 )["baseline_gradient_default"]
@@ -181,7 +182,8 @@ def reference_from_day(row: Sequence, metric: str, source: str,
 
 
 def automatic_reference(rows: Sequence[Sequence], metric: str,
-                        conf: Optional[Dict] = None) -> Optional[Dict]:
+                        conf: Optional[Dict] = None, *,
+                        today: Optional[int] = None) -> Optional[Dict]:
     candidates = [reference_from_day(row, metric, "automatic", conf) for row in rows]
     candidates = sorted(
         (ref for ref in candidates if ref is not None),
@@ -191,7 +193,10 @@ def automatic_reference(rows: Sequence[Sequence], metric: str,
         return None
     # Nearest-rank P90 selects an actual, completed study day.
     reference = candidates[math.ceil(AUTO_REFERENCE_PERCENTILE / 100 * len(candidates)) - 1]
-    return dict(reference, percentile=AUTO_REFERENCE_PERCENTILE)
+    reference = dict(reference, percentile=AUTO_REFERENCE_PERCENTILE)
+    if today is not None:
+        reference["selected_on"] = today
+    return reference
 
 
 def show_reference_reminder(conf: Dict, deck_id: Optional[int] = None) -> bool:

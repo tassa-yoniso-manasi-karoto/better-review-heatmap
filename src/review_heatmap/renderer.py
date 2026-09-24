@@ -62,6 +62,7 @@ from .metrics import (
     reference_scope,
     show_reference_reminder,
     AUTO_REFERENCE_PERCENTILE,
+    AUTO_REFERENCE_REFRESH_DAYS,
 )
 from .web_content import (
     CSS_DISABLE_HEATMAP,
@@ -274,14 +275,26 @@ class HeatmapRenderer:
                 self._config["synced"] = conf
                 self._config.save("synced", profile_unload=True)
             reference = saved_reference(conf, deck_id)
+            today = self._reporter._today
             needs_selection = reference is None and legacy_reference(conf, deck_id) is None
-            needs_upgrade = reference is not None and reference.get("source") == "automatic" \
-                and reference.get("percentile") != AUTO_REFERENCE_PERCENTILE
-            if needs_selection or needs_upgrade:
+            needs_refresh = (
+                reference is not None and reference.get("source") == "automatic"
+                and reference.get("last_checked_on") != today
+                and (
+                    reference.get("percentile") != AUTO_REFERENCE_PERCENTILE
+                    or today - reference.get("selected_on", 0)
+                    >= AUTO_REFERENCE_REFRESH_DAYS * 86400
+                )
+            )
+            if needs_selection or needs_refresh:
                 selected = automatic_reference(
                     self._reporter.reference_history(with_durations=True, deck_id=deck_id),
-                    metric, conf,
+                    metric, conf, today=today,
                 )
+                if selected is None and needs_refresh:
+                    # Keep the existing goal if recent activity is too sparse;
+                    # retry next study day rather than on every review.
+                    selected = dict(reference, last_checked_on=today)
                 if selected is not None:
                     references = conf.get("activity_baselines")
                     if not isinstance(references, dict):
