@@ -25,6 +25,16 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
+## [2.1.1] - 2026-09-25
+
+### Fixed
+
+- Fixed crashes when opening the gradient editor or browsing cards from the new-card heatmap
+- Corrected review dates, today's highlight and forecasts around daylight saving changes
+- Fixed day clicks including reviews outside the selected study day
+- Corrected calendar navigation near month and year boundaries
+- Refreshed affected reference scores while preserving selected dates
+
 ## [2.1.0] - 2026-09-24
 
 ### Added

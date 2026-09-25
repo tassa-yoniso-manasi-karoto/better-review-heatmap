@@ -47,7 +47,7 @@ def _find_cards_reviewed_between(start_date: int, end_date: int) -> List[int]:
     # in order to exclude deleted cards
     return mw.col.db.list(  # type: ignore
         "SELECT id FROM cards where id in "
-        "(SELECT cid FROM revlog where id between ? and ?)",
+        "(SELECT cid FROM revlog where id >= ? and id < ?)",
         start_date,
         end_date,
     )

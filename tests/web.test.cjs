@@ -14,10 +14,10 @@ buildSync({
   format: "cjs",
   outfile,
 });
-const { calendarDayKey, formatRecordedTime, reviewSummary } = require(outfile);
+const { calendarDayKey, calendarDateFromKey, formatRecordedTime, reviewSummary } = require(outfile);
 after(() => rmSync(temporary, { recursive: true, force: true }));
 
-test("first-review toggle preserves the calendar page and restores normal colors and data", async t => {
+async function heatmapPage(t) {
   const target = join(temporary, "heatmap.cjs");
   await build({
     entryPoints: [resolve(__dirname, "../src/web/main.ts")], bundle: true,
@@ -31,6 +31,7 @@ test("first-review toggle preserves the calendar page and restores normal colors
           setLegend(legend) { this.options.legend = legend; }
           update(data) { this.options.data = data; this.options.afterUpdate(); }
           highlight() {}
+          rewind() { this.rewoundTo = this.options.start; }
         }
       ` }));
     } }],
@@ -62,6 +63,7 @@ test("first-review toggle preserves the calendar page and restores normal colors
   globalThis.window = { setInterval: callback => { refreshPalette = callback; } };
   globalThis.sessionStorage = { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) };
   globalThis.pycmd = (command, callback) => { commands.push(command); callback?.(true); };
+  delete require.cache[require.resolve(target)];
   require(target);
   const day = Date.UTC(2026, 2, 9) / 1000;
   const cell = { t: new Date(2026, 2, 9).getTime(), v: 2 };
@@ -75,6 +77,12 @@ test("first-review toggle preserves the calendar page and restores normal colors
   };
   const normal = { [day]: 5, [day + 86400]: -20 };
   const heatmap = new globalThis.ReviewHeatmap(options);
+  return { heatmap, options, normal, toggle, palette, classes, cell, day, refreshPalette, commands };
+}
+
+test("first-review toggle preserves the calendar page and restores normal colors and data", async t => {
+  const { heatmap, options, normal, toggle, palette, classes, cell, day, refreshPalette, commands } =
+    await heatmapPage(t);
   assert.equal(toggle.style["--rh-review-accent"], "116, 186, 88"); // Lime in Baseline
   assert.equal(toggle.style["--rh-new-accent"], "93, 162, 235"); // Ice
   heatmap.create(normal);
@@ -113,6 +121,74 @@ test("first-review toggle preserves the calendar page and restores normal colors
   new globalThis.ReviewHeatmap({ ...options, showPaletteButton: false }).create(normal);
   assert.equal(palette.hidden, true);
   assert.equal(toggle.style["--rh-review-accent"], "234, 78, 156"); // Current Magenta theme
+});
+
+test("calendar bounds, highlights, navigation and browser days agree across clock changes", async t => {
+  const { options, commands } = await heatmapPage(t);
+  const previous = process.env.TZ;
+  try {
+    for (const [zone, date, previousDayHours] of [
+      ["Australia/Sydney", "2025-10-05", 23],
+      ["Australia/Sydney", "2026-04-05", 25],
+      ["America/New_York", "2026-03-08", 23],
+      ["America/New_York", "2026-11-01", 25],
+      ["Europe/Berlin", "2026-03-29", 23],
+      ["Europe/Berlin", "2026-10-25", 25],
+      ["Australia/Lord_Howe", "2026-10-04", 23.5],
+      ["Australia/Lord_Howe", "2026-04-05", 24.5],
+      ["America/Santiago", "2026-09-06", 23],
+      ["Asia/Bangkok", "2026-01-01", 24],
+      ["America/New_York", "2026-12-31", 24],
+    ]) {
+      process.env.TZ = zone;
+      const day = Date.parse(`${date}T00:00:00Z`) / 1000;
+      const heatmap = new globalThis.ReviewHeatmap({ ...options,
+        start: (day - 86400) * 1000, stop: (day + 86400) * 1000, today: day * 1000,
+        whole: true,
+      });
+      heatmap.create({ [day]: 1 });
+      const calendar = globalThis.testCalendar;
+      const cal = calendar.options;
+      for (const [field, expected] of [["start", day], ["today", day], ["highlight", day],
+        ["minDate", day - 86400], ["maxDate", day + 86400]]) {
+        assert.equal(calendarDayKey(cal[field]), expected, `${zone} ${field}`);
+      }
+      const local = calendarDateFromKey(day);
+      const parsed = cal.afterLoadData({ [day - 86400]: 2, [day]: 3, [day + 86400]: 4 });
+      assert.deepEqual(Object.entries(parsed).map(([key, value]) =>
+        [calendarDayKey(new Date(Number(key) * 1000)), value]),
+      [[day - 86400, 2], [day, 3], [day + 86400, 4]]);
+      assert.match(cal.subDomainTitleFormat(true, { date }, { t: local.getTime(), v: 0 }), /No.*reviews/);
+      heatmap.onHmHome({ shiftKey: false });
+      assert.equal(calendarDayKey(calendar.rewoundTo), day);
+      for (const age of [-1, 0]) {
+        const clicked = calendarDateFromKey(day + age * 86400);
+        cal.onClick(clicked, 1);
+        const bounds = commands.at(-1).split(":").slice(2).map(Number);
+        const start = new Date(clicked.getFullYear(), clicked.getMonth(), clicked.getDate(), 4);
+        const end = new Date(clicked.getFullYear(), clicked.getMonth(), clicked.getDate() + 1, 4);
+        assert.deepEqual(bounds, [start.getTime(), end.getTime()], `${zone} browser bounds`);
+        assert.equal((bounds[1] - bounds[0]) / 3600000, age === -1 ? previousDayHours : 24);
+      }
+      cal.onClick(calendarDateFromKey(day + 86400), -1);
+      assert.equal(commands.at(-1), "revhm_browse:prop:due=1");
+    }
+    process.env.TZ = "UTC";
+    for (const [date, firstMonth, endMonth] of [
+      ["2026-04-30", "2026-02-01", "2026-08-01"],
+      ["2026-10-31", "2026-08-01", "2027-02-01"],
+    ]) {
+      const heatmap = new globalThis.ReviewHeatmap({ ...options, domain: "month", range: 6,
+        today: Date.parse(date), start: Date.parse("2024-01-01"), stop: Date.parse(date),
+      });
+      heatmap.create({});
+      assert.equal(globalThis.testCalendar.options.start.getTime(), Date.parse(firstMonth));
+      assert.equal(globalThis.testCalendar.options.maxDate.getTime(), Date.parse(endMonth));
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
 });
 
 // Minimal DOM and frame clock: exercise navigation without waiting in real time.
@@ -265,8 +341,7 @@ for (const timezone of ["UTC", "Asia/Bangkok", "America/New_York", "Europe/Berli
         [2026, 2, 29], [2026, 9, 25], [2026, 10, 1], [2026, 10, 2],
       ]) {
         const utcKey = Date.UTC(year, month, day) / 1000;
-        // Mirrors the fork's existing afterLoadData conversion.
-        const localCell = new Date(year, month, day, 0, 0, 0, 0);
+        const localCell = calendarDateFromKey(utcKey);
         assert.equal(calendarDayKey(localCell), utcKey);
       }
     } finally {

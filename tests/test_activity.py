@@ -5,7 +5,8 @@ import json
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -136,6 +137,72 @@ def test_dst_grouping_and_streaks_retain_original_calendar_days(setup, monkeypat
         time.tzset()
 
 
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires timezone switching")
+@pytest.mark.parametrize("zone, transition", [
+    ("America/New_York", "2026-03-08"),
+    ("America/New_York", "2026-11-01"),
+    ("Australia/Sydney", "2025-10-05"),
+    ("Australia/Sydney", "2026-04-05"),
+    ("Australia/Lord_Howe", "2026-10-04"),
+    ("Australia/Lord_Howe", "2026-04-05"),
+    ("Asia/Bangkok", "2026-09-25"),
+])
+def test_rollover_grouping_today_and_forecast_agree_across_dst(setup, monkeypatch, zone, transition):
+    original_tz = __import__("os").environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        local = datetime.fromisoformat(transition).replace(tzinfo=ZoneInfo(zone))
+        key = day(local.year, local.month, local.day)
+        tomorrow = local + timedelta(days=1)
+        instants = [local.replace(hour=3, minute=30), local.replace(hour=4),
+                    local.replace(hour=4, minute=30),
+                    tomorrow.replace(hour=3, minute=59, second=59, microsecond=999000),
+                    tomorrow.replace(hour=4)]
+        for cid, instant in enumerate(instants, 1):
+            setup.db.connection.execute("INSERT INTO cards VALUES (?, 1, 100, 2)", (cid,))
+            setup.db.connection.execute("INSERT INTO revlog VALUES (?, ?, 3, 30000)",
+                                        (round(instant.timestamp() * 1000), cid))
+        reporter = setup.modules.activity.ActivityReporter(setup.col, setup.conf)
+        expected = [(key - 86400, 1, 30000), (key, 3, 90000), (key + 86400, 1, 30000)]
+        assert reporter._cards_done() == expected
+        assert reporter.first_reviews() == [(date, count) for date, count, _ in expected]
+        assert reporter.reference_history(key, with_durations=True) == [
+            (key, 3, 90000, [(30000, 3)]),
+        ]
+        scalar = setup.db.scalar
+        for hour, expected_today in ((3, key - 86400), (4, key)):
+            now = local.replace(hour=hour, minute=30).astimezone(timezone.utc)
+            frozen = now.strftime("%Y-%m-%d %H:%M:%S")
+            monkeypatch.setattr(setup.db, "scalar", lambda sql, *args: scalar(
+                sql, *(frozen if arg == "now" else arg for arg in args),
+            ))
+            assert reporter._today == expected_today
+            assert reporter._cards_due() == [(expected_today, -5)]
+    finally:
+        if original_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", original_tz)
+        time.tzset()
+
+
+def test_browser_day_interval_includes_start_but_excludes_next_rollover(setup, monkeypatch):
+    import importlib
+
+    finder = importlib.import_module("review_heatmap.finder")
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, 1, 0, 2)",
+                                   [(cid,) for cid in (1, 2, 3, 4)])
+    setup.db.connection.executemany("INSERT INTO revlog VALUES (?, ?, 3, 30000)",
+                                   [(999, 1), (1000, 2), (1999, 3), (2000, 4), (1500, 99)])
+    monkeypatch.setattr(setup.db, "list", lambda sql, *args: [
+        row[0] for row in setup.db.all(sql, *args)
+    ], raising=False)
+    monkeypatch.setattr(finder, "mw", SimpleNamespace(col=setup.col))
+    assert finder.find_rid("rid:1000:2000") == [2, 3]
+    assert finder.find_rid("rid:2000:3000") == [4]
+
+
 def test_reference_history_excludes_today_and_obeys_history_limits(setup):
     for age in (0, 1, 2, 59, 60, 61):
         add_review(setup, TODAY - age * 86400)
@@ -178,7 +245,7 @@ def test_first_reviews_use_lifetime_answers_then_dates_and_current_decks(setup, 
 
 
 def test_new_card_layer_has_ice_counts_and_no_forecasts_without_changing_normal_mode(setup):
-    from review_heatmap.metrics import adaptive_color, baseline_key
+    from review_heatmap.metrics import adaptive_color, baseline_key, DAY_GROUPING_VERSION
 
     setup.db.connection.executemany("INSERT INTO cards VALUES (?, 1, 101, 2)", [(1,), (2,)])
     add_review(setup, TODAY - 2 * 86400, cid=1, milliseconds=240000)
@@ -187,7 +254,8 @@ def test_new_card_layer_has_ice_counts_and_no_forecasts_without_changing_normal_
     add_review(setup, TODAY, cid=2)
     conf = setup.conf["synced"]
     conf.update(activity_scale="baseline", activity_metric="workload", colors="magenta")
-    reference = {"day": TODAY - 2 * 86400, "value": 20, "source": "selected"}
+    reference = {"day": TODAY - 2 * 86400, "value": 20, "source": "selected",
+                 "day_grouping_version": DAY_GROUPING_VERSION}
     conf["activity_baselines"][baseline_key(conf)] = reference
     original = copy.deepcopy(conf)
     html = make_renderer(setup).render(setup.modules.renderer.HeatmapView.deckbrowser, limfcst=2)
@@ -304,13 +372,14 @@ def test_automatic_reference_refreshes_after_30_days_without_using_today(setup, 
 
 
 def test_automatic_refresh_keeps_old_goal_with_sparse_history_and_retries_next_day(setup):
-    from review_heatmap.metrics import baseline_key, saved_reference
+    from review_heatmap.metrics import baseline_key, saved_reference, DAY_GROUPING_VERSION
 
     conf = setup.conf["synced"]
     conf.update(activity_metric="recorded_time", activity_scale="baseline")
     key = baseline_key(conf, 1)
     old = {"day": TODAY - 50 * 86400, "value": 3, "source": "automatic",
-           "percentile": 90, "selected_on": TODAY - 30 * 86400}
+           "percentile": 90, "selected_on": TODAY - 30 * 86400,
+           "day_grouping_version": DAY_GROUPING_VERSION}
     conf["activity_baselines"][key] = old
     setup.db.connection.execute("INSERT INTO cards VALUES (1, 1, 0, 2)")
     for age in range(1, 7):

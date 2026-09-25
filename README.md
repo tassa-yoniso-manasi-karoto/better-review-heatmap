@@ -12,7 +12,7 @@ Open **Tools → Review Heatmap Options → Activity** and choose a measure:
 
 - **Review count (classic):** original review counts and color scaling.
 - **Workload (linear):** balances reviews and recorded time with equal ½/½
-  weights. “Linear” describes equal weighting, not a count × time calculation.
+  weights.
 - **Workload (review-weighted)** (default): favors review volume with ⅗/⅖
   review/time weights, while still crediting longer answers.
 - **Workload (custom):** choose your own review/time weights; editing either
@@ -26,8 +26,7 @@ Workload and recorded-time modes offer two color scales:
 - **Fixed scale** (default): stable thresholds independent of other days.
 - **Automatic baseline:** selects a strong recent study day, or lets you choose
   one. Automatic selection uses the 75th percentile by score of included active
-  days in the previous 60 completed days, requiring at least seven such days;
-  otherwise, fixed thresholds apply. References are saved separately per mode,
+  days in the previous 60 completed days. References are saved separately per mode,
   custom weight, and history filters. Handpick a day that matches your goals.
 
 With a baseline, the target and full progress bar represent **85% of the
@@ -35,7 +34,7 @@ reference day's score**.
 
 > [!IMPORTANT]
 > Time comes directly from Anki. Set **Deck Options → Timers → Maximum answer
-> seconds** to suit your cards; a one-time reminder explains this setting.
+> seconds** to suit your cards.
 
 On the calendar:
 
@@ -63,14 +62,14 @@ Open the generated `build/better-review-heatmap-<version>.ankiaddon` in Anki
 and restart.
 
 > [!NOTE]
-> This fork requires Anki 2.1.50 or later. The same archive supports Qt 5 and Qt 6.
+> This fork requires Anki 2.1.49 or later. The same archive supports Qt 5 and Qt 6.
 
 ## Credits and license
 
 Based on the Anki add-on [Review Heatmap](https://github.com/glutanimate/review-heatmap/) by Glutanimate.
 
-Original add-on copyright © 2016–2022 Aristotelis P.
-([Glutanimate](https://glutanimate.com/)). Fork modifications copyright © 2026
-tassa-yoniso-manasi-karoto and © 2025 Oliver Cheng. Includes d3.js (BSD) and cal-heatmap
-(MIT). Distributed under GNU AGPLv3 with additional terms; see [LICENSE](LICENSE)
-and the bundled library notices.
+Original add-on copyright © 2016–2022 Aristotelis P. ([Glutanimate](https://glutanimate.com/)).
+
+Fork modifications copyright © 2026 tassa-yoniso-manasi-karoto and © 2025 Oliver Cheng.
+
+Includes d3.js (BSD) and cal-heatmap (MIT). Distributed under GNU AGPLv3 with additional terms; see [LICENSE](LICENSE) and the bundled library notices.

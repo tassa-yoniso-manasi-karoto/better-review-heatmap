@@ -201,6 +201,26 @@ def test_shared_manual_day_respects_scope_filters_and_explicit_automatic_choice(
     assert saved_reference(conf, 1)["day"] == 3
 
 
+@pytest.mark.parametrize("metric", ["time", "workload", "custom", "recorded_time"])
+def test_old_day_grouping_recalculates_saved_day_once_without_losing_selection(metric):
+    row = (1, 3, 270000, [(15000, 2), (240000, 1)])
+    for source in ("selected", "automatic"):
+        conf = {"activity_metric": metric}
+        old = {"day": 1, "reviews": 1, "time_ms": 240000, "value": 4,
+               "source": source, "selected_on": 10, "percentile": 90}
+        conf["activity_baselines"] = {baseline_key(conf, 7): old.copy()}
+        assert saved_reference(conf, 7) is None
+        assert not migrate_activity_references(conf, lambda day: [], 7)
+        assert conf["activity_baselines"][baseline_key(conf, 7)] == old
+        assert legacy_reference(conf, 7)["day"] == 1
+        assert migrate_activity_references(conf, lambda day: [row], 7)
+        current = saved_reference(conf, 7)
+        assert current["value"] == pytest.approx(activity_value(3, 270000, metric, row[3]))
+        assert current["day"] == 1 and current["source"] == source
+        assert current["selected_on"] == 10 and current["percentile"] == 90
+        assert not migrate_activity_references(conf, lambda day: pytest.fail("already updated"), 7)
+
+
 def test_reference_requires_positive_time_and_discount_never_compounds():
     assert reference_from_day((1, 100, 0), "time", "selected") is None
     reference = reference_from_day((1, 120, 2700000), "time", "selected")

@@ -181,6 +181,12 @@ export function calendarDayKey(date: Date): number {
   return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 1000;
 }
 
+/** Map a UTC-encoded day (seconds) to the same date in the local calendar. */
+export function calendarDateFromKey(day: number): Date {
+  const utc = new Date(day * 1000);
+  return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+}
+
 export function formatRecordedTime(milliseconds: number): string {
   const seconds = Math.round(Math.max(0, milliseconds) / 1000);
   if (milliseconds > 0 && seconds === 0) return "<1 s";

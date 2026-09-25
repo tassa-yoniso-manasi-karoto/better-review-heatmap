@@ -25,6 +25,7 @@ SCALES = {
 }
 
 FORMULA_VERSION = 3
+DAY_GROUPING_VERSION = 1
 DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
 BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
@@ -109,7 +110,10 @@ def legacy_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict
     if shared is not None:
         return shared  # Recalculate this day using the active formula's durations.
     pending = references.get(baseline_key(conf, deck_id))
-    if isinstance(pending, dict) and pending.get("needs_durations"):
+    if isinstance(pending, dict) and (
+        pending.get("needs_durations")
+        or pending.get("day_grouping_version") != DAY_GROUPING_VERSION
+    ):
         return pending
     if metric_name(conf) not in ("time", "workload"):
         return None
@@ -127,7 +131,8 @@ def migrate_activity_references(conf: Dict, read_day=None,
     """Upgrade the active snapshot using real durations, never inferred ones.
 
     A caller with an ActivityReporter supplies read_day. Other measures/filters
-    migrate when used; original snapshots and existing v3 snapshots are retained.
+    migrate when used. Keep the chosen day and source when correcting grouping.
+    If its reviews are unavailable, retain the old snapshot for recovery.
     """
     if read_day is None or saved_reference(conf, deck_id) is not None:
         return False
@@ -161,7 +166,9 @@ def saved_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]
     if not isinstance(references, dict):
         return None
     reference = references.get(baseline_key(conf, deck_id))
-    if not isinstance(reference, dict) or reference.get("needs_durations"):
+    if not isinstance(reference, dict) or reference.get("needs_durations") or (
+        reference.get("day_grouping_version") != DAY_GROUPING_VERSION
+    ):
         return None
     shared = workload_reference_day(conf, deck_id)
     if shared is not None and (
@@ -243,6 +250,7 @@ def reference_from_day(row: Sequence, metric: str, source: str,
         "time_ms": milliseconds,
         "value": value,
         "source": source,
+        "day_grouping_version": DAY_GROUPING_VERSION,
     }
 
 

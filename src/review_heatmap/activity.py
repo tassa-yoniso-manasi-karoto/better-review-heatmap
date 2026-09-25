@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 from .errors import CollectionError
 from .libaddon.anki.configmanager import ConfigManager
 from .libaddon.debug import isDebuggingOn, logger
-from .times import daystart_epoch
+from .times import daystart_epoch, study_day_sql
 from .types import DeckId
 
 # limit max forecast to 200 years to protect against invalid due dates
@@ -201,8 +201,7 @@ WITH first_answers AS (
     WHERE ease >= 1 {('AND ' + deck_limit) if deck_limit else ''}
     GROUP BY cid
 )
-SELECT CAST(STRFTIME('%s', id / 1000 - {self._offset * 3600}, 'unixepoch',
-                     'localtime', 'start of day') AS int) AS day,
+SELECT {study_day_sql('id / 1000', self._offset)} AS day,
        {'cid' if card_ids else 'COUNT()'}
 FROM first_answers {where}
 {'ORDER BY cid' if card_ids else 'GROUP BY day ORDER BY day'}
@@ -501,17 +500,16 @@ FROM first_answers {where}
             lim += " AND day < {}".format(stop)
         cmd = """
 SELECT
-STRFTIME('%s', 'now', '-{} hours', 'localtime', 'start of day')
-    + (due - ?) * 86400
+? + (due - ?) * 86400
 AS day, -COUNT(), due -- negative to support heatmap legend
 FROM cards
 WHERE did IN {} AND queue IN (2,3)
 {}
 GROUP BY day ORDER BY day""".format(
-            self._offset, self._did_limit(current_deck_only), lim
+            self._did_limit(current_deck_only), lim
         )
 
-        res: List[Sequence[int]] = self._db.all(cmd, self._col.sched.today)
+        res: List[Sequence[int]] = self._db.all(cmd, self._today, self._col.sched.today)
 
         if isDebuggingOn():
             self.__debug_cards_due(cmd, res)
@@ -546,8 +544,6 @@ GROUP BY day ORDER BY day""".format(
             [[day, review count, recorded milliseconds], ...]
             With durations, append [(duration_ms, answer_count), ...] per day.
         """
-        offset = self._offset * 3600
-
         lims = []
         if start is not None:
             lims.append("day >= {}".format(start))
@@ -564,12 +560,11 @@ GROUP BY day ORDER BY day""".format(
         lim = "WHERE " + " AND ".join(lims) if lims else ""
 
         cmd = """\
-SELECT CAST(STRFTIME('%s', id / 1000 - {}, 'unixepoch',
-                     'localtime', 'start of day') AS int)
+SELECT {}
 AS day, COUNT(), {}
 FROM revlog {}
 GROUP BY {} ORDER BY {}""".format(
-            offset,
+            study_day_sql("id / 1000", self._offset),
             "COALESCE(time, 0)" if with_durations else "COALESCE(SUM(time), 0)",
             lim, "day, COALESCE(time, 0)" if with_durations else "day",
             "day, COALESCE(time, 0)" if with_durations else "day",

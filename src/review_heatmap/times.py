@@ -39,6 +39,21 @@ if TYPE_CHECKING:
     from anki.dbproxy import DBProxy
 
 
+def study_day_sql(time_expression: str, offset: int = 0,
+                  is_timestamp: bool = True) -> str:
+    """Encode a local study date as UTC midnight, not as an actual instant.
+
+    Apply the rollover to local calendar fields. Subtracting elapsed hours
+    before localtime moves the rollover when a DST transition lies between.
+    time_expression must be an internal SQL expression or a placeholder.
+    """
+    unixepoch = "'unixepoch', " if is_timestamp else ""
+    return (
+        f"CAST(STRFTIME('%s', {time_expression}, {unixepoch}'localtime', "
+        f"'{-int(offset)} hours', 'start of day') AS int)"
+    )
+
+
 def daystart_epoch(
     db: "DBProxy",
     time_specifier: Union[str, int],
@@ -53,12 +68,6 @@ def daystart_epoch(
     # to ship 'pytz' by default, and 'calendar' might be removed from
     # packaging at some point, as Anki's code does not directly depend
     # on it)
-    offset_str = " '-{} hours', ".format(offset) if offset else ""
-    unixepoch = " 'unixepoch', " if is_timestamp else ""
-
-    cmd = """
-SELECT CAST(STRFTIME('%s', '{time_specifier}', {unixepoch} {offset}
-'localtime', 'start of day') AS int)""".format(
-        time_specifier=time_specifier, unixepoch=unixepoch, offset=offset_str
+    return db.scalar(
+        "SELECT " + study_day_sql("?", offset, is_timestamp), time_specifier,
     )
-    return db.scalar(cmd)

@@ -40,7 +40,7 @@ document.head.appendChild(__vite_style__);
 import { CalHeatMap } from "./_vendor/cal-heatmap.js";
 import { ReviewHeatmapOptions, ReviewHeatmapData } from "./types";
 import { bridgeCommand } from "./bridge";
-import { calendarDayKey, reviewSummary, updateTodayProgress } from "./activity";
+import { calendarDayKey, calendarDateFromKey, reviewSummary, updateTodayProgress } from "./activity";
 
 interface CalHeatmapFormatData {
   count: string | undefined;
@@ -95,10 +95,10 @@ class ReviewHeatmap {
 
   public create(data: ReviewHeatmapData) {
     this.reviewData = data;
-    let calStartDate = applyDateOffset(new Date());
-    let calMinDate = applyDateOffset(new Date(this.options.start));
-    let calMaxDate = applyDateOffset(new Date(this.options.stop));
-    let calTodayDate = applyDateOffset(new Date(this.options.today));
+    const calTodayDate = calendarDateFromKey(this.options.today / 1000);
+    let calStartDate = new Date(calTodayDate);
+    let calMinDate = calendarDateFromKey(this.options.start / 1000);
+    let calMaxDate = calendarDateFromKey(this.options.stop / 1000);
 
     // Running overview of 6-month activity in month view:
     if (this.options.domain === "month") {
@@ -107,8 +107,8 @@ class ReviewHeatmap {
       let paddingLower = Math.round(padding - 1);
       let paddingUpper = Math.round(padding + 1);
 
-      calStartDate.setMonth(calStartDate.getMonth() - paddingLower);
       calStartDate.setDate(1);
+      calStartDate.setMonth(calStartDate.getMonth() - paddingLower);
 
       // Start at first data point if history < 6 months
       if (calMinDate.getTime() > calStartDate.getTime()) {
@@ -116,8 +116,8 @@ class ReviewHeatmap {
       }
 
       let tempDate = new Date(calTodayDate);
-      tempDate.setMonth(tempDate.getMonth() + paddingUpper);
       tempDate.setDate(1);
+      tempDate.setMonth(tempDate.getMonth() + paddingUpper);
 
       // Always go back to centered view after scrolling back then forward
       if (tempDate.getTime() > calMaxDate.getTime()) {
@@ -222,11 +222,7 @@ class ReviewHeatmap {
         // Apply deck limits
         let cmd = this.options.whole ? "" : "deck:current ";
 
-        let today = new Date(calTodayDate);
-        today.setHours(0, 0, 0); // just a precaution against
-        // calTodayDate not being zeroed
-        let diffSecs = Math.abs(today.getTime() - date.getTime()) / 1000;
-        let diffDays = Math.round(diffSecs / 86400);
+        const dayOffset = (calendarDayKey(date) - calendarDayKey(calTodayDate)) / 86400;
 
         // Construct search command
         if (nb >= 0) {
@@ -234,15 +230,19 @@ class ReviewHeatmap {
           // @ts-expect-error
           if (!window.rhNewFinderAPI) {
             // Use custom finder based on revlog ID range
-            let cutoff1 = date.getTime() + this.options.offset * 3600 * 1000;
-            let cutoff2 = cutoff1 + 86400 * 1000;
+            // Construct each local rollover separately: study days need not
+            // contain 24 elapsed hours across a clock change.
+            const cutoff1 = new Date(date.getFullYear(), date.getMonth(),
+              date.getDate(), this.options.offset).getTime();
+            const cutoff2 = new Date(date.getFullYear(), date.getMonth(),
+              date.getDate() + 1, this.options.offset).getTime();
             cmd += "rid:" + cutoff1 + ":" + cutoff2;
           } else {
-            cmd += "prop:rated=" + (diffDays ? -diffDays : 0);
+            cmd += "prop:rated=" + dayOffset;
           }
         } else {
           // Forecast
-          cmd += "prop:due=" + diffDays;
+          cmd += "prop:due=" + dayOffset;
         }
 
         // Invoke browser
@@ -272,18 +272,8 @@ class ReviewHeatmap {
         for (let timestamp_string in timestamps) {
           // Values are activity measures; keys represent UTC calendar days.
           let value = timestamps[timestamp_string];
-          let epochSeconds = parseInt(timestamp_string, 10) * 1000;
-
-          // interpret the timestamp as a Unix timestamp at 00:00:00 UTC on
-          // the given date
-          const utcDate = new Date(epochSeconds)
-          const year = utcDate.getUTCFullYear()
-          const month = utcDate.getUTCMonth()
-          const day = utcDate.getUTCDate()
-
-          // convert to local date at 00:00:00 for CalHeatMap()
-          const date = new Date(year, month, day, 0, 0, 0, 0);
-          const localSeconds = Math.floor(date.getTime() / 1000)
+          const date = calendarDateFromKey(Number(timestamp_string));
+          const localSeconds = Math.floor(date.getTime() / 1000);
 
           results[localSeconds] = value;
         }
@@ -371,12 +361,6 @@ class ReviewHeatmap {
     });
   }
 
-}
-
-// return "zero"-ed local datetime (workaround for lack of UTC time support
-// in cal-heatmap)
-function applyDateOffset(date: Date): Date {
-  return new Date(date.getTime() + date.getTimezoneOffset() * 60 * 1000);
 }
 
 globalThis.ReviewHeatmap = ReviewHeatmap;
