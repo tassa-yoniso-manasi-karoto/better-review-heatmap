@@ -126,6 +126,7 @@ _command_handler_registry: Dict[str, COMMAND_HANDLER_TYPE] = {}
 def _register_command_handler(cmd: str):
     def decorator(method: COMMAND_HANDLER_TYPE):
         _command_handler_registry[cmd] = method
+        return method
 
     return decorator
 

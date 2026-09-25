@@ -233,6 +233,30 @@ def test_reference_bridge_uses_explicit_scope_and_saves_dismissal(
     assert len(setup.conf.saves) == 1
 
 
+def test_gradient_bridge_opens_editor_when_palette_is_visible(setup, options_module, monkeypatch):
+    from aqt.qt import QWidget
+    from types import SimpleNamespace
+
+    bridge_module = importlib.import_module("review_heatmap.web_bridge")
+    gradient_module = importlib.import_module("review_heatmap.gui.gradient")
+    opened = []
+    monkeypatch.setattr(
+        gradient_module.GradientDialog, "exec",
+        lambda dialog: opened.append((dialog.config, dialog.parent())),
+    )
+    parent = QWidget()
+    bridge = bridge_module.HeatmapBridge(SimpleNamespace(col=setup.col), setup.conf)
+    for metric in ("reviews", "time", "workload", "custom", "recorded_time"):
+        for scale in ("adaptive", "baseline"):
+            setup.conf["synced"].update(activity_metric=metric, activity_scale=scale)
+            visible = bridge._handle_message("revhm_palettevisible", parent)
+            previous = len(opened)
+            bridge._handle_message("revhm_gradient", parent)
+            assert len(opened) == previous + int(visible)
+            if visible:
+                assert opened[-1] == (setup.conf, parent)
+
+
 def test_first_review_browser_selects_only_new_cards_in_the_requested_scope(setup, options_module, monkeypatch):
     from aqt.qt import QWidget
     from types import SimpleNamespace
@@ -246,7 +270,13 @@ def test_first_review_browser_selects_only_new_cards_in_the_requested_scope(setu
         add_review(setup, yesterday, cid=cid, sequence=cid)
     handler = bridge._CommandHandler(SimpleNamespace(col=setup.col), setup.conf)
     searches = []
-    monkeypatch.setattr(handler, "browse", lambda query, context: searches.append(query))
+    submitted = []
+    search = SimpleNamespace(setText=searches.append)
+    browser = SimpleNamespace(
+        form=SimpleNamespace(searchEdit=SimpleNamespace(lineEdit=lambda: search)),
+        onSearchActivated=lambda: submitted.append(searches[-1]),
+    )
+    monkeypatch.setattr(bridge.aqt.dialogs, "open", lambda *args: browser)
     parent = QWidget()
     handler("firstreviews", f"global,{yesterday}", parent)
     assert searches == ["cid:2,3"]
@@ -255,6 +285,7 @@ def test_first_review_browser_selects_only_new_cards_in_the_requested_scope(setu
     for payload in ("deck:999,0", "global,invalid", "global,-1", None):
         handler("firstreviews", payload, parent)
     assert len(searches) == 2
+    assert submitted == searches
 
 
 def test_legacy_statistics_pass_the_correct_global_or_deck_scope(setup, options_module):

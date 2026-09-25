@@ -19,9 +19,7 @@ Open **Tools → Review Heatmap Options → Activity** and choose a measure:
   adjusts the other so they total 1.
 - **Recorded time:** colors reflect total Anki-recorded minutes alone.
 
-Workload modes calculate credit for each answer, then add it for the day.
-Repeated answers count separately. See [DESIGN.md](DESIGN.md) for formulas
-and the reasons behind them.
+See [DESIGN.md](DESIGN.md) for formulas and the reasons behind them.
 
 Workload and recorded-time modes offer two color scales:
 
@@ -33,9 +31,7 @@ Workload and recorded-time modes offer two color scales:
   custom weight, and history filters. Handpick a day that matches your goals.
 
 With a baseline, the target and full progress bar represent **85% of the
-reference day's score**. White marks the reference date; the color jump at the
-target intentionally distinguishes days below and above it. The progress bar
-can be enabled under **Appearance** for any nonclassic mode using a baseline.
+reference day's score**. 
 
 > [!IMPORTANT]
 > Time comes directly from Anki. Set **Deck Options → Timers → Maximum answer
@@ -47,10 +43,6 @@ On the calendar:
   count days with reviews, and future dates show cards due.
 - Existing review history and settings are preserved. The heatmap is rebuilt
   from Anki's review log; its display cache is not a separate history archive.
-
-Saved reference dates are retained during formula upgrades. If the original
-durations are unavailable, the old snapshot is kept and the fixed scale is
-used until you choose another reference.
 
 ## Build and install
 

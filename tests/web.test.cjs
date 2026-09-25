@@ -89,6 +89,8 @@ test("first-review toggle preserves the calendar page and restores normal colors
   assert.equal(palette.hidden, false);
   refreshPalette();
   assert.equal(palette.hidden, false);
+  heatmap.onHmGradient();
+  assert.equal(commands.at(-1), "revhm_gradient");
   assert.match(calendar.options.subDomainTitleFormat(false, { date: "March 9" }, cell), /2.*new cards first reviewed/);
   calendar.options.onClick(new Date(cell.t), 2);
   assert.equal(commands.at(-1), `revhm_firstreviews:global,${day}`);
@@ -100,6 +102,8 @@ test("first-review toggle preserves the calendar page and restores normal colors
   assert(classes.has("rh-theme-magenta") && classes.has("rh-baseline"));
   assert.equal(palette.hidden, false);
   // The same scope remembers its layer on redraw; other decks start normally.
+  heatmap.onHmGradient();
+  assert.equal(commands.at(-1), "revhm_gradient");
   heatmap.onToggleNewCards();
   classes.add("rh-baseline");
   new globalThis.ReviewHeatmap(options).create(normal);

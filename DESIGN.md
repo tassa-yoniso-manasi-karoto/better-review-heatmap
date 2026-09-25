@@ -1,9 +1,5 @@
-# P03 — Workload design decisions
-
-**Status:** implemented using per-answer sums; the bonus constraint was withdrawn.
-
 Let $R$ be daily answer count, including repeated attempts, $d_i$ each answer's
-Anki-recorded minutes, and $T=\sum_i d_i$. Apply Fable's power-product family to
+Anki-recorded minutes, and $T=\sum_i d_i$. Apply the power-product formula to
 each answer, then sum:
 
 $$
@@ -35,11 +31,6 @@ Durations use minutes; additional pace-anchor calibration remains undecided.
 - Keep room for a future Experimental mode; concentration or burstiness
   adjustments are deferred.
 - Reuse the shared calculations in the existing CLI.
-
-## Mixing credit
-
-Use the per-answer sum directly. Pooling fast and slow answers adds no extra
-credit, so no bonus cap or cram-day threshold is applied. 
 
 ## Recorded time
 
