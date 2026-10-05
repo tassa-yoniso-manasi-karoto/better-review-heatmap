@@ -65,16 +65,12 @@ HTML_HEATMAP: str = f"""
         <div title="Go back\n(Shift-click for first year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'prev');" class="hm-btn">
             <img src="{WEB_BASE}/assets/left.svg" />
         </div>
-        <div title="Today" onclick="reviewHeatmap.onHmHome(event, this);" class="hm-btn hm-today">
-            <img src="{WEB_BASE}/assets/circle.svg" />
-        </div>
         <div title="Go forward\n(Shift-click for last year)" onclick="reviewHeatmap.onHmNavigate(event, this, 'next');" class="hm-btn">
             <img src="{WEB_BASE}/assets/right.svg" />
         </div>
-        <button id="review-heatmap-new-cards" type="button" class="hm-new-cards" role="switch" title="Show first reviews of new cards" aria-label="Show first reviews of new cards" aria-checked="false" onclick="reviewHeatmap.onToggleNewCards();">
-            <span class="hm-switch-review" aria-hidden="true">review</span>
-            <span class="hm-switch-new" aria-hidden="true">new</span>
-        </button>
+        <div title="Today" onclick="reviewHeatmap.onHmHome(event, this);" class="hm-btn hm-today">
+            <img src="{WEB_BASE}/assets/circle.svg" />
+        </div>
         <div class="hm-settings-row">
             <div class="hm-btn" title="Options" onclick="reviewHeatmap.onHmOpts(event, this);">
                 <img src="{WEB_BASE}/assets/options.svg" />
@@ -83,6 +79,10 @@ HTML_HEATMAP: str = f"""
                 <img src="{WEB_BASE}/assets/palette.svg" />
             </button>
         </div>
+        <button id="review-heatmap-new-cards" type="button" class="hm-new-cards" role="switch" title="Show first reviews of new cards" aria-label="Show first reviews of new cards" aria-checked="false" onclick="reviewHeatmap.onToggleNewCards();">
+            <span class="hm-switch-review" aria-hidden="true">review</span>
+            <span class="hm-switch-new" aria-hidden="true">new</span>
+        </button>
     </div>
 </div>
 <script type="text/javascript">

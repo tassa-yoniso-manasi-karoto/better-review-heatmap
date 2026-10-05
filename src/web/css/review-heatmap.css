@@ -72,10 +72,12 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     align-items: flex-start;
 }
 .heatmap-controls {
+    position: relative;
     display: grid;
-    grid-template-columns: repeat(3, 24px);
+    grid-template-columns: repeat(2, 22px);
     gap: 8px;
-    margin-left: 8px;
+    /* Three 22px rows and two gaps span the calendar's seven day rows. */
+    margin: 1px 0 0 8px;
 }
 
 /* Heatmap graph adjustments */
@@ -128,8 +130,8 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 /* Regular buttons */
 .hm-btn {
     box-sizing: border-box;
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 22px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -147,29 +149,38 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 .hm-btn[hidden] {
     display: none;
 }
-.rh-container .hm-new-cards {
-    all: unset;
-    --rh-switch-accent: var(--rh-review-accent);
-    box-sizing: border-box;
-    position: relative;
-    display: block;
+.hm-today {
     grid-column: 1 / -1;
     justify-self: center;
-    width: 68px;
-    height: 22px;
-    padding: 2px;
-    border: 1px solid rgba(var(--rh-switch-accent), 0.4);
+}
+/* Centered on the month captions, 97.5px below the calendar top (1px
+   domain margin, seven 12px day rows, half of the 25px caption band),
+   which is 96.5px below these controls. */
+.rh-container .hm-new-cards {
+    all: unset;
+    box-sizing: border-box;
+    position: absolute;
+    top: 88px;
+    left: 0;
+    right: 0;
+    display: block;
+    width: 50px;
+    height: 17px;
+    margin: 0 auto;
+    border: 1px solid rgba(128, 128, 128, 0.2);
     border-radius: 999px;
     background: rgba(180, 180, 180, 0.1);
-    color: rgba(191, 195, 203, 0.5);
-    font: inherit;
-    font-size: 10px;
     line-height: 1;
     text-align: center;
     cursor: pointer;
     user-select: none;
     overflow: hidden;
-    transition: border-color 240ms ease;
+}
+/* The switch text is set like a month caption. */
+.cal-heatmap-container .graph-label,
+.rh-container .hm-new-cards {
+    font-family: inherit;
+    font-size: 10px;
 }
 .night_mode .rh-container .hm-new-cards {
     background: rgba(0, 0, 0, 0.12);
@@ -185,15 +196,13 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     box-sizing: border-box;
     position: absolute;
     top: 2px;
-    left: calc(100% - 18px);
-    width: 16px;
-    height: 16px;
-    border: 1px solid rgba(var(--rh-switch-accent), 0.15);
+    left: calc(100% - 13px);
+    width: 11px;
+    height: 11px;
     border-radius: 50%;
-    background: rgba(var(--rh-switch-accent), 0.75);
+    background: rgba(128, 128, 128, 0.45);
     z-index: 1;
-    transition: left 240ms ease, background-color 240ms ease,
-                border-color 240ms ease;
+    transition: left 240ms ease;
 }
 .hm-new-cards > span {
     box-sizing: border-box;
@@ -205,18 +214,16 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     transition: clip-path 240ms ease;
     pointer-events: none;
 }
+/* 1px bottom padding sets the text on the captions' baseline. */
 .hm-new-cards .hm-switch-review {
-    padding: 0 20px 0 2px;
-    color: rgba(var(--rh-review-accent), 0.6);
-    clip-path: inset(0 18px 0 0);
+    padding: 0 14px 1px 2px;
+    color: rgba(var(--rh-review-accent), 0.45);
+    clip-path: inset(0 13px 0 0);
 }
 .hm-new-cards .hm-switch-new {
-    padding: 0 2px 0 20px;
-    color: rgba(var(--rh-new-accent), 0.6);
+    padding: 0 2px 1px 14px;
+    color: rgba(var(--rh-new-accent), 0.45);
     clip-path: inset(0 0 0 calc(100% - 2px));
-}
-.rh-container .hm-new-cards[aria-checked="true"] {
-    --rh-switch-accent: var(--rh-new-accent);
 }
 .hm-new-cards[aria-checked="true"]::before {
     left: 2px;
@@ -225,13 +232,13 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     clip-path: inset(0 calc(100% - 2px) 0 0);
 }
 .hm-new-cards[aria-checked="true"] .hm-switch-new {
-    clip-path: inset(0 0 0 18px);
+    clip-path: inset(0 0 0 13px);
 }
 .rh-container .hm-new-cards:hover::before {
-    background: rgba(var(--rh-switch-accent), 0.9);
+    background: rgba(128, 128, 128, 0.65);
 }
 .rh-container .hm-new-cards:focus-visible {
-    outline: 1px solid rgba(var(--rh-switch-accent), 0.5);
+    outline: 1px solid rgba(128, 128, 128, 0.5);
     outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -256,10 +263,10 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     gap: 8px;
 }
 #review-heatmap-palette {
-    min-width: 24px;
-    max-width: 24px;
-    min-height: 24px;
-    max-height: 24px;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
     margin: 0;
     padding: 0;
     border: 0;
