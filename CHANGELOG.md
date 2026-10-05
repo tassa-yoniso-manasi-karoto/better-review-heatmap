@@ -25,6 +25,13 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
+## [2.1.3] - 2026-10-05
+
+### Fixed
+
+- Fixed months collapsing or overlapping when moving through the calendar quickly or back and forth
+- Fixed an "Unsupported file type" message when dragging a heatmap button icon
+
 ## [2.1.2] - 2026-10-05
 
 ### Changed
