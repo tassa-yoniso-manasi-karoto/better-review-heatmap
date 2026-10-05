@@ -25,6 +25,13 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
+## [2.1.2] - 2026-10-05
+
+### Changed
+
+- Restored the compact heatmap controls, now lined up with the calendar's day rows
+- Made the review/new switch smaller and quieter, placed in line with the month labels
+
 ## [2.1.1] - 2026-09-25
 
 ### Fixed
