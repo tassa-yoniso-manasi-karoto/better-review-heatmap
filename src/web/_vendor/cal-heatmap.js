@@ -862,13 +862,15 @@ export var CalHeatMap = function() {
 				return tmp;
 
 			case self.NAVIGATE_RIGHT:
-				self.domainPosition.setPosition(domainIndex, graphDim[axis]);
+				tmp = graphDim[axis];
+				self.domainPosition.setPosition(domainIndex, tmp);
 
-				enteringDomainDim = domainDim;
-				exitingDomainDim = self.domainPosition.getPositionFromIndex(1);
-
-				self.domainPosition.shiftRightBy(exitingDomainDim);
-				return graphDim[axis];
+				// Move the right edge per domain: months differ in width, so
+				// each entering domain must start where the previous one ends.
+				var shift = self.domainPosition.getPositionFromIndex(1);
+				self.domainPosition.shiftRightBy(shift);
+				graphDim[axis] += domainDim - shift;
+				return tmp;
 
 			case self.NAVIGATE_LEFT:
 				tmp = -domainDim;
@@ -1125,7 +1127,10 @@ export var CalHeatMap = function() {
 		}
 
 		// At the time of exit, domainsWidth and domainsHeight already automatically shifted
-		domainSvg.exit().transition().duration(options.animationDuration)
+		// Unmark leaving domains so navigating back before their removal paints
+		// fresh, positioned domains instead of rebinding these at x=0.
+		domainSvg.exit().classed("graph-domain", false)
+			.transition().duration(options.animationDuration)
 			.attr("x", function(d){
 				if (options.verticalOrientation) {
 					return 0;

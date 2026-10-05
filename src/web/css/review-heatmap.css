@@ -294,6 +294,8 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     display: block;
     height: 10px;
     width: 10px;
+    /* A dragged icon reaches Anki as a dropped file to import. */
+    -webkit-user-drag: none;
 }
 
 /* Heatmap activity type widget */
