@@ -235,6 +235,29 @@ def test_reference_bridge_uses_explicit_scope_and_saves_dismissal(
     assert len(setup.conf.saves) == 1
 
 
+def test_mouse_hint_bridge_records_ten_distinct_days(setup, options_module):
+    from aqt.qt import QWidget
+    from types import SimpleNamespace
+
+    bridge = importlib.import_module("review_heatmap.web_bridge")
+    parent = QWidget()
+    handler = bridge._CommandHandler(SimpleNamespace(col=setup.col), setup.conf)
+    assert handler("mousehint", str(TODAY), parent) is True
+    assert setup.conf["profile"]["mouse_hint_days"] == [TODAY]
+    assert setup.conf.saves == [("profile", {"profile_unload": True})]
+    # The same day is reported once per page load; it neither repeats nor saves.
+    assert handler("mousehint", str(TODAY), parent) is True
+    assert len(setup.conf.saves) == 1
+    for payload in (None, "", "abc", "-86400", str(TODAY + 1)):
+        assert handler("mousehint", payload, parent) is False
+    for n in range(1, 10):
+        assert handler("mousehint", str(TODAY - n * 86400), parent) is True
+    assert len(setup.conf["profile"]["mouse_hint_days"]) == 10
+    assert handler("mousehint", str(TODAY - 10 * 86400), parent) is False
+    assert len(setup.conf["profile"]["mouse_hint_days"]) == 10
+    assert len(setup.conf.saves) == 10
+
+
 def test_gradient_bridge_opens_editor_when_palette_is_visible(setup, options_module, monkeypatch):
     from aqt.qt import QWidget
     from types import SimpleNamespace

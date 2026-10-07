@@ -42,7 +42,7 @@ from aqt.overview import Overview
 from aqt.qt import QWidget
 from aqt.stats import DeckStats
 
-from .config import heatmap_colors, heatmap_modes
+from .config import MOUSE_HINT_DAYS, heatmap_colors, heatmap_modes
 from .activity import ActivityReporter
 from .metrics import metric_name, reference_scope
 from .gui.contrib import invoke_contributions_dialog
@@ -206,6 +206,29 @@ class _CommandHandler:
         # The caller removes this banner; other views pick up the saved state
         # on their next render without resetting the user's current page.
         self._config.save("synced", profile_unload=True)
+        return True
+
+    @_register_command_handler("mousehint")
+    def mouse_hint_seen(self, payload: Optional[str], context: SUPPORTED_CONTEXT_TYPES) -> bool:
+        """Record a day on which the heatmap tooltip explained the mouse buttons."""
+        try:
+            day = int(payload)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        if day < 0 or day % 86400:
+            return False
+        profile = self._config["profile"]
+        days = list(profile.get("mouse_hint_days") or [])
+        if day in days:
+            return True
+        if len(days) >= MOUSE_HINT_DAYS:
+            return False
+        days.append(day)
+        profile["mouse_hint_days"] = days
+        self._config["profile"] = profile
+        # Other views read the count on their next render without resetting
+        # the user's current page.
+        self._config.save("profile", profile_unload=True)
         return True
 
     def _reference_deck(self, scope: str) -> Optional[int]:

@@ -110,6 +110,7 @@ async function heatmapPage(t) {
         [40, "rh-col15"], [50, "rh-col16"], [60, "rh-col17"], [80, "rh-col18"], [160, "rh-col19"]],
       firstCards: [[0, "rh-col0"], [1, "rh-col11"], [2, "rh-col12"], [4, "rh-col13"]],
     },
+    mouseHint: false,
   };
   const normal = { [day]: 5, [day + 86400]: -20 };
   const heatmap = new globalThis.ReviewHeatmap(options);
@@ -539,6 +540,26 @@ test("a click picks a period whose statistics follow the pointer until fixed", a
   mouse.leftClick(day - 2 * D, 50);
   mouse.leftClick(day - 2 * D, 50);
   assert.equal(commands.length, sent);
+});
+
+test("the tooltip explains the mouse buttons while Python asks for it", async t => {
+  const { options, normal, day, mouse, commands } = await heatmapPage(t);
+  new globalThis.ReviewHeatmap({ ...options, mouseHint: true }).create(normal);
+  const cell = { t: calendarDateFromKey(day).getTime(), v: 2 };
+  const format = { date: "March 9", count: "2", connector: "on" };
+  assert.match(globalThis.testCalendar.options.subDomainTitleFormat(false, format, cell),
+    /^<b>2<\/b> cards <b>reviewed<\/b> on March 9<span class="rh-mouse-hint">New: middle-click opens the browser, click two days to select a period<\/span>$/);
+  // The day is reported once per page, on the first hover.
+  const sent = commands.length;
+  mouse.hover(day);
+  mouse.hover(day - 86400);
+  assert.deepEqual(commands.slice(sent), [`revhm_mousehint:${day}`]);
+  // Python stops asking once the note was seen on enough days.
+  new globalThis.ReviewHeatmap(options).create(normal);
+  assert.equal(globalThis.testCalendar.options.subDomainTitleFormat(false, format, cell),
+    "<b>2</b> cards <b>reviewed</b> on March 9");
+  mouse.hover(day);
+  assert.equal(commands.length, sent + 1);
 });
 
 test("period statistics mirror the lifetime line's rules", () => {

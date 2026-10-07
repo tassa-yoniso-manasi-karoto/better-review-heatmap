@@ -43,7 +43,7 @@ from aqt.main import AnkiQt
 from aqt.theme import theme_manager
 
 from .activity import ActivityReport, ActivityReporter, StatsEntry, StatsType
-from .config import heatmap_modes
+from .config import MOUSE_HINT_DAYS, heatmap_modes
 from .libaddon.platform import PLATFORM
 from .metrics import (
     adaptive_anchor,
@@ -439,6 +439,7 @@ class HeatmapRenderer:
                 "cards": self._get_dynamic_levels(stats_legend),
                 "firstCards": self._get_dynamic_levels(first_stats_legend),
             },
+            "mouseHint": self._mouse_hint(report.today // 1000),
         }
 
         reference = self._baseline_reference(deck_id)
@@ -467,6 +468,15 @@ class HeatmapRenderer:
         return HTML_HEATMAP.format(
             options=json.dumps(options), data=json.dumps(activity)
         )
+
+    def _mouse_hint(self, today: int) -> bool:
+        """Whether the tooltip still explains the mouse buttons today.
+
+        Long-time users learnt that a click opens the browser; the page
+        reports each day the note was seen, up to MOUSE_HINT_DAYS days.
+        """
+        days = self._config["profile"].get("mouse_hint_days") or []
+        return today in days or len(days) < MOUSE_HINT_DAYS
 
     def _generate_stats_elm(self, data: ActivityReport, dynamic_legend,
                             first_reviews: bool = False) -> str:

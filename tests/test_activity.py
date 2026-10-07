@@ -437,6 +437,25 @@ def test_render_preserves_raw_totals_streaks_and_forecast_scale(setup):
     assert snapshots["reviews"]["legend"][-9:] != snapshots["workload"]["legend"][-9:]
 
 
+def test_mouse_hint_is_offered_on_ten_days_then_retired(setup):
+    report = setup.reporter._get_activity([(TODAY, 5)], [], {TODAY: 0})
+    renderer = make_renderer(setup)
+    profile = setup.conf["profile"]
+
+    def hint():
+        html = renderer._generate_heatmap_elm(report, [], False)
+        return json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])["mouseHint"]
+
+    assert hint() is True
+    profile["mouse_hint_days"] = [TODAY - (n + 1) * 86400 for n in range(9)]
+    assert hint() is True
+    profile["mouse_hint_days"].append(TODAY - 10 * 86400)
+    assert hint() is False
+    # The tenth day keeps its note for the rest of that day.
+    profile["mouse_hint_days"][-1] = TODAY
+    assert hint() is True
+
+
 def test_zero_time_days_remain_visible_and_clickable(setup):
     report = setup.reporter._get_activity([(TODAY, 5)], [], {TODAY: 0})
     renderer = make_renderer(setup)
@@ -771,6 +790,7 @@ def test_additive_settings_migration_preserves_existing_data(addon_modules):
         del conf["synced"][key]
     del conf["profile"]["time_notice_seen"]
     del conf["profile"]["show_today_progress"]
+    del conf["profile"]["mouse_hint_days"]
     conf["synced"].update(colors="ice", limdate=1234, limdecks=[17], custom={"keep": True})
     previous = copy.deepcopy(conf)
     addon_modules.config.ensure_activity_defaults(conf)
@@ -781,6 +801,7 @@ def test_additive_settings_migration_preserves_existing_data(addon_modules):
     assert conf["synced"]["activity_metric"] == "fsrs"
     assert conf["profile"]["show_today_progress"] is True
     assert conf["profile"]["time_notice_seen"] is False
+    assert conf["profile"]["mouse_hint_days"] == []
     conf["synced"]["activity_metric"] = "workload"
     addon_modules.config.ensure_activity_defaults(conf)
     assert conf["synced"]["activity_metric"] == "workload"

@@ -94,6 +94,7 @@ class ReviewHeatmap {
   private periodStorageKey: string;
   private period: Period | null = null;
   private hovered: number | null = null;
+  private hintReported = false;
   private today: number;
 
   constructor(private options: ReviewHeatmapOptions) {
@@ -226,35 +227,7 @@ class ReviewHeatmap {
         cellData: CalHeatmapCellData
       ): string => {
         // format tooltips
-        let tooltip: string;
-
-        if (this.showNewCards) {
-          const count = this.options.firstReviews[calendarDayKey(new Date(cellData.t))] || 0;
-          return count
-            ? `<b>${count.toLocaleString()}</b> new ${count === 1 ? "card" : "cards"} first reviewed on ${formatData.date}`
-            : `<b>No</b> first reviews on ${formatData.date}`;
-        }
-
-        const recorded = this.options.history[calendarDayKey(new Date(cellData.t))];
-        if (recorded && cellData.v >= 0) {
-          return `${reviewSummary(recorded[0], recorded[1])} on ${formatData.date}`;
-        }
-
-        let count = formatData.count;
-        if (count !== undefined && count.startsWith("-")) {
-          count = count.substring(1);
-        }
-
-        if (isEmpty) {
-          tooltip = `<b>No</b> ${cellData.t > calTodayDate.getTime() ? "cards due" : "reviews"
-            } on ${formatData.date}`;
-        } else {
-          const label = Math.abs(cellData.v) == 1 ? "card" : "cards";
-          tooltip = `<b>${count}</b> ${label} <b>${cellData.v < 0 ? "due" : "reviewed"
-            }</b> ${formatData.connector} ${formatData.date}`;
-        }
-
-        return tooltip;
+        return this.tooltipText(isEmpty, formatData, cellData, calTodayDate) + this.mouseHintHtml();
       },
       // The left button picks a period and the middle button browses a day
       // (see bindCellEvents).
@@ -298,6 +271,50 @@ class ReviewHeatmap {
       // A saved period reaches the statistics lines once they are parsed.
       document.addEventListener("DOMContentLoaded", () => this.renderPeriod(), { once: true });
     }
+  }
+
+  private tooltipText(
+    isEmpty: boolean, formatData: CalHeatmapFormatData, cellData: CalHeatmapCellData,
+    calTodayDate: Date,
+  ): string {
+    if (this.showNewCards) {
+      const count = this.options.firstReviews[calendarDayKey(new Date(cellData.t))] || 0;
+      return count
+        ? `<b>${count.toLocaleString()}</b> new ${count === 1 ? "card" : "cards"} first reviewed on ${formatData.date}`
+        : `<b>No</b> first reviews on ${formatData.date}`;
+    }
+
+    const recorded = this.options.history[calendarDayKey(new Date(cellData.t))];
+    if (recorded && cellData.v >= 0) {
+      return `${reviewSummary(recorded[0], recorded[1])} on ${formatData.date}`;
+    }
+
+    let count = formatData.count;
+    if (count !== undefined && count.startsWith("-")) {
+      count = count.substring(1);
+    }
+
+    if (isEmpty) {
+      return `<b>No</b> ${cellData.t > calTodayDate.getTime() ? "cards due" : "reviews"
+        } on ${formatData.date}`;
+    }
+    const label = Math.abs(cellData.v) == 1 ? "card" : "cards";
+    return `<b>${count}</b> ${label} <b>${cellData.v < 0 ? "due" : "reviewed"
+      }</b> ${formatData.connector} ${formatData.date}`;
+  }
+
+  // Long-time users learnt that a click opens the browser. Python offers the
+  // note on a limited number of days and is told on which days it was seen.
+  private mouseHintHtml(): string {
+    return this.options.mouseHint
+      ? '<span class="rh-mouse-hint">New: middle-click opens the browser, ' +
+        "click two days to select a period</span>"
+      : "";
+  }
+
+  private reportMouseHint() {
+    if (!this.options.mouseHint || this.hintReported) return;
+    if (bridgeCommand(`revhm_mousehint:${this.today}`) !== false) this.hintReported = true;
   }
 
   /** Show the cards of one day in Anki's browser. */
@@ -372,6 +389,7 @@ class ReviewHeatmap {
     calendar.addEventListener("mouseover", event => {
       const cell = this.cellData(event.target);
       if (!cell) return; // Gaps and the tooltip keep the last day.
+      this.reportMouseHint();
       const day = calendarDayKey(new Date(cell.t));
       if (day !== this.hovered) {
         this.hovered = day;

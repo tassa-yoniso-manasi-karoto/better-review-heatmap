@@ -52,6 +52,7 @@ export interface ReviewHeatmapOptions {
   dayColors: { [timestamp: number]: string };
   history: { [timestamp: number]: [reviews: number, milliseconds: number] };
   statsLevels: StatsLevels;
+  mouseHint: boolean;
 }
 
 export type ReviewHeatmapData = { [timestamp: number]: number };

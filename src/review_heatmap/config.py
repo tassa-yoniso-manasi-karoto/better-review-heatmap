@@ -101,9 +101,14 @@ config_defaults: Dict[str, Dict] = {
         "show_today_progress": True,
         "hotkeys": {},
         "time_notice_seen": False,
+        # Days on which the heatmap tooltip explained the mouse buttons.
+        "mouse_hint_days": [],
         "version": ADDON.VERSION,
     },
 }
+
+# The tooltip note about the mouse buttons appears on this many distinct days.
+MOUSE_HINT_DAYS = 10
 
 config: ConfigManager = ConfigManager(
     mw, config_dict=config_defaults, conf_key="heatmap", reset_req=True
@@ -121,7 +126,7 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
                     "activity_baselines", "custom_time_weight", "fsrs_calibration",
                     "concentration_calibration",
                     "activity_reference_reminders_dismissed")),
-        ("profile", ("time_notice_seen", "show_today_progress")),
+        ("profile", ("time_notice_seen", "show_today_progress", "mouse_hint_days")),
     ):
         values = manager[storage]
         changed = False

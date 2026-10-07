@@ -123,6 +123,16 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
     animation: 0.5s ease 0s normal forwards 1 fadein;
     -webkit-animation: 0.5s ease 0s normal forwards 1 fadein;
 }
+/* A short-lived note about the mouse buttons under the tooltip's text. */
+.ch-tooltip .rh-mouse-hint {
+    display: block;
+    margin-top: 5px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    font-size: 10px;
+    line-height: 1.3;
+    color: #a8a8a8;
+}
 /* Delay tooltip using fadein */
 @keyframes fadein {
     0% { opacity:0; }
