@@ -49,6 +49,15 @@ reference day's score**.
 > Time comes directly from Anki. Set **Deck Options → Timers → Maximum answer
 > seconds** to suit your cards.
 
+Days on the heatmap answer to the mouse:
+
+- **Click a day, then a second one** to select a period: while you hover, the
+  statistics line below switches to the daily average, days learned and
+  streaks of just those days, and the heatmap outlines them. The second click
+  fixes the period; clicking its first or last day clears it. This works in the
+  new-card view and on a single deck's overview too.
+- **Middle-click a day** to open its cards in the browser.
+
 Just like in the original:
 
 - Hover over a past day to see its recorded time and review count. Streaks still

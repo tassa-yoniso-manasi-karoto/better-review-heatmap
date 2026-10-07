@@ -25,15 +25,16 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
-## [Unreleased]
+## [2.2.0] - Unreleased
 
 ### Added
 - Two experimental measures: FSRS-based, which weighs each answer by how new, recently learned or difficult its card is, and FSRS-based + sustained concentration, which also rewards long uninterrupted stretches on cards that take real time
 - A Calibrate button next to the measure that lists every setting of the experimental measures with an explanation on hover; only settings you change are kept, so improved defaults in later versions still reach you
+- Click two days on the heatmap to see the daily average, days learned and streaks of just that period, outlined on the calendar; works in the new-card view and on a single deck too
 
 ### Changed
 - FSRS-based is the default measure for new installs; an existing selection is kept
-- Measure names mark the default with a star and experimental ones with a flask
+- Opening a day's cards in the browser moved from a click to the middle mouse button
 
 ## [2.1.3] - 2026-10-05
 

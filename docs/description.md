@@ -2,7 +2,7 @@
 
 This is a modified fork. It requires Anki 2.1.50 or later, using Qt 6.
 
-Adds a **heatmap graph** to Anki's main window which visualizes past and future card review activity, similar to the contribution view on GitHub. Information on the **current streak** is displayed alongside the heatmap. Clicking on an item shows the cards reviewed or due on that day.
+Adds a **heatmap graph** to Anki's main window which visualizes past and future card review activity, similar to the contribution view on GitHub. Information on the **current streak** is displayed alongside the heatmap. Clicking two days shows the streaks and averages of just that period, and middle-clicking a day shows the cards reviewed or due on it.
 
 <img src="https://raw.githubusercontent.com/glutanimate/review-heatmap/main/screenshots/review-heatmap-1.png">   <img src="https://raw.githubusercontent.com/glutanimate/review-heatmap/main/screenshots/review-heatmap-2.png">
 
@@ -14,7 +14,7 @@ Adds a **heatmap graph** to Anki's main window which visualizes past and future 
 
 - **Color-coded** summary of **review activity**: Hues of green for past reviews, shades of grey for pending reviews
 - Additional stats: **Review streaks**, daily averages, and days learned
-- **Interactive controls**: Clicking on a day will draw up the corresponding cards in the browser
+- **Interactive controls**: Click two days to see the streaks and averages of just that period; middle-click a day to draw up its cards in the browser
 - **Highly configurable**: 5 different color schemes, 2 different calendar modes, etc.
 
 ### USAGE

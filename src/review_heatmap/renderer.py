@@ -194,12 +194,14 @@ class HeatmapRenderer:
         history_legend = self._activity_legend(count_legend, deck_id)
         stats_legend = self._stats_legend(count_legend)
         heatmap_legend = self._heatmap_legend(history_legend, count_legend)
+        first_reviews = report.first_reviews or {}
+        first_legend = self._first_stats_legend(first_reviews)
 
         classes = self._get_css_classes(view, deck_id)
 
         if prefs["display"][view.name]:
             heatmap = self._generate_heatmap_elm(
-                report, heatmap_legend, current_deck_only
+                report, heatmap_legend, current_deck_only, stats_legend, first_legend
             )
             if show_reference_reminder(self._config["synced"], deck_id):
                 heatmap = (
@@ -212,13 +214,8 @@ class HeatmapRenderer:
 
         if prefs["display"][view.name] or prefs["statsvis"]:
             stats = '<div class="rh-review-stats">' + self._generate_stats_elm(report, stats_legend) + '</div>'
-            first_reviews = report.first_reviews or {}
             if first_reviews:
                 first_report = self._reporter._get_activity(sorted(first_reviews.items()))
-                first_legend = self._stats_legend([
-                    factor * (adaptive_anchor(first_reviews.values()) or 1)
-                    for factor in ADAPTIVE_FACTORS
-                ])
                 first_stats = self._generate_stats_elm(first_report, first_legend, first_reviews=True)
             else:
                 first_stats = '<div class="streak">No first reviews in the included history.</div>'
@@ -388,13 +385,21 @@ class HeatmapRenderer:
         return progress
 
     def _generate_heatmap_elm(
-        self, report: ActivityReport, dynamic_legend, current_deck_only: bool
+        self, report: ActivityReport, dynamic_legend, current_deck_only: bool,
+        stats_legend: Optional[List[float]] = None,
+        first_stats_legend: Optional[List[float]] = None,
     ) -> str:
         mode = heatmap_modes[self._config["synced"]["mode"]]
         metric = metric_name(self._config["synced"])
         deck_id = self._reference_deck_id(current_deck_only)
         first_reviews = report.first_reviews or {}
         first_anchor = adaptive_anchor(first_reviews.values()) or 1
+        if stats_legend is None:
+            stats_legend = self._stats_legend(
+                self._dynamic_legend(report.stats.activity_daily_avg.value)
+            )
+        if first_stats_legend is None:
+            first_stats_legend = self._first_stats_legend(first_reviews)
 
         # TODO: pass on "whole" to govern browser link "deck:current" addition
         options = {
@@ -425,6 +430,14 @@ class HeatmapRenderer:
             "history": {
                 day: [report.activity[day], milliseconds]
                 for day, milliseconds in report.review_time.items()
+            },
+            # The page recomputes the statistics line for a picked period
+            # with the same colour thresholds as the lifetime line.
+            "statsLevels": {
+                "streak": self._stats_formatting[StatsType.streak].levels,
+                "percentage": self._stats_formatting[StatsType.percentage].levels,
+                "cards": self._get_dynamic_levels(stats_legend),
+                "firstCards": self._get_dynamic_levels(first_stats_legend),
             },
         }
 
@@ -501,6 +514,10 @@ class HeatmapRenderer:
 
     def _stats_legend(self, legend: List[float]) -> List[float]:
         return [0.0] + legend
+
+    def _first_stats_legend(self, first_reviews: Dict[int, int]) -> List[float]:
+        anchor = adaptive_anchor(first_reviews.values()) or 1
+        return self._stats_legend([factor * anchor for factor in ADAPTIVE_FACTORS])
 
     def _dynamic_legend(self, average: int) -> List[float]:
         # set default average if average too low for informational levels

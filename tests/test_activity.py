@@ -396,6 +396,8 @@ def make_renderer(setup):
 
 
 def test_render_preserves_raw_totals_streaks_and_forecast_scale(setup):
+    from review_heatmap.metrics import ADAPTIVE_FACTORS
+
     reporter = setup.reporter
     report = reporter._get_activity(
         [(TODAY - 86400, 15), (TODAY, 120)], [(TODAY + 86400, -200)],
@@ -414,6 +416,18 @@ def test_render_preserves_raw_totals_streaks_and_forecast_scale(setup):
         assert options["history"][str(TODAY)] == [120, 2700000]
         assert values[str(TODAY + 86400)] == -200
         assert "68 cards" in html  # original count-based active-day average
+        # The page colours a picked period's line with the same thresholds.
+        levels = options["statsLevels"]
+        assert levels["streak"] == [[0, "rh-col0"], [14, "rh-col12"], [30, "rh-col14"],
+                                    [90, "rh-col16"], [180, "rh-col19"], [365, "rh-col20"]]
+        assert levels["percentage"][:2] == [[0, "rh-col0"], [25, "rh-col11"]]
+        assert levels["cards"] == [[0.0, "rh-col0"]] + [
+            [factor * 68, css] for factor, css in zip(
+                renderer._dynamic_legend_factors, renderer._css_colors[1:])
+        ]
+        assert levels["firstCards"] == [[0.0, "rh-col0"]] + [
+            [factor, css] for factor, css in zip(ADAPTIVE_FACTORS, renderer._css_colors[1:])
+        ]
         if metric == "time":
             assert renderer._activity_scores(report)[TODAY] == pytest.approx(5400 ** 0.5)
             assert options["dayColors"][str(TODAY)] != "#ffffff"

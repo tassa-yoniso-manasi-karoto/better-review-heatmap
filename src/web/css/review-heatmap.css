@@ -91,6 +91,17 @@ License: GNU AGPLv3 <https://www.gnu.org/licenses/agpl.html>
 }
 
 /* Graph rects */
+/* Days answer to the left and middle buttons, so they keep the pointer. */
+.rh-container .cal-heatmap-container .graph-rect {
+    cursor: pointer;
+}
+/* Period picker: the selected days share this border (set inline). */
+.rh-container {
+    --rh-period-stroke: #000;
+}
+.night_mode .rh-container {
+    --rh-period-stroke: #fff;
+}
 .cal-heatmap-container rect.highlight-now {
     stroke: black;
 }
@@ -350,6 +361,7 @@ select.hm-sel:active, select.hm-sel:focus {
     font-weight: bold;
     color: #E6E6E6;
 }
+
 
 
 

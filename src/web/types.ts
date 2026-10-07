@@ -29,6 +29,8 @@ listed here: <https://glutanimate.com/contact/>.
 Any modifications to this file must keep this entire header intact.
 */
 
+import type { StatsLevels } from "./period";
+
 export interface ReviewHeatmapOptions {
   domain: "year" | "month";
   subdomain: "day";
@@ -49,6 +51,7 @@ export interface ReviewHeatmapOptions {
   showPaletteButton: boolean;
   dayColors: { [timestamp: number]: string };
   history: { [timestamp: number]: [reviews: number, milliseconds: number] };
+  statsLevels: StatsLevels;
 }
 
 export type ReviewHeatmapData = { [timestamp: number]: number };

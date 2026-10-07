@@ -40,7 +40,10 @@ document.head.appendChild(__vite_style__);
 import { CalHeatMap } from "./_vendor/cal-heatmap.js";
 import { ReviewHeatmapOptions, ReviewHeatmapData } from "./types";
 import { bridgeCommand } from "./bridge";
-import { calendarDayKey, calendarDateFromKey, reviewSummary, updateTodayProgress } from "./activity";
+import {
+  calendarDayKey, calendarDateFromKey, formatRecordedTime, reviewSummary, updateTodayProgress,
+} from "./activity";
+import { formatPeriod, levelClass, periodStats, pluralize } from "./period";
 
 interface CalHeatmapFormatData {
   count: string | undefined;
@@ -54,20 +57,50 @@ interface CalHeatmapCellData {
   t: number; // timestamp
 }
 
+/** A clicked first day and, once fixed by a second click, the last. */
+interface Period {
+  anchor: number;
+  end: number | null;
+}
+
+interface StatsLine {
+  element: HTMLElement;
+  original: string;
+  newCards: boolean;
+}
+
+// The selected days share one border, like a travel site's date picker:
+// thin inside, thick on the first day and on the last or hovered day.
+const PERIOD_STROKE = "var(--rh-period-stroke)";
+const PERIOD_STROKE_WIDTH = "1px";
+const PERIOD_EDGE_STROKE_WIDTH = "2.5px";
+
+// Anki loads each view as a document, so this script runs before the parser
+// reaches the statistics lines below the calendar: they are looked up when
+// needed, and their lifetime markup is kept here to restore it.
+const lifetimeLines = new WeakMap<Element, string>();
+
 class ReviewHeatmap {
   public static updateTodayProgress = updateTodayProgress;
   private heatmap: CalHeatMap | null;
   private paletteButton: HTMLElement | null;
   private newCardsButton: HTMLElement | null;
+  private calendar: HTMLElement | null;
   private container: HTMLElement | null;
   private baselineMode: boolean;
   private showNewCards = false;
   private reviewData: ReviewHeatmapData = {};
   private layerStorageKey: string;
+  private periodStorageKey: string;
+  private period: Period | null = null;
+  private hovered: number | null = null;
+  private today: number;
 
   constructor(private options: ReviewHeatmapOptions) {
     this.heatmap = null;
-    this.container = document.getElementById("cal-heatmap")?.closest(".rh-container") as HTMLElement | null;
+    this.calendar = document.getElementById("cal-heatmap");
+    this.container = this.calendar?.closest(".rh-container") as HTMLElement | null;
+    this.today = Math.floor(options.today / 1000);
     this.baselineMode = this.container?.classList.contains("rh-baseline") || false;
     this.newCardsButton = document.getElementById("review-heatmap-new-cards");
     this.newCardsButton?.style.setProperty("--rh-review-accent",
@@ -77,9 +110,33 @@ class ReviewHeatmap {
     try {
       this.showNewCards = sessionStorage.getItem(this.layerStorageKey) === "true";
     } catch { /* The toggle also works without web storage. */ }
+    this.periodStorageKey = `rh-period:${options.viewSession}:${options.referenceScope}`;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(this.periodStorageKey) || "null");
+      if (this.isDay(saved?.anchor) && (saved.end === null || this.isDay(saved.end))) {
+        this.period = { anchor: saved.anchor, end: saved.end };
+      }
+    } catch { /* A period is picked again after a page change without storage. */ }
     this.paletteButton = document.getElementById("review-heatmap-palette");
     this.updateLayerControls();
     window.setInterval(() => this.refreshPaletteVisibility(), 1000);
+  }
+
+  private isDay(value: unknown): value is number {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 &&
+      value % 86400 === 0 && value <= this.today;
+  }
+
+  private statsLines(): StatsLine[] {
+    const lines: StatsLine[] = [];
+    for (const [selector, newCards] of [[".rh-review-stats .streak", false],
+                                        [".rh-new-card-stats .streak", true]] as const) {
+      const element = this.container?.querySelector(selector) as HTMLElement | null;
+      if (!element) continue;
+      if (!lifetimeLines.has(element)) lifetimeLines.set(element, element.innerHTML);
+      lines.push({ element, original: lifetimeLines.get(element)!, newCards });
+    }
+    return lines;
   }
 
   private setPaletteVisibility(visible: boolean) {
@@ -126,13 +183,14 @@ class ReviewHeatmap {
     }
 
     let heatmap = new CalHeatMap();
-    const applyDayColors = () => {
+    const decorate = () => {
       const dayColors = this.showNewCards ? this.options.firstReviewColors : this.options.dayColors;
       // Inline fills survive the vendor's asynchronous class updates and
       // highlights. Calendar keys preserve the inherited DST correction.
       heatmap.root.selectAll(".graph-domain rect")
         .style("fill", (cell: CalHeatmapCellData) =>
           dayColors[calendarDayKey(new Date(cell.t))] || null);
+      this.strokeCells(heatmap);
     };
 
     // console.log("Date: options.today " + new Date(options.today))
@@ -157,11 +215,11 @@ class ReviewHeatmap {
       displayLegend: false,
       domainLabelFormat: this.options.domLabForm,
       tooltip: true,
-      afterLoad: applyDayColors,
-      onComplete: applyDayColors,
-      afterLoadNextDomain: applyDayColors,
-      afterLoadPreviousDomain: applyDayColors,
-      afterUpdate: applyDayColors,
+      afterLoad: decorate,
+      onComplete: decorate,
+      afterLoadNextDomain: decorate,
+      afterLoadPreviousDomain: decorate,
+      afterUpdate: decorate,
       subDomainTitleFormat: (
         isEmpty: boolean,
         formatData: CalHeatmapFormatData,
@@ -198,59 +256,9 @@ class ReviewHeatmap {
 
         return tooltip;
       },
-      onClick: (date, nb) => {
-        // Click handler that shows cards assigned to a particular date
-        // in Anki's card browser
-
-        if (nb === null || nb == 0) {
-          // No cards for that day. Preserve highlight and return.
-          heatmap.highlight(calTodayDate);
-          return;
-        }
-
-        if (this.showNewCards) {
-          bridgeCommand(`revhm_firstreviews:${this.options.referenceScope},${calendarDayKey(date)}`);
-          heatmap.highlight([calTodayDate, date]);
-          return;
-        }
-
-        // console.log(date)
-
-        // Determine if review history or forecasts
-        let isHistory = nb >= 0;
-
-        // Apply deck limits
-        let cmd = this.options.whole ? "" : "deck:current ";
-
-        const dayOffset = (calendarDayKey(date) - calendarDayKey(calTodayDate)) / 86400;
-
-        // Construct search command
-        if (nb >= 0) {
-          // Review log
-          // @ts-expect-error
-          if (!window.rhNewFinderAPI) {
-            // Use custom finder based on revlog ID range
-            // Construct each local rollover separately: study days need not
-            // contain 24 elapsed hours across a clock change.
-            const cutoff1 = new Date(date.getFullYear(), date.getMonth(),
-              date.getDate(), this.options.offset).getTime();
-            const cutoff2 = new Date(date.getFullYear(), date.getMonth(),
-              date.getDate() + 1, this.options.offset).getTime();
-            cmd += "rid:" + cutoff1 + ":" + cutoff2;
-          } else {
-            cmd += "prop:rated=" + dayOffset;
-          }
-        } else {
-          // Forecast
-          cmd += "prop:due=" + dayOffset;
-        }
-
-        // Invoke browser
-        bridgeCommand("revhm_browse:" + cmd);
-
-        // Update date highlight to include clicked on date AND today
-        heatmap.highlight([calTodayDate, date]);
-      },
+      // The left button picks a period and the middle button browses a day
+      // (see bindCellEvents).
+      onClick: null,
       afterLoadData: function afterLoadData(timestamps: ReviewHeatmapData) {
         // Cal-heatmap always uses the local timezone, which is problematic
         // when supplying UTC start-of-day times.
@@ -284,6 +292,201 @@ class ReviewHeatmap {
     });
 
     this.heatmap = heatmap;
+    this.bindCellEvents();
+    this.renderPeriod();
+    if (this.period && document.readyState === "loading") {
+      // A saved period reaches the statistics lines once they are parsed.
+      document.addEventListener("DOMContentLoaded", () => this.renderPeriod(), { once: true });
+    }
+  }
+
+  /** Show the cards of one day in Anki's browser. */
+  private browse(date: Date, nb: number | null) {
+    if (nb === null || nb == 0) {
+      return; // No cards for that day.
+    }
+
+    if (this.showNewCards) {
+      bridgeCommand(`revhm_firstreviews:${this.options.referenceScope},${calendarDayKey(date)}`);
+      return;
+    }
+
+    // Apply deck limits
+    let cmd = this.options.whole ? "" : "deck:current ";
+
+    const dayOffset = (calendarDayKey(date) - this.today) / 86400;
+
+    // Construct search command
+    if (nb >= 0) {
+      // Review log
+      // @ts-expect-error
+      if (!window.rhNewFinderAPI) {
+        // Use custom finder based on revlog ID range
+        // Construct each local rollover separately: study days need not
+        // contain 24 elapsed hours across a clock change.
+        const cutoff1 = new Date(date.getFullYear(), date.getMonth(),
+          date.getDate(), this.options.offset).getTime();
+        const cutoff2 = new Date(date.getFullYear(), date.getMonth(),
+          date.getDate() + 1, this.options.offset).getTime();
+        cmd += "rid:" + cutoff1 + ":" + cutoff2;
+      } else {
+        cmd += "prop:rated=" + dayOffset;
+      }
+    } else {
+      // Forecast
+      cmd += "prop:due=" + dayOffset;
+    }
+
+    bridgeCommand("revhm_browse:" + cmd);
+  }
+
+  // Period picker
+  // -------------------------------------------------------------------
+
+  /** The vendor binds a day's data to its rect, so events need no lookup. */
+  private cellData(target: EventTarget | null): CalHeatmapCellData | null {
+    const element = target as (Element & { __data__?: CalHeatmapCellData }) | null;
+    const data = element?.__data__;
+    if (typeof element?.tagName !== "string" || element.tagName.toLowerCase() !== "rect" ||
+        typeof data?.t !== "number") {
+      return null;
+    }
+    return data;
+  }
+
+  private bindCellEvents() {
+    const calendar = this.calendar;
+    if (!calendar) return;
+    calendar.addEventListener("click", event => {
+      const cell = event.button === 0 ? this.cellData(event.target) : null;
+      if (cell) this.pickDay(calendarDayKey(new Date(cell.t)));
+    });
+    calendar.addEventListener("mousedown", event => {
+      // Anki's webview consumes the middle button's release (its paste
+      // shortcut on Linux), so the press is the only event a page receives.
+      const cell = event.button === 1 ? this.cellData(event.target) : null;
+      if (!cell) return;
+      event.preventDefault(); // Neither a paste nor an autoscroll.
+      this.browse(new Date(cell.t), cell.v);
+    });
+    calendar.addEventListener("mouseover", event => {
+      const cell = this.cellData(event.target);
+      if (!cell) return; // Gaps and the tooltip keep the last day.
+      const day = calendarDayKey(new Date(cell.t));
+      if (day !== this.hovered) {
+        this.hovered = day;
+        this.onHoverChange();
+      }
+    });
+    calendar.addEventListener("mouseleave", () => {
+      if (this.hovered === null) return;
+      this.hovered = null;
+      this.onHoverChange();
+    });
+  }
+
+  private onHoverChange() {
+    // Only an unfixed period follows the pointer.
+    if (this.period && this.period.end === null) this.renderPeriod();
+  }
+
+  /** A click starts a period, fixes its end, clears it from an edge, or starts over. */
+  private pickDay(day: number) {
+    if (day > this.today) return; // Periods describe study history.
+    const period = this.period;
+    if (!period) {
+      this.period = { anchor: day, end: null };
+    } else if (period.end === null) {
+      this.period = day === period.anchor ? null : { anchor: period.anchor, end: day };
+    } else {
+      this.period = day === period.anchor || day === period.end ? null : { anchor: day, end: null };
+    }
+    this.savePeriod();
+    this.renderPeriod();
+  }
+
+  private savePeriod() {
+    try {
+      if (this.period) sessionStorage.setItem(this.periodStorageKey, JSON.stringify(this.period));
+      else sessionStorage.removeItem(this.periodStorageKey);
+    } catch { /* Optional persistence across page redraws. */ }
+  }
+
+  /** The period's first and last day: fixed, or the anchor and the hovered day. */
+  private periodEdges(): [number, number] | null {
+    const period = this.period;
+    if (!period) return null;
+    const end = period.end ?? (this.hovered === null ? period.anchor : Math.min(this.hovered, this.today));
+    return [period.anchor, end];
+  }
+
+  private periodBounds(): [number, number] | null {
+    const edges = this.periodEdges();
+    return edges && (edges[1] < edges[0] ? [edges[1], edges[0]] : edges);
+  }
+
+  /** Inline strokes survive the vendor's class updates, like the fills. */
+  private strokeCells(heatmap: CalHeatMap | null = this.heatmap) {
+    const bounds = this.periodBounds();
+    const edges = this.periodEdges();
+    const width = (cell: CalHeatmapCellData): string | null => {
+      // A domain's background rect carries no day and must stay unstroked.
+      if (!bounds || !edges || typeof cell?.t !== "number") return null;
+      const day = calendarDayKey(new Date(cell.t));
+      if (day < bounds[0] || day > bounds[1]) return null;
+      return edges.includes(day) ? PERIOD_EDGE_STROKE_WIDTH : PERIOD_STROKE_WIDTH;
+    };
+    heatmap?.root.selectAll(".graph-domain rect")
+      .style("stroke", (cell: CalHeatmapCellData) => width(cell) && PERIOD_STROKE)
+      .style("stroke-width", width);
+  }
+
+  private renderPeriod() {
+    this.strokeCells();
+    const bounds = this.periodBounds();
+    for (const line of this.statsLines()) {
+      const period = bounds && this.periodLine(bounds, line.newCards);
+      line.element.innerHTML = period ? period.html : line.original;
+      line.element.title = period ? period.title : "";
+    }
+  }
+
+  /** The statistics line recomputed for the period from the page's own data. */
+  private periodLine([start, end]: [number, number], newCards: boolean): { html: string; title: string } {
+    const stats = periodStats(start, end, this.today, newCards
+      ? day => [this.options.firstReviews[day] || 0, 0]
+      : day => this.options.history[day] || [0, 0]);
+    const levels = this.options.statsLevels;
+    const what = newCards ? "first reviews" : "review activity";
+    const summary = newCards
+      ? `${stats.total.toLocaleString()} new ${stats.total === 1 ? "card" : "cards"} first reviewed`
+      : `${formatRecordedTime(stats.milliseconds)} recorded, ${stats.total.toLocaleString()} ` +
+        `${stats.total === 1 ? "review" : "reviews"}`;
+    const next = this.period?.end === null
+      ? "Click another day to fix the period, or its first day again to clear it."
+      : "Click the period's first or last day to clear it, or another day to start over.";
+    const value = (text: string, cssClass: string, hint: string) =>
+      `<span title="${hint}" class="sstats ${cssClass}">${text}</span>`;
+    const label = (text: string) => `<span class="streak-info">${text}</span>`;
+    // Spaces between the spans separate the words as the lifetime line's do.
+    const html = [
+      label(newCards ? "New cards/day:" : "Daily average:"),
+      value(pluralize(stats.average, "card"),
+        levelClass(stats.average, newCards ? levels.firstCards : levels.cards),
+        newCards ? "Average first reviews on days with new cards in the period"
+          : "Average reviews on active days in the period"),
+      label(newCards ? "Days with new cards:" : "Days learned:"),
+      value(`${stats.percent}%`, levelClass(stats.percent, levels.percentage),
+        `Percentage of days with ${what} in the period`),
+      label("Longest streak:"),
+      value(pluralize(stats.longest, "day"), levelClass(stats.longest, levels.streak),
+        `Longest continuous streak of ${what} in the period`),
+      label("Streak at end:"),
+      value(pluralize(stats.final, "day"), levelClass(stats.final, levels.streak),
+        `Streak of ${what} running on the period's last day`),
+    ].join(" ");
+    const title = `${formatPeriod(start, end)}, ${pluralize(stats.days, "day")}: ${summary}. ${next}`;
+    return { html, title };
   }
 
   private updateLayerControls() {
