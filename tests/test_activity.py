@@ -25,7 +25,8 @@ class MemoryDB:
         # Never open a real Anki collection in these tests.
         self.connection = sqlite3.connect(":memory:")
         self.connection.executescript(
-            "CREATE TABLE revlog (id INTEGER, cid INTEGER, ease INTEGER, time INTEGER);"
+            "CREATE TABLE revlog (id INTEGER, cid INTEGER, ease INTEGER, time INTEGER,"
+            " lastIvl INTEGER DEFAULT 0, factor INTEGER DEFAULT 0);"
             "CREATE TABLE cards (id INTEGER, did INTEGER, due INTEGER, queue INTEGER);"
         )
 
@@ -84,10 +85,11 @@ def setup(addon_modules):
     db.connection.close()
 
 
-def add_review(setup, date, cid=1, ease=3, milliseconds=30000, sequence=0):
+def add_review(setup, date, cid=1, ease=3, milliseconds=30000, sequence=0,
+               last_interval=0, factor=0):
     setup.db.connection.execute(
-        "INSERT INTO revlog VALUES (?, ?, ?, ?)",
-        ((date + 16 * 3600) * 1000 + sequence, cid, ease, milliseconds),
+        "INSERT INTO revlog (id, cid, ease, time, lastIvl, factor) VALUES (?, ?, ?, ?, ?, ?)",
+        ((date + 16 * 3600) * 1000 + sequence, cid, ease, milliseconds, last_interval, factor),
     )
 
 
@@ -112,6 +114,54 @@ def test_count_and_time_share_filters_including_deleted_cards(setup):
     ]
     setup.conf["synced"]["limresched"] = False
     assert setup.reporter._cards_done() == [(yesterday, 2, 1029999)]
+
+
+def test_fsrs_mode_weights_answers_by_card_state_and_keeps_filters(setup):
+    from review_heatmap.metrics import activity_value, answer_effort, fsrs_calibration
+
+    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    earlier, yesterday = TODAY - 31 * 86400, TODAY - 86400
+    add_review(setup, earlier, cid=1, factor=400)  # the card's first answer
+    add_review(setup, earlier, cid=99, sequence=1)  # SM-2 learning step: factor 0
+    add_review(setup, yesterday, cid=1, last_interval=21, factor=550)  # pivot interval
+    add_review(setup, yesterday, cid=2, sequence=1, factor=640)  # new card
+    add_review(setup, yesterday, cid=2, sequence=2, last_interval=-600, factor=640)  # step
+    add_review(setup, yesterday, cid=2, sequence=3, last_interval=-600, factor=640,
+               milliseconds=10000)
+    add_review(setup, yesterday, cid=99, sequence=4, last_interval=2, factor=2500)  # deleted
+    add_review(setup, yesterday, cid=1, ease=0, sequence=5, milliseconds=0, last_interval=21)
+    conf = setup.conf["synced"]
+    conf["activity_metric"] = "fsrs"
+    calibration = fsrs_calibration(conf)
+    mature = answer_effort(False, 21, 550, calibration)
+    new = answer_effort(True, 0, 640, calibration)
+    step = answer_effort(False, -600, 640, calibration)
+    young = answer_effort(False, 2, 2500, calibration)  # SM-2 ease is not a difficulty
+    assert young == pytest.approx((21 / 2) ** 0.25)
+    assert mature < step < new < young
+    rows = setup.reporter._cards_done(with_durations=True)
+    assert rows[0] == (earlier, 2, 60000, [
+        (30000, 1, answer_effort(True, 0, 400, calibration)), (30000, 1, 1.5),
+    ])
+    assert rows[1] == (yesterday, 5, 130000, [
+        (10000, 1, step), (30000, 1, mature), (30000, 1, step), (30000, 1, new), (30000, 1, young),
+    ])
+    assert setup.reporter.reference_history(yesterday, with_durations=True) == [rows[1]]
+    assert setup.reporter._cards_done(with_durations=True, with_effort=False)[1] == (
+        yesterday, 5, 130000, [(10000, 1), (30000, 4)],
+    )
+    report = setup.reporter.get_report(limfcst=0)
+    assert make_renderer(setup)._activity_scores(report)[yesterday] == pytest.approx(
+        sum(effort ** 0.6 * (duration / 60000) ** 0.4 for duration, _, effort in rows[1][3])
+    )
+    conf["activity_metric"] = "workload"
+    assert setup.reporter._cards_done(with_durations=True)[1][3] == [(10000, 1), (30000, 4)]
+    assert setup.reporter._cards_done(with_durations=True, with_effort=True) == rows
+    conf.update(activity_metric="fsrs", limcdel=True)
+    assert [row[1] for row in setup.reporter._cards_done(with_durations=True)] == [1, 4]
+    conf.update(limcdel=False, limresched=False)
+    assert setup.reporter._cards_done(with_durations=True)[1][3][0] == (0, 1, 1)
+    assert activity_value(6, 130000, "fsrs", [(0, 1, 1)], conf) == 0
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires timezone switching")
@@ -161,8 +211,10 @@ def test_rollover_grouping_today_and_forecast_agree_across_dst(setup, monkeypatc
                     tomorrow.replace(hour=4)]
         for cid, instant in enumerate(instants, 1):
             setup.db.connection.execute("INSERT INTO cards VALUES (?, 1, 100, 2)", (cid,))
-            setup.db.connection.execute("INSERT INTO revlog VALUES (?, ?, 3, 30000)",
-                                        (round(instant.timestamp() * 1000), cid))
+            setup.db.connection.execute(
+                "INSERT INTO revlog (id, cid, ease, time) VALUES (?, ?, 3, 30000)",
+                (round(instant.timestamp() * 1000), cid),
+            )
         reporter = setup.modules.activity.ActivityReporter(setup.col, setup.conf)
         expected = [(key - 86400, 1, 30000), (key, 3, 90000), (key + 86400, 1, 30000)]
         assert reporter._cards_done() == expected
@@ -193,8 +245,10 @@ def test_browser_day_interval_includes_start_but_excludes_next_rollover(setup, m
     finder = importlib.import_module("review_heatmap.finder")
     setup.db.connection.executemany("INSERT INTO cards VALUES (?, 1, 0, 2)",
                                    [(cid,) for cid in (1, 2, 3, 4)])
-    setup.db.connection.executemany("INSERT INTO revlog VALUES (?, ?, 3, 30000)",
-                                   [(999, 1), (1000, 2), (1999, 3), (2000, 4), (1500, 99)])
+    setup.db.connection.executemany(
+        "INSERT INTO revlog (id, cid, ease, time) VALUES (?, ?, 3, 30000)",
+        [(999, 1), (1000, 2), (1999, 3), (2000, 4), (1500, 99)],
+    )
     monkeypatch.setattr(setup.db, "list", lambda sql, *args: [
         row[0] for row in setup.db.all(sql, *args)
     ], raising=False)

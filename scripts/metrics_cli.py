@@ -10,6 +10,7 @@ Usage examples:
     python scripts/metrics_cli.py --durations-ms 15000 60000 --history-json days.json
     python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json
     python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json
+    python scripts/metrics_cli.py --answers-json answers.json --metric fsrs --fsrs-calibration new_card_weight=2
 """
 
 import argparse
@@ -43,6 +44,7 @@ def create_parser() -> argparse.ArgumentParser:
             "  python scripts/metrics_cli.py --durations-ms 15000 60000 --history-json days.json\n"
             "  python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json\n"
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json\n"
+            "  python scripts/metrics_cli.py --answers-json answers.json --metric fsrs --fsrs-calibration new_card_weight=2\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -65,6 +67,12 @@ def create_parser() -> argparse.ArgumentParser:
     time_group.add_argument(
         "--durations-ms", type=int, nargs="+",
         help="Individual recorded answer durations in milliseconds; gives exact per-answer sums.",
+    )
+    time_group.add_argument(
+        "--answers-json", type=Path,
+        help=("JSON array of answers [duration_ms, last_interval, factor, first] as recorded "
+              "in Anki's revlog (lastIvl, factor; first marks the card's earliest answer). "
+              "Trailing fields default to 0/false. Gives exact FSRS-based scores."),
     )
     metric_choices = ["all"] + list(metrics.METRICS.keys())
     parser.add_argument("--theme", choices=list(metrics.COLOR_THEMES), default="lime",
@@ -91,6 +99,13 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--reference-durations-ms", type=int, nargs="+",
                         help="Individual reference-day durations; count is inferred if omitted.")
+    parser.add_argument("--reference-answers-json", type=Path,
+                        help="Reference-day answers in the --answers-json format.")
+    parser.add_argument(
+        "--fsrs-calibration", nargs="+", metavar="KEY=VALUE",
+        help="FSRS-based calibration overrides. Keys: "
+             + ", ".join(metrics.FSRS_CALIBRATION_DEFAULTS) + ".",
+    )
     parser.add_argument(
         "--history-json", type=Path,
         help=("Adaptive history: a JSON array of days, each an array of answer durations "
@@ -109,8 +124,74 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> List[tuple]:
+    """Read [duration_ms, last_interval, factor, first] rows; trailing fields are optional."""
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("expected a non-empty JSON array of answers")
+        answers = []
+        for row in rows:
+            if not isinstance(row, list) or not 1 <= len(row) <= 4:
+                raise ValueError("each answer is [duration_ms, last_interval, factor, first]")
+            duration, last_interval, factor, first = (row + [0, 0, False])[:4]
+            if any(type(value) is not int for value in (duration, last_interval, factor)):
+                raise ValueError("duration_ms, last_interval and factor must be integers")
+            if duration < 0 or factor < 0:
+                raise ValueError("duration_ms and factor cannot be negative")
+            if first not in (True, False, 0, 1):
+                raise ValueError("first must be true or false")
+            answers.append((duration, last_interval, factor, bool(first)))
+    except (OSError, ValueError) as exc:
+        parser.error(f"Invalid {option}: {exc}")
+    return answers
+
+
+def parse_calibration(parser: argparse.ArgumentParser,
+                      items: Optional[Sequence[str]]) -> Optional[Dict[str, float]]:
+    if items is None:
+        return None
+    calibration: Dict[str, float] = {}
+    for item in items:
+        key, separator, value = item.partition("=")
+        if not separator or key not in metrics.FSRS_CALIBRATION_DEFAULTS:
+            parser.error("--fsrs-calibration expects KEY=VALUE with KEY one of: "
+                         + ", ".join(metrics.FSRS_CALIBRATION_DEFAULTS) + ".")
+        try:
+            number = float(value)
+        except ValueError:
+            parser.error(f"--fsrs-calibration {key} needs a number.")
+        low, high = metrics.FSRS_CALIBRATION_RANGES[key]
+        if not low <= number <= high:
+            parser.error(f"--fsrs-calibration {key} must be between {low:g} and {high:g}.")
+        calibration[key] = number
+    return calibration
+
+
 def parse_and_validate(parser: argparse.ArgumentParser, argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
+
+    args.answers = None
+    if args.answers_json is not None:
+        args.answers = load_answers(parser, args.answers_json, "--answers-json")
+        if args.reviews is not None and args.reviews != len(args.answers):
+            parser.error("--reviews must match the number of answers in --answers-json.")
+        args.reviews = len(args.answers)
+        args.time_ms = sum(answer[0] for answer in args.answers)
+    args.reference_answers = None
+    if args.reference_answers_json is not None:
+        if args.reference_minutes is not None or args.reference_durations_ms is not None:
+            parser.error("Use one of --reference-answers-json, --reference-durations-ms "
+                         "or --reference-minutes.")
+        args.reference_answers = load_answers(
+            parser, args.reference_answers_json, "--reference-answers-json",
+        )
+        if (args.reference_reviews is not None
+                and args.reference_reviews != len(args.reference_answers)):
+            parser.error("Reference review count must match the supplied answers.")
+        args.reference_reviews = len(args.reference_answers)
+        args.reference_minutes = sum(answer[0] for answer in args.reference_answers) / 60000
+    args.calibration = parse_calibration(parser, args.fsrs_calibration)
 
     if args.durations_ms is not None:
         if any(duration < 0 for duration in args.durations_ms):
@@ -201,6 +282,9 @@ def evaluate(
     history_durations_ms: Optional[Sequence[Sequence[int]]] = None,
     theme: str = "lime",
     night_mode: bool = False,
+    answers: Optional[Sequence[tuple]] = None,
+    ref_answers: Optional[Sequence[tuple]] = None,
+    fsrs_calibration: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     has_reference = ref_reviews is not None and ref_time_ms is not None and ref_minutes is not None
     palette = "bundled_default" if has_reference else f"{theme}_{'dark' if night_mode else 'light'}"
@@ -212,7 +296,22 @@ def evaluate(
 
     results: Dict[str, Any] = {}
     conf = {} if custom_time_weight is None else {"custom_time_weight": custom_time_weight}
-    durations = list(Counter(durations_ms).items()) if durations_ms is not None else None
+    if fsrs_calibration is not None:
+        conf["fsrs_calibration"] = dict(fsrs_calibration)
+    calibration = metrics.fsrs_calibration(conf)
+
+    def answer_buckets(rows):
+        # Other measures ignore the effort element; only FSRS-based reads it.
+        counted = Counter(
+            (duration, metrics.answer_effort(first, last_interval, factor, calibration))
+            for duration, last_interval, factor, first in rows
+        )
+        return [(duration, count, effort) for (duration, effort), count in sorted(counted.items())]
+
+    if answers is not None:
+        durations = answer_buckets(answers)
+    else:
+        durations = list(Counter(durations_ms).items()) if durations_ms is not None else None
     for key in keys:
         label = metrics.METRICS[key]["label"]
         score = metrics.activity_value(reviews, time_ms, key, durations, conf)
@@ -224,7 +323,9 @@ def evaluate(
         if key != "reviews":
             if has_reference:
                 row = (0, ref_reviews, ref_time_ms)
-                if ref_durations_ms is not None:
+                if ref_answers is not None:
+                    row += (answer_buckets(ref_answers),)
+                elif ref_durations_ms is not None:
                     row += (list(Counter(ref_durations_ms).items()),)
                 ref = metrics.reference_from_day(row, key, "cli", conf)
                 if ref is None:
@@ -261,13 +362,17 @@ def evaluate(
 
         review_weight, time_weight = metrics.metric_weights(key, conf)
         results[key]["exponents"] = {"reviews": review_weight, "time": time_weight}
+        if key == "fsrs":
+            results[key]["calibration"] = dict(calibration)
 
     data: Dict[str, Any] = {
         "schema_version": 2,
         "metric_source_path": str(METRICS_PATH),
-        "duration_model": "individual" if durations_ms is not None else "equal-duration assumption",
+        "duration_model": ("individual" if durations_ms is not None or answers is not None
+                           else "equal-duration assumption"),
         "reference_duration_model": (
-            "individual" if ref_durations_ms is not None else "equal-duration assumption"
+            "individual" if ref_durations_ms is not None or ref_answers is not None
+            else "equal-duration assumption"
         ) if has_reference else None,
         "inputs": {
             "reviews": reviews,
@@ -402,6 +507,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             history_durations_ms=args.history_durations_ms,
             theme=args.theme,
             night_mode=args.night_mode,
+            answers=args.answers,
+            ref_answers=args.reference_answers,
+            fsrs_calibration=args.calibration,
         )
     except (ValueError, OverflowError) as exc:
         sys.stderr.write(f"Error during calculation: {exc}\n")

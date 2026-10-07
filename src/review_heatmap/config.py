@@ -40,6 +40,7 @@ from aqt import mw
 
 from .consts import ADDON
 from .libaddon.anki.configmanager import ConfigManager
+from .metrics import FSRS_CALIBRATION_DEFAULTS
 
 __all__ = ["heatmap_colors", "heatmap_modes", "config_defaults", "config"]
 
@@ -89,6 +90,7 @@ config_defaults: Dict[str, Dict] = {
         "activity_baselines": {},
         "activity_reference_reminders_dismissed": {},
         "custom_time_weight": 0.5,
+        "fsrs_calibration": dict(FSRS_CALIBRATION_DEFAULTS),
         "version": ADDON.VERSION,
     },
     "profile": {
@@ -114,7 +116,7 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
     """
     for storage, keys in (
         ("synced", ("activity_metric", "activity_scale", "activity_reference_date",
-                    "activity_baselines", "custom_time_weight",
+                    "activity_baselines", "custom_time_weight", "fsrs_calibration",
                     "activity_reference_reminders_dismissed")),
         ("profile", ("time_notice_seen", "show_today_progress")),
     ):

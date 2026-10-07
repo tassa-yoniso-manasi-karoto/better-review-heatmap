@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from review_heatmap.metrics import (
-    METRICS, adaptive_color, activity_value,
+    METRICS, adaptive_color, activity_value, answer_effort, fsrs_calibration,
     baseline_color, baseline_value, reference_from_day,
 )
 
@@ -242,3 +242,42 @@ def test_human_readable_table_output():
     assert proc_ref.returncode == 0, proc_ref.stderr
     assert "Reference:" in proc_ref.stdout
     assert "bundled_default" in proc_ref.stdout
+
+
+def test_fsrs_answers_and_calibration_match_direct_calls(tmp_path):
+    answers = [[15000, 21, 550, 0], [15000, 0, 640, True], [240000, -600, 640], [30000]]
+    path = tmp_path / "answers.json"
+    path.write_text(json.dumps(answers))
+    proc = run_cli(["--answers-json", str(path), "--fsrs-calibration", "new_card_weight=2",
+                    "weight_limit=4", "--json"])
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    conf = {"fsrs_calibration": {"new_card_weight": 2, "weight_limit": 4}}
+    calibration = fsrs_calibration(conf)
+    buckets = [
+        (15000, 1, answer_effort(False, 21, 550, calibration)),
+        (15000, 1, answer_effort(True, 0, 640, calibration)),
+        (240000, 1, answer_effort(False, -600, 640, calibration)),
+        (30000, 1, answer_effort(False, 0, 0, calibration)),
+    ]
+    assert data["inputs"] == {"reviews": 4, "minutes": 5.0, "milliseconds": 300000}
+    assert data["duration_model"] == "individual"
+    fsrs = data["results"]["fsrs"]
+    assert fsrs["calibration"] == calibration
+    assert fsrs["exponents"] == pytest.approx({"reviews": 0.6, "time": 0.4})
+    assert fsrs["score"] == pytest.approx(activity_value(4, 300000, "fsrs", buckets, conf))
+    assert data["results"]["workload"]["score"] == pytest.approx(
+        activity_value(4, 300000, "workload", [(15000, 2), (30000, 1), (240000, 1)])
+    )
+    proc = run_cli(["--answers-json", str(path), "--reference-answers-json", str(path),
+                    "--metric", "fsrs", "--json"])
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["reference_duration_model"] == "individual"
+    assert result["results"]["fsrs"]["ratio"] == pytest.approx(1 / 0.85)
+    for bad in (["--fsrs-calibration", "time_weight=0.5"], ["--fsrs-calibration", "step_weight=20"],
+                ["--reviews", "3"], ["--reference-answers-json", str(path),
+                                     "--reference-minutes", "1"]):
+        assert run_cli(["--answers-json", str(path), *bad]).returncode == 2
+    path.write_text(json.dumps([[15000.5]]))
+    assert run_cli(["--answers-json", str(path)]).returncode == 2

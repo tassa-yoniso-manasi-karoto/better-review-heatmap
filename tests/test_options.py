@@ -398,3 +398,68 @@ def test_delayed_notice_does_not_apply_to_a_different_profile(setup, options_mod
     module.mw.col = object()
     callbacks.pop()()
     assert not setup.conf["profile"]["time_notice_seen"]
+
+
+def test_fsrs_calibration_popup_recalculates_the_reference_and_respects_cancel(
+    setup, options_module, monkeypatch,
+):
+    module, app = options_module
+    from aqt.qt import QDate, QDialog, QDialogButtonBox, QWidget
+    from review_heatmap.metrics import (
+        FSRS_CALIBRATION_DEFAULTS, answer_effort, fsrs_calibration, saved_reference,
+    )
+
+    def calibrate(options, *, accept=True, restore=False, **values):
+        def exec_popup(popup):
+            assert popup.values() == fsrs_calibration(options.getData()["synced"])
+            for key, value in values.items():
+                popup.spins[key].setValue(value)
+            if restore:
+                popup.findChild(QDialogButtonBox).button(
+                    QDialogButtonBox.StandardButton.RestoreDefaults,
+                ).click()
+                assert popup.values() == FSRS_CALIBRATION_DEFAULTS
+            return QDialog.DialogCode.Accepted if accept else QDialog.DialogCode.Rejected
+        monkeypatch.setattr(module.FsrsCalibrationDialog, "exec", exec_popup)
+        options.btnFsrsCalibration.click()
+
+    yesterday = TODAY - 86400
+    add_review(setup, yesterday, milliseconds=15000)  # the card's first answer
+    add_review(setup, yesterday, milliseconds=240000, sequence=1, last_interval=21, factor=550)
+    parent = QWidget()
+    parent.col = setup.col
+    dialog = module.RevHmOptions(setup.conf, parent)
+    assert dialog.btnFsrsCalibration.isHidden()
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("fsrs"))
+    dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData("baseline"))
+    assert not dialog.btnFsrsCalibration.isHidden()
+    assert dialog.btnCustomWeights.isHidden()
+    dialog.dateReference.setDate(QDate(2026, 3, 9))
+    conf = dialog.getData()["synced"]
+    mature = answer_effort(False, 21, 550, fsrs_calibration({}))
+    assert saved_reference(conf)["value"] == pytest.approx(
+        1.5 ** 0.6 * 0.25 ** 0.4 + mature ** 0.6 * 4 ** 0.4
+    )
+    before = copy.deepcopy(conf)
+    calibrate(dialog, accept=False, new_card_weight=3)
+    assert conf == before
+    calibrate(dialog, new_card_weight=3, weight_limit=4)
+    assert conf["fsrs_calibration"]["new_card_weight"] == 3
+    reference = saved_reference(conf)
+    assert reference["day"] == yesterday
+    assert reference["source"] == "selected"
+    assert reference["value"] == pytest.approx(3 ** 0.6 * 0.25 ** 0.4 + mature ** 0.6 * 4 ** 0.4)
+    calibrate(dialog, restore=True)
+    assert conf["fsrs_calibration"] == FSRS_CALIBRATION_DEFAULTS
+    assert saved_reference(conf)["value"] == pytest.approx(before["activity_baselines"][
+        next(key for key in before["activity_baselines"] if '"fsrs"' in key)
+    ]["value"])
+    dialog.reject()
+    assert setup.conf["synced"]["fsrs_calibration"] == FSRS_CALIBRATION_DEFAULTS
+
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("fsrs"))
+    calibrate(dialog, maturity_exponent=0.5)
+    dialog.accept()
+    assert setup.conf["synced"]["fsrs_calibration"]["maturity_exponent"] == 0.5
+    assert setup.conf["synced"]["activity_metric"] == "fsrs"

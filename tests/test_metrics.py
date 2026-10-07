@@ -6,6 +6,7 @@ import pytest
 
 from review_heatmap.metrics import (
     activity_levels, activity_value, adaptive_anchor, activity_color, adaptive_color,
+    answer_effort, fsrs_calibration, fsrs_difficulty, FSRS_CALIBRATION_DEFAULTS,
     COLOR_THEMES,
     automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
@@ -295,3 +296,58 @@ def test_invalid_saved_reference_is_ignored(value):
     conf = {"activity_metric": "time"}
     conf["activity_baselines"] = {baseline_key(conf): {"day": 1, "value": value}}
     assert saved_reference(conf) is None
+
+
+def test_fsrs_effort_weights_new_young_and_difficult_answers_more():
+    calibration = fsrs_calibration({})
+    assert calibration == FSRS_CALIBRATION_DEFAULTS
+    assert fsrs_difficulty(550) == pytest.approx(5.05)
+    assert (fsrs_difficulty(100), fsrs_difficulty(1100)) == (1, 10)
+    assert fsrs_difficulty(2500) is None and fsrs_difficulty(0) is None
+    assert answer_effort(False, 21, 550, calibration) == pytest.approx((5.05 / 5.5) ** 0.25)
+    assert answer_effort(False, 21, 0) == 1  # SM-2 learning and cramming carry no difficulty
+    assert answer_effort(False, 21, 2500) == 1  # SM-2 ease is not FSRS difficulty
+    assert answer_effort(True, 0, 0) == 1.5
+    assert answer_effort(False, -600, 0) == 1
+    assert answer_effort(False, 3, 0) == pytest.approx(7 ** 0.25)
+    assert answer_effort(False, 1, 0) == 2  # the weight limit caps both directions
+    assert answer_effort(False, 3650, 0) == 0.5
+    assert answer_effort(True, 0, 1100) == pytest.approx(min(2, 1.5 * (10 / 5.5) ** 0.25))
+    custom = fsrs_calibration({"fsrs_calibration": {
+        "maturity_exponent": 0, "difficulty_exponent": 0, "new_card_weight": 3,
+        "weight_limit": 2.5,
+    }})
+    assert answer_effort(True, 0, 1100, custom) == 2.5
+    assert answer_effort(False, 1, 100, custom) == 1
+    invalid = {"fsrs_calibration": {"step_weight": 20, "weight_limit": "x"}}
+    assert fsrs_calibration(invalid) == calibration
+    assert fsrs_calibration({"fsrs_calibration": [1]}) == calibration
+
+
+def test_fsrs_scores_read_effort_only_in_their_own_mode():
+    conf = {"activity_metric": "fsrs", "fsrs_calibration": {"time_weight": 0}}
+    buckets = [(15000, 2, 1.5), (240000, 1, 0.5)]
+    plain = [(15000, 2), (240000, 1)]
+    # The exponents are review-weighted's; a stale stored exponent is ignored.
+    assert metric_weights("fsrs", conf) == metric_weights("workload")
+    assert "time_weight" not in fsrs_calibration(conf)
+    assert activity_value(3, 270000, "fsrs", buckets, conf) == pytest.approx(
+        2 * 1.5 ** 0.6 * 0.25 ** 0.4 + 0.5 ** 0.6 * 4 ** 0.4
+    )
+    workload_score = activity_value(3, 270000, "workload", plain)
+    assert activity_value(3, 270000, "fsrs", plain, conf) == workload_score
+    assert activity_value(3, 270000, "workload", buckets) == workload_score
+    assert activity_value(3, 270000, "fsrs", None, conf) == activity_value(3, 270000, "workload")
+    # Calibration changes re-key references; the manual day is shared with workload modes.
+    assert baseline_key(conf) != baseline_key(dict(conf, fsrs_calibration={"weight_limit": 3}))
+    assert baseline_key(conf, 5) != baseline_key(conf)
+    workload = {"activity_metric": "workload", "activity_baselines": {}}
+    set_reference(workload, reference_from_day((1, 3, 270000, plain), "workload", "selected"))
+    fsrs = dict(workload, activity_metric="fsrs")
+    assert saved_reference(fsrs) is None
+    assert legacy_reference(fsrs)["day"] == 1
+    assert migrate_activity_references(fsrs, lambda day: [(day, 3, 270000, buckets)])
+    assert saved_reference(fsrs)["value"] == pytest.approx(
+        activity_value(3, 270000, "fsrs", buckets, fsrs)
+    )
+    assert saved_reference(fsrs, 5) is None

@@ -56,7 +56,9 @@ from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference, set_reference, automatic_reference,
+    fsrs_calibration,
     AUTO_REFERENCE_PERCENTILE, AUTO_REFERENCE_REFRESH_DAYS,
+    FSRS_CALIBRATION_DEFAULTS, FSRS_CALIBRATION_RANGES,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
@@ -111,6 +113,81 @@ class CustomWeightsDialog(QDialog):
         blocked = spin.blockSignals(True)
         spin.setValue(round(1 - value, 2))
         spin.blockSignals(blocked)
+
+
+class FsrsCalibrationDialog(QDialog):
+    """Calibration of the FSRS-based measure; each setting is explained on hover."""
+
+    # (setting, label, decimals, step, hover description)
+    FIELDS = (
+        ("new_card_weight", "New card weight", 2, 0.1,
+         "Effort of a card's first recorded answer. 1 equals a routine review."),
+        ("step_weight", "Learning step weight", 2, 0.1,
+         "Effort of same-day learning and relearning answers. "
+         "1 equals a routine review."),
+        ("maturity_pivot_days", "Maturity pivot (days)", 0, 1,
+         "Previous interval at which a review counts once. Shorter intervals "
+         "count more, longer ones less. 21 days is Anki's mature threshold."),
+        ("maturity_exponent", "Maturity exponent", 2, 0.05,
+         "Strength of the interval effect. 0 ignores it; 0.25 makes a 1-day "
+         "card count about twice a 21-day card."),
+        ("difficulty_pivot", "Difficulty pivot (%)", 0, 5,
+         "FSRS difficulty, as shown in Anki's card info, at which an answer "
+         "counts once. Harder cards count more. Answers recorded without FSRS "
+         "count once."),
+        ("difficulty_exponent", "Difficulty exponent", 2, 0.05,
+         "Strength of the difficulty effect. 0 ignores it; 0.25 spans roughly "
+         "0.65 to 1.15 times."),
+        ("weight_limit", "Weight limit", 1, 0.5,
+         "Caps each answer's combined effort between 1/limit and limit."),
+    )
+
+    def __init__(self, conf, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("FSRS-based calibration")
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Each answer adds effort<sup>0.6</sup> × minutes<sup>0.4</sup>, the "
+            "review-weighted exponents. Effort is 1 for a routine review of a pivot "
+            "card. Hover a setting for details.", self,
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.spins = {}
+        calibration = fsrs_calibration(conf)
+        for key, label, decimals, step, hint in self.FIELDS:
+            spin = QDoubleSpinBox(self)
+            spin.setRange(*FSRS_CALIBRATION_RANGES[key])
+            spin.setDecimals(decimals)
+            spin.setSingleStep(step)
+            spin.setKeyboardTracking(False)
+            spin.setValue(calibration[key])
+            spin.setToolTip(hint)
+            caption = QLabel(label, self)
+            caption.setToolTip(hint)
+            form.addRow(caption, spin)
+            self.spins[key] = spin
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.RestoreDefaults
+            | QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(
+            self.restoreDefaults,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def restoreDefaults(self):
+        for key, spin in self.spins.items():
+            spin.setValue(FSRS_CALIBRATION_DEFAULTS[key])
+
+    def values(self):
+        return {key: round(spin.value(), spin.decimals()) for key, spin in self.spins.items()}
 
 
 class RevHmOptions(OptionsDialog):
@@ -233,6 +310,8 @@ class RevHmOptions(OptionsDialog):
         metric_row.addWidget(self.selActivityMetric, 1)
         self.btnCustomWeights = QPushButton("Edit weights…", tab)
         metric_row.addWidget(self.btnCustomWeights)
+        self.btnFsrsCalibration = QPushButton("Calibrate…", tab)
+        metric_row.addWidget(self.btnFsrsCalibration)
         choices.addRow("Color by", metric_row)
         choices.addRow("Color scale", self.selActivityScale)
         self.form.gridLayout.removeWidget(self.form.label)
@@ -353,6 +432,7 @@ class RevHmOptions(OptionsDialog):
         self.form.cbTodayProgress.setEnabled(use_baseline)
         self.btnEditGradient.setVisible(use_baseline)
         self.btnCustomWeights.setVisible(metric == "custom")
+        self.btnFsrsCalibration.setVisible(metric == "fsrs")
         migrate_activity_references(
             conf, lambda day: ActivityReporter(self.mw.col, self.getData()).reference_history(
                 day, with_durations=True, deck_id=deck_id,
@@ -461,16 +541,33 @@ class RevHmOptions(OptionsDialog):
         old_conf = dict(conf)
         conf["custom_time_weight"] = time_weight
         if metric_name(conf) == "custom":
-            # Preserve every scope's chosen day when the shared weights change.
-            # Each snapshot is recalculated lazily when its heatmap is used.
-            for index in range(self.selReferenceScope.count()):
-                deck_id = self.selReferenceScope.itemData(index)
-                previous = saved_reference(old_conf, deck_id) or legacy_reference(old_conf, deck_id)
-                if previous and saved_reference(conf, deck_id) is None:
-                    conf.setdefault("activity_baselines", {})[baseline_key(conf, deck_id)] = dict(
-                        previous, needs_durations=True,
-                    )
+            self._keepReferenceDays(old_conf, conf)
         self._refreshActivitySettings()
+
+    def _onEditFsrsCalibration(self):
+        conf = self.getData()["synced"]
+        dialog = FsrsCalibrationDialog(conf, self)
+        result = dialog.exec()
+        calibration = dialog.values()
+        dialog.deleteLater()
+        if result != QDialog.DialogCode.Accepted:
+            return
+        old_conf = dict(conf)
+        conf["fsrs_calibration"] = calibration
+        if metric_name(conf) == "fsrs":
+            self._keepReferenceDays(old_conf, conf)
+        self._refreshActivitySettings()
+
+    def _keepReferenceDays(self, old_conf, conf):
+        # Preserve every scope's chosen day when the shared formula changes.
+        # Each snapshot is recalculated lazily when its heatmap is used.
+        for index in range(self.selReferenceScope.count()):
+            deck_id = self.selReferenceScope.itemData(index)
+            previous = saved_reference(old_conf, deck_id) or legacy_reference(old_conf, deck_id)
+            if previous and saved_reference(conf, deck_id) is None:
+                conf.setdefault("activity_baselines", {})[baseline_key(conf, deck_id)] = dict(
+                    previous, needs_durations=True,
+                )
 
     def _onAccept(self):
         for storage, values in self.getData().items():
@@ -498,6 +595,7 @@ class RevHmOptions(OptionsDialog):
         self.btnAutoReference.clicked.connect(self._onAutomaticReference)
         self.btnEditGradient.clicked.connect(self._onEditGradient)
         self.btnCustomWeights.clicked.connect(self._onEditCustomWeights)
+        self.btnFsrsCalibration.clicked.connect(self._onEditFsrsCalibration)
 
     # Actions:
 

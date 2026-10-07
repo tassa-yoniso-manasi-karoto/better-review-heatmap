@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 from .errors import CollectionError
 from .libaddon.anki.configmanager import ConfigManager
 from .libaddon.debug import isDebuggingOn, logger
+from .metrics import answer_effort, fsrs_calibration, metric_name
 from .times import daystart_epoch, study_day_sql
 from .types import DeckId
 
@@ -109,7 +110,7 @@ class ActivityReport(NamedTuple):
     offset: int
     stats: StatsReport
     review_time: Dict[int, int]
-    review_durations: Optional[Dict[int, List[Tuple[int, int]]]] = None
+    review_durations: Optional[Dict[int, List[Tuple]]] = None
     first_reviews: Optional[Dict[int, int]] = None
 
 
@@ -228,7 +229,7 @@ FROM first_answers {where}
         history: List[Sequence[int]],
         forecast: Optional[List[Sequence[int]]] = None,
         review_time: Optional[Dict[int, int]] = None,
-        review_durations: Optional[Dict[int, List[Tuple[int, int]]]] = None,
+        review_durations: Optional[Dict[int, List[Tuple]]] = None,
     ) -> ActivityReport:
 
         first_day = history[0][0] if history else 0
@@ -523,6 +524,7 @@ GROUP BY day ORDER BY day""".format(
         stop: Optional[int] = None,
         with_durations: bool = False,
         deck_id: Optional[int] = None,
+        with_effort: Optional[bool] = None,
     ) -> List[Sequence]:
         """
         start: timestamp in seconds to start reporting from
@@ -543,6 +545,9 @@ GROUP BY day ORDER BY day""".format(
         Returns:
             [[day, review count, recorded milliseconds], ...]
             With durations, append [(duration_ms, answer_count), ...] per day.
+            The FSRS-based measure (the default for with_effort) appends each
+            bucket's effort weight, read from the answer's card state with the
+            saved calibration: [(duration_ms, answer_count, effort), ...].
         """
         lims = []
         if start is not None:
@@ -559,20 +564,56 @@ GROUP BY day ORDER BY day""".format(
 
         lim = "WHERE " + " AND ".join(lims) if lims else ""
 
-        cmd = """\
+        if with_effort is None:
+            with_effort = metric_name(self._config["synced"]) == "fsrs"
+        with_effort = with_durations and with_effort
+        if with_effort:
+            # A card's earliest answer is found before the date limits, like
+            # first_reviews, so a new card is recognized on any displayed day.
+            first_limit = "WHERE ease >= 1" + (f" AND {deck_limit}" if deck_limit else "")
+            cmd = f"""\
+WITH first_answers AS (
+    SELECT cid AS first_cid, MIN(id) AS first_id FROM revlog {first_limit} GROUP BY cid
+)
+SELECT {study_day_sql("id / 1000", self._offset)}
+AS day, COUNT(), COALESCE(time, 0) AS duration, id = first_id AS is_first,
+CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl, COALESCE(factor, 0) AS factor
+FROM revlog LEFT JOIN first_answers ON first_cid = cid {lim}
+GROUP BY day, duration, is_first, last_ivl, factor
+ORDER BY day, duration, is_first, last_ivl, factor"""
+        else:
+            cmd = """\
 SELECT {}
 AS day, COUNT(), {}
 FROM revlog {}
 GROUP BY {} ORDER BY {}""".format(
-            study_day_sql("id / 1000", self._offset),
-            "COALESCE(time, 0)" if with_durations else "COALESCE(SUM(time), 0)",
-            lim, "day, COALESCE(time, 0)" if with_durations else "day",
-            "day, COALESCE(time, 0)" if with_durations else "day",
-        )
+                study_day_sql("id / 1000", self._offset),
+                "COALESCE(time, 0)" if with_durations else "COALESCE(SUM(time), 0)",
+                lim, "day, COALESCE(time, 0)" if with_durations else "day",
+                "day, COALESCE(time, 0)" if with_durations else "day",
+            )
 
         res = self._db.all(cmd)
 
-        if with_durations:
+        if with_effort:
+            # Exponents are applied in Python (see below); answers sharing a
+            # duration and card state are merged so the renderer stays light.
+            calibration = fsrs_calibration(self._config["synced"])
+            days = {}
+            for day, count, duration, is_first, last_ivl, factor in res:
+                effort = answer_effort(bool(is_first), last_ivl, factor, calibration)
+                totals = days.setdefault(day, [0, 0, {}])
+                totals[0] += count
+                totals[1] += count * duration
+                totals[2][(duration, effort)] = totals[2].get((duration, effort), 0) + count
+            res = [
+                (day, total, milliseconds, [
+                    (duration, count, effort)
+                    for (duration, effort), count in sorted(buckets.items())
+                ])
+                for day, (total, milliseconds, buckets) in days.items()
+            ]
+        elif with_durations:
             # Group exact millisecond durations in SQL, then apply powers in
             # Python. This works with Anki SQLite builds without math extensions
             # and avoids sending individual review records to the renderer.

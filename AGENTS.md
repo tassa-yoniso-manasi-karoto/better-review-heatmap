@@ -20,7 +20,8 @@ Stdlib only. Works with `python -S`.
 Exact workload scores require individual answer durations. Totals-only inputs
 assume every answer took the same time and are labeled accordingly. Collection
 callers must pass actual duration buckets to `activity_value`; never use the
-totals-only approximation to migrate a saved reference.
+totals-only approximation to migrate a saved reference. FSRS-based scores also
+need each answer's card state; durations alone score every answer at effort 1.
 
 ## Commands
 
@@ -38,22 +39,33 @@ python scripts/metrics_cli.py --durations-ms 15000 240000 \
 
 # Synthetic equal-duration scenario (100 answers of 6 seconds each)
 python scripts/metrics_cli.py --reviews 100 --minutes 10 --json
+
+# FSRS-based: answers as [duration_ms, lastIvl, factor, first], with overrides
+python scripts/metrics_cli.py --answers-json answers.json --metric fsrs \
+  --fsrs-calibration new_card_weight=2 time_weight=0.5 --json
 ```
 
 ## CLI Flags
 
-- Supply `--durations-ms D ...`, or `--reviews N` with `--minutes T` /
-  `--time-ms M`. Durations and counts must be nonnegative; milliseconds are
-  integers. With individual durations, count is inferred; an explicit count
-  must match the number of durations.
+- Supply `--durations-ms D ...`, `--answers-json FILE`, or `--reviews N` with
+  `--minutes T` / `--time-ms M`. Durations and counts must be nonnegative;
+  milliseconds are integers. With individual durations or answers, count is
+  inferred; an explicit count must match their number.
+- `--answers-json FILE`: JSON array of `[duration_ms, last_interval, factor,
+  first]` rows (revlog `lastIvl` and `factor`; `first` marks the card's
+  earliest answer). Trailing fields default to 0/false.
 - `--metric KEY`: defaults to `all`; keys are `reviews`, `time`, `workload`,
-  `custom`, `recorded_time`. Legacy key `time` means **Workload (linear)**;
-  `recorded_time` means time alone.
-- Reference: `--reference-durations-ms D ...`, or the positive pair
-  `--reference-reviews N --reference-minutes T`. Reference total time must be
-  positive. An explicit count must match any supplied individual durations.
+  `custom`, `recorded_time`, `fsrs`. Legacy key `time` means **Workload
+  (linear)**; `recorded_time` means time alone; `fsrs` is **FSRS-based
+  (experimental)**.
+- Reference: `--reference-durations-ms D ...`, `--reference-answers-json FILE`,
+  or the positive pair `--reference-reviews N --reference-minutes T`. Reference
+  total time must be positive. An explicit count must match any supplied
+  individual durations or answers.
 - `--review-exponent A` / `--time-exponent B`: custom mode only, each in [0, 1].
   One implies its complement; if both are supplied, they must total 1.
+- `--fsrs-calibration KEY=VALUE ...`: FSRS-based overrides. Keys and ranges are
+  `FSRS_CALIBRATION_DEFAULTS` / `FSRS_CALIBRATION_RANGES` in `metrics.py`.
 - `--json`: Output single raw JSON object.
 
 Exit code: 0 success, 2 invalid input (negative, nonfinite, missing pair, bad key).
@@ -62,7 +74,7 @@ Exit code: 0 success, 2 invalid input (negative, nonfinite, missing pair, bad ke
 
 Keys:
 
-- `schema_version`: 1
+- `schema_version`: 2
 - `metric_source_path`: `metrics.py` path
 - `duration_model`: `individual` or `equal-duration assumption`.
 - `reference_duration_model`: the same labels, or null without a reference.
@@ -71,6 +83,7 @@ Keys:
 - `results.<metric>`:
   - `score`: shared `activity_value` result with supplied durations and weights.
   - `exponents`: `reviews` and `time` weights.
+  - `calibration`: FSRS-based only; the calibration in effect.
   - `fixed_thresholds`: Levels from `activity_levels(metric)`. Null for classic.
   - `reference_score`: Reference day score. Null for classic or no reference.
   - `target_score`: 85% of reference score (`baseline_value(reference)`).
@@ -84,6 +97,8 @@ bundled default gradient; the CLI does not load a profile's custom palette.
 
 1. Change the shared functions in `src/review_heatmap/metrics.py`; do not copy
    formulas into the CLI. Preserve classic behavior and reference migrations.
+   FSRS-based effort lives in `answer_effort`; its per-answer inputs come from
+   `ActivityReporter._cards_done(with_effort=True)`.
 2. Compare mixed and uniform durations through the CLI. Use totals only for
    explicitly synthetic equal-duration scenarios.
 3. Run focused tests; include activity/options tests when those paths change:

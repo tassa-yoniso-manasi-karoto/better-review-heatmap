@@ -18,6 +18,8 @@ METRICS = {
     "workload": {"label": "Workload (review-weighted)", "time_weight": 0.4},
     "custom": {"label": "Workload (custom)", "time_weight": None},
     "recorded_time": {"label": "Recorded time", "time_weight": 1.0},
+    # Shares the review-weighted exponents; only the effort weight is calibrated.
+    "fsrs": {"label": "FSRS-based (experimental)", "time_weight": 0.4},
 }
 SCALES = {
     "adaptive": {"label": "Classic"},
@@ -27,6 +29,30 @@ SCALES = {
 FORMULA_VERSION = 3
 DAY_GROUPING_VERSION = 1
 DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
+# FSRS-based (experimental) replaces each answer's count credit of 1 with an
+# effort weight. These are calibration settings edited in the options dialog.
+FSRS_CALIBRATION_DEFAULTS = {
+    "new_card_weight": 1.5,
+    "step_weight": 1.0,
+    "maturity_pivot_days": 21.0,
+    "maturity_exponent": 0.25,
+    "difficulty_pivot": 50.0,
+    "difficulty_exponent": 0.25,
+    "weight_limit": 2.0,
+}
+FSRS_CALIBRATION_RANGES = {
+    "new_card_weight": (0.1, 10.0),
+    "step_weight": (0.1, 10.0),
+    "maturity_pivot_days": (1.0, 3650.0),
+    "maturity_exponent": (0.0, 1.0),
+    "difficulty_pivot": (0.0, 100.0),
+    "difficulty_exponent": (0.0, 1.0),
+    "weight_limit": (1.0, 10.0),
+}
+# Anki writes FSRS difficulty to revlog.factor as ((D - 1) / 9 + 0.1) * 1000,
+# i.e. 100-1100. SM-2 ease factors are 1300 and above; 0 marks SM-2 learning
+# steps and cramming.
+FSRS_FACTOR_RANGE = (100, 1100)
 BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
@@ -55,26 +81,81 @@ def metric_weights(metric: str, conf: Optional[Dict] = None):
     return 1 - weight, weight
 
 
+def fsrs_calibration(conf: Optional[Dict] = None) -> Dict[str, float]:
+    """Saved calibration with defaults filled in; invalid or out-of-range values revert."""
+    saved = (conf or {}).get("fsrs_calibration")
+    if not isinstance(saved, dict):
+        saved = {}
+    calibration = {}
+    for key, default in FSRS_CALIBRATION_DEFAULTS.items():
+        low, high = FSRS_CALIBRATION_RANGES[key]
+        try:
+            value = float(saved.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        calibration[key] = value if low <= value <= high else default
+    return calibration
+
+
+def fsrs_difficulty(factor) -> Optional[float]:
+    """FSRS difficulty on its 1-10 scale, or None when the answer predates FSRS."""
+    try:
+        factor = int(factor)
+    except (TypeError, ValueError):
+        return None
+    if not FSRS_FACTOR_RANGE[0] <= factor <= FSRS_FACTOR_RANGE[1]:
+        return None
+    return (factor / 1000 - 0.1) * 9 + 1
+
+
+def answer_effort(first: bool, last_interval: int, factor: int,
+                  calibration: Optional[Dict[str, float]] = None) -> float:
+    """Effort of one answer relative to a routine review of a pivot card.
+
+    first marks the card's earliest recorded answer. last_interval is
+    revlog.lastIvl: days when at least 1, otherwise a same-day step. factor is
+    revlog.factor; answers without an FSRS difficulty keep a neutral weight.
+    """
+    settings = calibration if calibration is not None else fsrs_calibration()
+    if first:
+        effort = settings["new_card_weight"]
+    elif last_interval >= 1:
+        effort = (settings["maturity_pivot_days"] / last_interval) ** settings["maturity_exponent"]
+    else:
+        effort = settings["step_weight"]
+    difficulty = fsrs_difficulty(factor)
+    if difficulty is not None:
+        pivot = 1 + 9 * settings["difficulty_pivot"] / 100
+        effort *= (difficulty / pivot) ** settings["difficulty_exponent"]
+    limit = settings["weight_limit"]
+    return min(limit, max(1 / limit, effort))
+
+
 def activity_value(reviews: int, milliseconds: int, metric: str,
                    duration_counts=None, conf: Optional[Dict] = None) -> float:
-    """Sum per-answer credit using (milliseconds, count) duration buckets.
+    """Sum per-answer credit using (milliseconds, count[, effort]) duration buckets.
 
     Collection callers must supply actual duration buckets. Without them this
     evaluates a synthetic equal-duration scenario, used by the totals-only CLI.
     The uniform assumption is never used to migrate an actual saved reference.
+    Only the FSRS-based measure reads a bucket's effort; others count each
+    answer once.
     """
     reviews = max(0, reviews)
     minutes = max(0, milliseconds) / 60000
-    _, time_weight = metric_weights(metric, conf)
-    if time_weight == 0:
-        return float(reviews)
+    review_weight, time_weight = metric_weights(metric, conf)
+    use_effort = metric == "fsrs" and duration_counts is not None
     if time_weight == 1:
         return minutes
+    if time_weight == 0 and not use_effort:
+        return float(reviews)
     if duration_counts is None:
         return reviews * (minutes / reviews) ** time_weight if reviews else 0.0
     return math.fsum(
-        count * (max(0, duration) / 60000) ** time_weight
-        for duration, count in duration_counts
+        bucket[1]
+        * (bucket[2] ** review_weight if use_effort and len(bucket) > 2 else 1.0)
+        * (max(0, bucket[0]) / 60000) ** time_weight
+        for bucket in duration_counts
     )
 
 
@@ -96,6 +177,8 @@ def baseline_key(conf: Dict, deck_id: Optional[int] = None) -> str:
     ]
     if metric == "custom":
         parts.append(metric_weights(metric, conf)[1])
+    elif metric == "fsrs":
+        parts.append(fsrs_calibration(conf))
     if deck_id is not None:
         parts.append(["deck", int(deck_id)])
     return json.dumps(parts, separators=(",", ":"))
@@ -185,7 +268,7 @@ def saved_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]
 
 def _workload_day_key(parts):
     if not isinstance(parts, list) or len(parts) < 7 or parts[1] not in (
-        "time", "workload", "custom",
+        "time", "workload", "custom", "fsrs",
     ):
         return None
     scope = parts[-1:] if isinstance(parts[-1], list) else []
