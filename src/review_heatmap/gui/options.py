@@ -56,9 +56,9 @@ from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference, set_reference, automatic_reference,
-    fsrs_calibration,
+    calibration, calibration_overrides,
     AUTO_REFERENCE_PERCENTILE, AUTO_REFERENCE_REFRESH_DAYS,
-    FSRS_CALIBRATION_DEFAULTS, FSRS_CALIBRATION_RANGES,
+    CALIBRATIONS, METRIC_CALIBRATIONS,
 )
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
@@ -75,7 +75,8 @@ class CustomWeightsDialog(QDialog):
         presets = ["Preset weights (reviews / time):"]
         for metric in ("time", "workload"):
             review, time_weight = metric_weights(metric)
-            presets.append(f"{METRICS[metric]['label']}: {review:g} / {time_weight:g}")
+            label = METRICS[metric]["label"].lstrip("⭐ ")
+            presets.append(f"{label}: {review:g} / {time_weight:g}")
         layout.addWidget(QLabel("\n".join(presets), self))
         form = QFormLayout()
         self.reviewWeight = QDoubleSpinBox(self)
@@ -115,60 +116,108 @@ class CustomWeightsDialog(QDialog):
         spin.blockSignals(blocked)
 
 
-class FsrsCalibrationDialog(QDialog):
-    """Calibration of the FSRS-based measure; each setting is explained on hover."""
+class CalibrationDialog(QDialog):
+    """Calibration of an experimental measure; each setting is explained on hover.
 
-    # (setting, label, decimals, step, hover description)
-    FIELDS = (
-        ("new_card_weight", "New card weight", 2, 0.1,
-         "Effort of a card's first recorded answer. 1 equals a routine review."),
-        ("step_weight", "Learning step weight", 2, 0.1,
-         "Effort of same-day learning and relearning answers. "
-         "1 equals a routine review."),
-        ("maturity_pivot_days", "Maturity pivot (days)", 0, 1,
-         "Previous interval at which a review counts once. Shorter intervals "
-         "count more, longer ones less. 21 days is Anki's mature threshold."),
-        ("maturity_exponent", "Maturity exponent", 2, 0.05,
-         "Strength of the interval effect. 0 ignores it; 0.25 makes a 1-day "
-         "card count about twice a 21-day card."),
-        ("difficulty_pivot", "Difficulty pivot (%)", 0, 5,
-         "FSRS difficulty, as shown in Anki's card info, at which an answer "
-         "counts once. Harder cards count more. Answers recorded without FSRS "
-         "count once."),
-        ("difficulty_exponent", "Difficulty exponent", 2, 0.05,
-         "Strength of the difficulty effect. 0 ignores it; 0.25 spans roughly "
-         "0.65 to 1.15 times."),
-        ("weight_limit", "Weight limit", 1, 0.5,
-         "Caps each answer's combined effort between 1/limit and limit."),
-    )
+    Only settings the user changes are stored, so updated defaults reach
+    everyone who left a setting alone. Restore defaults forgets every change.
+    """
 
-    def __init__(self, conf, parent=None):
+    # calibration -> (title, ((setting, label, decimals, step, hover text), ...))
+    SECTIONS = {
+        "fsrs_calibration": ("FSRS-based effort", (
+            ("new_card_weight", "New card weight", 2, 0.1,
+             "Effort of a card's first recorded answer. 1 equals a routine review."),
+            ("step_weight", "Learning step weight", 2, 0.1,
+             "Effort of same-day learning and relearning answers. "
+             "1 equals a routine review."),
+            ("maturity_pivot_days", "Maturity pivot (days)", 0, 1,
+             "Previous interval at which a review counts once. Shorter intervals "
+             "count more, longer ones less. 21 days is Anki's mature threshold."),
+            ("maturity_exponent", "Maturity exponent", 2, 0.05,
+             "Strength of the interval effect. 0 ignores it; 0.25 makes a 1-day "
+             "card count about twice a 21-day card."),
+            ("difficulty_pivot", "Difficulty pivot (%)", 0, 5,
+             "FSRS difficulty, as shown in Anki's card info, at which an answer "
+             "counts once. Harder cards count more. Answers recorded without FSRS "
+             "count once."),
+            ("difficulty_exponent", "Difficulty exponent", 2, 0.05,
+             "Strength of the difficulty effect. 0 ignores it; 0.25 spans roughly "
+             "0.65 to 1.15 times."),
+            ("weight_limit", "Weight limit", 1, 0.5,
+             "Caps each answer's combined effort between 1/limit and limit."),
+        )),
+        "concentration_calibration": ("Sustained concentration", (
+            ("max_bonus", "Maximum bonus", 2, 0.1,
+             "Extra credit at full concentration: 1 doubles an answer's credit."),
+            ("sensitivity_seconds", "Minimal sensitivity (s)", 0, 5,
+             "Answers faster than this add nothing to the concentration clock; "
+             "answers twice as long count their full duration."),
+            ("template_cap", "Template cap (×)", 1, 0.1,
+             "An answer feeds the clock at most this many times its card "
+             "template's usual duration, so a slow day on quick cards builds no "
+             "concentration."),
+            ("warm_up_minutes", "Warm-up (min)", 0, 1,
+             "Heavy study in a session before any bonus."),
+            ("full_minutes", "Full concentration (min)", 0, 1,
+             "Heavy study at which the bonus reaches its maximum."),
+            ("fatigue_cap_minutes", "Fatigue cap (min)", 0, 5,
+             "Session length after which the bonus fades."),
+            ("fade_minutes", "Fade (min)", 0, 5,
+             "Past the cap, the bonus falls to 37% after this many minutes and "
+             "keeps falling."),
+            ("break_minutes", "Break (min)", 0, 1,
+             "An idle gap longer than this ends the session."),
+        )),
+    }
+    INTROS = {
+        "fsrs": "Each answer adds effort<sup>0.6</sup> × minutes<sup>0.4</sup>, the "
+                "review-weighted exponents. Effort is 1 for a routine review of a "
+                "pivot card.",
+        "concentration": "Each answer adds concentration × effort<sup>0.6</sup> × "
+                         "minutes<sup>0.4</sup>. Concentration rises with "
+                         "uninterrupted study of heavy cards and fades past the "
+                         "fatigue cap.",
+    }
+
+    def __init__(self, conf, metric, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("FSRS-based calibration")
+        self.setWindowTitle("Calibration")
+        self.names = METRIC_CALIBRATIONS[metric]
+        self._previous = {name: calibration_overrides(conf, name) for name in self.names}
+        self._cleared = False
+        self._initial = {}
+        self.spins = {}
+        self.captions = {}
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "Each answer adds effort<sup>0.6</sup> × minutes<sup>0.4</sup>, the "
-            "review-weighted exponents. Effort is 1 for a routine review of a pivot "
-            "card. Hover a setting for details.", self,
+            self.INTROS[metric] + " Hover a setting for details. Settings you "
+            "change are shown in bold and keep their value when the defaults are "
+            "updated.", self,
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        form = QFormLayout()
-        self.spins = {}
-        calibration = fsrs_calibration(conf)
-        for key, label, decimals, step, hint in self.FIELDS:
-            spin = QDoubleSpinBox(self)
-            spin.setRange(*FSRS_CALIBRATION_RANGES[key])
-            spin.setDecimals(decimals)
-            spin.setSingleStep(step)
-            spin.setKeyboardTracking(False)
-            spin.setValue(calibration[key])
-            spin.setToolTip(hint)
-            caption = QLabel(label, self)
-            caption.setToolTip(hint)
-            form.addRow(caption, spin)
-            self.spins[key] = spin
-        layout.addLayout(form)
+        for name in self.names:
+            title, fields = self.SECTIONS[name]
+            group = QGroupBox(title, self)
+            form = QFormLayout(group)
+            values = calibration(conf, name)
+            for key, label, decimals, step, hint in fields:
+                spin = QDoubleSpinBox(group)
+                spin.setRange(*CALIBRATIONS[name][1][key])
+                spin.setDecimals(decimals)
+                spin.setSingleStep(step)
+                spin.setKeyboardTracking(False)
+                spin.setValue(values[key])
+                spin.setToolTip(hint)
+                caption = QLabel(label, group)
+                caption.setToolTip(hint)
+                form.addRow(caption, spin)
+                self.spins[key] = spin
+                self.captions[key] = caption
+                self._initial[key] = round(spin.value(), decimals)
+                spin.valueChanged.connect(self._refreshMarks)
+            layout.addWidget(group)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.RestoreDefaults
             | QDialogButtonBox.StandardButton.Ok
@@ -181,10 +230,35 @@ class FsrsCalibrationDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._refreshMarks()
+
+    def overrides(self):
+        """Settings OK stores: earlier manual changes plus this session's."""
+        stored = {}
+        for name in self.names:
+            kept = {} if self._cleared else dict(self._previous[name])
+            for key, *_ in self.SECTIONS[name][1]:
+                value = round(self.spins[key].value(), self.spins[key].decimals())
+                if value != self._initial[key]:
+                    kept[key] = value
+            stored[name] = kept
+        return stored
+
+    def _refreshMarks(self, *args):
+        stored = self.overrides()
+        for name in self.names:
+            for key, *_ in self.SECTIONS[name][1]:
+                font = self.captions[key].font()
+                font.setBold(key in stored[name])
+                self.captions[key].setFont(font)
 
     def restoreDefaults(self):
-        for key, spin in self.spins.items():
-            spin.setValue(FSRS_CALIBRATION_DEFAULTS[key])
+        self._cleared = True
+        for name in self.names:
+            for key, default in CALIBRATIONS[name][0].items():
+                self.spins[key].setValue(default)
+                self._initial[key] = round(default, self.spins[key].decimals())
+        self._refreshMarks()
 
     def values(self):
         return {key: round(spin.value(), spin.decimals()) for key, spin in self.spins.items()}
@@ -310,8 +384,8 @@ class RevHmOptions(OptionsDialog):
         metric_row.addWidget(self.selActivityMetric, 1)
         self.btnCustomWeights = QPushButton("Edit weights…", tab)
         metric_row.addWidget(self.btnCustomWeights)
-        self.btnFsrsCalibration = QPushButton("Calibrate…", tab)
-        metric_row.addWidget(self.btnFsrsCalibration)
+        self.btnCalibration = QPushButton("Calibrate…", tab)
+        metric_row.addWidget(self.btnCalibration)
         choices.addRow("Color by", metric_row)
         choices.addRow("Color scale", self.selActivityScale)
         self.form.gridLayout.removeWidget(self.form.label)
@@ -432,7 +506,7 @@ class RevHmOptions(OptionsDialog):
         self.form.cbTodayProgress.setEnabled(use_baseline)
         self.btnEditGradient.setVisible(use_baseline)
         self.btnCustomWeights.setVisible(metric == "custom")
-        self.btnFsrsCalibration.setVisible(metric == "fsrs")
+        self.btnCalibration.setVisible(metric in METRIC_CALIBRATIONS)
         migrate_activity_references(
             conf, lambda day: ActivityReporter(self.mw.col, self.getData()).reference_history(
                 day, with_durations=True, deck_id=deck_id,
@@ -544,18 +618,20 @@ class RevHmOptions(OptionsDialog):
             self._keepReferenceDays(old_conf, conf)
         self._refreshActivitySettings()
 
-    def _onEditFsrsCalibration(self):
+    def _onEditCalibration(self):
         conf = self.getData()["synced"]
-        dialog = FsrsCalibrationDialog(conf, self)
+        metric = metric_name(conf)
+        if metric not in METRIC_CALIBRATIONS:
+            return
+        dialog = CalibrationDialog(conf, metric, self)
         result = dialog.exec()
-        calibration = dialog.values()
+        overrides = dialog.overrides()
         dialog.deleteLater()
         if result != QDialog.DialogCode.Accepted:
             return
         old_conf = dict(conf)
-        conf["fsrs_calibration"] = calibration
-        if metric_name(conf) == "fsrs":
-            self._keepReferenceDays(old_conf, conf)
+        conf.update(overrides)
+        self._keepReferenceDays(old_conf, conf)
         self._refreshActivitySettings()
 
     def _keepReferenceDays(self, old_conf, conf):
@@ -595,7 +671,7 @@ class RevHmOptions(OptionsDialog):
         self.btnAutoReference.clicked.connect(self._onAutomaticReference)
         self.btnEditGradient.clicked.connect(self._onEditGradient)
         self.btnCustomWeights.clicked.connect(self._onEditCustomWeights)
-        self.btnFsrsCalibration.clicked.connect(self._onEditFsrsCalibration)
+        self.btnCalibration.clicked.connect(self._onEditCalibration)
 
     # Actions:
 

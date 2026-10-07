@@ -162,7 +162,9 @@ def test_reference_picker_and_automatic_icon_keep_each_deck_independent(
     from review_heatmap.metrics import baseline_key, reference_from_day, saved_reference
 
     monkeypatch.setattr(module.ActivityReporter, "_today", property(lambda self: TODAY))
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)],
+    )
     for age in range(1, 11):
         add_review(setup, TODAY - age * 86400, cid=1, milliseconds=60000)
         add_review(setup, TODAY - age * 86400, cid=2, milliseconds=age * 60000, sequence=1)
@@ -262,7 +264,7 @@ def test_first_review_browser_selects_only_new_cards_in_the_requested_scope(setu
     from types import SimpleNamespace
 
     bridge = importlib.import_module("review_heatmap.web_bridge")
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)",
+    setup.db.connection.executemany("INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)",
                                    [(1, 1), (2, 2), (3, 1)])
     yesterday = TODAY - 86400
     add_review(setup, TODAY - 2 * 86400, cid=1)
@@ -400,28 +402,33 @@ def test_delayed_notice_does_not_apply_to_a_different_profile(setup, options_mod
     assert not setup.conf["profile"]["time_notice_seen"]
 
 
-def test_fsrs_calibration_popup_recalculates_the_reference_and_respects_cancel(
+def test_calibration_popup_stores_only_manual_changes_and_respects_cancel(
     setup, options_module, monkeypatch,
 ):
     module, app = options_module
     from aqt.qt import QDate, QDialog, QDialogButtonBox, QWidget
     from review_heatmap.metrics import (
-        FSRS_CALIBRATION_DEFAULTS, answer_effort, fsrs_calibration, saved_reference,
+        CONCENTRATION_DEFAULTS, FSRS_CALIBRATION_DEFAULTS, answer_effort, fsrs_calibration,
+        saved_reference,
     )
 
-    def calibrate(options, *, accept=True, restore=False, **values):
+    def calibrate(options, *, accept=True, restore=False, check=None, **values):
         def exec_popup(popup):
-            assert popup.values() == fsrs_calibration(options.getData()["synced"])
+            current = fsrs_calibration(options.getData()["synced"])
+            assert all(popup.values()[key] == current[key] for key in FSRS_CALIBRATION_DEFAULTS)
+            if check is not None:
+                check(popup)
             for key, value in values.items():
                 popup.spins[key].setValue(value)
             if restore:
                 popup.findChild(QDialogButtonBox).button(
                     QDialogButtonBox.StandardButton.RestoreDefaults,
                 ).click()
-                assert popup.values() == FSRS_CALIBRATION_DEFAULTS
+                assert all(popup.values()[key] == FSRS_CALIBRATION_DEFAULTS[key]
+                           for key in FSRS_CALIBRATION_DEFAULTS)
             return QDialog.DialogCode.Accepted if accept else QDialog.DialogCode.Rejected
-        monkeypatch.setattr(module.FsrsCalibrationDialog, "exec", exec_popup)
-        options.btnFsrsCalibration.click()
+        monkeypatch.setattr(module.CalibrationDialog, "exec", exec_popup)
+        options.btnCalibration.click()
 
     yesterday = TODAY - 86400
     add_review(setup, yesterday, milliseconds=15000)  # the card's first answer
@@ -429,10 +436,10 @@ def test_fsrs_calibration_popup_recalculates_the_reference_and_respects_cancel(
     parent = QWidget()
     parent.col = setup.col
     dialog = module.RevHmOptions(setup.conf, parent)
-    assert dialog.btnFsrsCalibration.isHidden()
+    assert dialog.btnCalibration.isHidden()
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("fsrs"))
     dialog.selActivityScale.setCurrentIndex(dialog.selActivityScale.findData("baseline"))
-    assert not dialog.btnFsrsCalibration.isHidden()
+    assert not dialog.btnCalibration.isHidden()
     assert dialog.btnCustomWeights.isHidden()
     dialog.dateReference.setDate(QDate(2026, 3, 9))
     conf = dialog.getData()["synced"]
@@ -444,22 +451,42 @@ def test_fsrs_calibration_popup_recalculates_the_reference_and_respects_cancel(
     calibrate(dialog, accept=False, new_card_weight=3)
     assert conf == before
     calibrate(dialog, new_card_weight=3, weight_limit=4)
-    assert conf["fsrs_calibration"]["new_card_weight"] == 3
+    assert conf["fsrs_calibration"] == {"new_card_weight": 3, "weight_limit": 4}
     reference = saved_reference(conf)
     assert reference["day"] == yesterday
     assert reference["source"] == "selected"
     assert reference["value"] == pytest.approx(3 ** 0.6 * 0.25 ** 0.4 + mature ** 0.6 * 4 ** 0.4)
+
+    def marks(popup):
+        assert popup.captions["new_card_weight"].font().bold()
+        assert not popup.captions["step_weight"].font().bold()
+    calibrate(dialog, check=marks, step_weight=1.0)  # the default value is not a change
+    assert conf["fsrs_calibration"] == {"new_card_weight": 3, "weight_limit": 4}
     calibrate(dialog, restore=True)
-    assert conf["fsrs_calibration"] == FSRS_CALIBRATION_DEFAULTS
+    assert conf["fsrs_calibration"] == {}
     assert saved_reference(conf)["value"] == pytest.approx(before["activity_baselines"][
         next(key for key in before["activity_baselines"] if '"fsrs"' in key)
     ]["value"])
     dialog.reject()
-    assert setup.conf["synced"]["fsrs_calibration"] == FSRS_CALIBRATION_DEFAULTS
+    assert setup.conf["synced"]["fsrs_calibration"] == {}
 
     dialog = module.RevHmOptions(setup.conf, parent)
     dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("fsrs"))
     calibrate(dialog, maturity_exponent=0.5)
     dialog.accept()
-    assert setup.conf["synced"]["fsrs_calibration"]["maturity_exponent"] == 0.5
+    assert setup.conf["synced"]["fsrs_calibration"] == {"maturity_exponent": 0.5}
     assert setup.conf["synced"]["activity_metric"] == "fsrs"
+
+    # Sustained concentration calibrates both sections and keeps earlier changes.
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("concentration"))
+    assert not dialog.btnCalibration.isHidden()
+
+    def sections(popup):
+        assert set(popup.spins) == set(FSRS_CALIBRATION_DEFAULTS) | set(CONCENTRATION_DEFAULTS)
+        assert popup.captions["maturity_exponent"].font().bold()
+        assert popup.values()["max_bonus"] == CONCENTRATION_DEFAULTS["max_bonus"]
+    calibrate(dialog, check=sections, max_bonus=0.5)
+    dialog.accept()
+    assert setup.conf["synced"]["concentration_calibration"] == {"max_bonus": 0.5}
+    assert setup.conf["synced"]["fsrs_calibration"] == {"maturity_exponent": 0.5}

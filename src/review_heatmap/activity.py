@@ -57,7 +57,10 @@ if TYPE_CHECKING:
 from .errors import CollectionError
 from .libaddon.anki.configmanager import ConfigManager
 from .libaddon.debug import isDebuggingOn, logger
-from .metrics import answer_effort, fsrs_calibration, metric_name
+from .metrics import (
+    EXPERIMENTAL_METRICS, answer_effort, concentration_calibration,
+    concentration_coefficients, fsrs_calibration, metric_name,
+)
 from .times import daystart_epoch, study_day_sql
 from .types import DeckId
 
@@ -525,6 +528,7 @@ GROUP BY day ORDER BY day""".format(
         with_durations: bool = False,
         deck_id: Optional[int] = None,
         with_effort: Optional[bool] = None,
+        with_concentration: Optional[bool] = None,
     ) -> List[Sequence]:
         """
         start: timestamp in seconds to start reporting from
@@ -545,10 +549,20 @@ GROUP BY day ORDER BY day""".format(
         Returns:
             [[day, review count, recorded milliseconds], ...]
             With durations, append [(duration_ms, answer_count), ...] per day.
-            The FSRS-based measure (the default for with_effort) appends each
-            bucket's effort weight, read from the answer's card state with the
-            saved calibration: [(duration_ms, answer_count, effort), ...].
+            Experimental measures (the defaults for with_effort and
+            with_concentration) append each bucket's effort weight, read from
+            the answer's card state with the saved calibration, and sustained
+            concentration also its session coefficient:
+            [(duration_ms, answer_count, effort[, scale]), ...].
         """
+        metric = metric_name(self._config["synced"])
+        if with_effort is None:
+            with_effort = metric in EXPERIMENTAL_METRICS
+        if with_concentration is None:
+            with_concentration = metric == "concentration"
+        with_concentration = with_durations and with_concentration
+        with_effort = with_durations and (with_effort or with_concentration)
+
         lims = []
         if start is not None:
             lims.append("day >= {}".format(start))
@@ -559,22 +573,34 @@ GROUP BY day ORDER BY day""".format(
             lims.append("ease >= 1")
 
         deck_limit = self._revlog_limit(current_deck_only, deck_id)
-        if deck_limit:
+        # Sessions span every answer the user gave, so sustained concentration
+        # reads excluded answers too and credits only the included ones.
+        if deck_limit and not with_concentration:
             lims.append(deck_limit)
 
         lim = "WHERE " + " AND ".join(lims) if lims else ""
 
-        if with_effort is None:
-            with_effort = metric_name(self._config["synced"]) == "fsrs"
-        with_effort = with_durations and with_effort
         if with_effort:
             # A card's earliest answer is found before the date limits, like
             # first_reviews, so a new card is recognized on any displayed day.
             first_limit = "WHERE ease >= 1" + (f" AND {deck_limit}" if deck_limit else "")
-            cmd = f"""\
+            first_answers = f"""\
 WITH first_answers AS (
     SELECT cid AS first_cid, MIN(id) AS first_id FROM revlog {first_limit} GROUP BY cid
-)
+)"""
+        if with_concentration:
+            cmd = f"""\
+{first_answers}
+SELECT {study_day_sql("revlog.id / 1000", self._offset)}
+AS day, revlog.id, COALESCE(time, 0) AS duration, revlog.id = first_id AS is_first,
+CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl,
+COALESCE(revlog.factor, 0) AS factor, {deck_limit or 1} AS included, notes.mid, cards.ord
+FROM revlog LEFT JOIN first_answers ON first_cid = cid
+LEFT JOIN cards ON cards.id = cid LEFT JOIN notes ON notes.id = cards.nid {lim}
+ORDER BY revlog.id"""
+        elif with_effort:
+            cmd = f"""\
+{first_answers}
 SELECT {study_day_sql("id / 1000", self._offset)}
 AS day, COUNT(), COALESCE(time, 0) AS duration, id = first_id AS is_first,
 CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl, COALESCE(factor, 0) AS factor
@@ -595,7 +621,33 @@ GROUP BY {} ORDER BY {}""".format(
 
         res = self._db.all(cmd)
 
-        if with_effort:
+        if with_concentration:
+            conf = self._config["synced"]
+            effort_settings = fsrs_calibration(conf)
+            norms = self._template_norms(start, stop)
+            coefficients = concentration_coefficients(
+                [(row[1], row[2], norms.get((row[7], row[8]))) for row in res],
+                concentration_calibration(conf),
+            )
+            days = {}
+            for row, scale in zip(res, coefficients):
+                day, _, duration, is_first, last_ivl, factor, included = row[:7]
+                if not included:
+                    continue
+                effort = answer_effort(bool(is_first), last_ivl, factor, effort_settings)
+                key = (duration, effort, round(scale, 2))
+                totals = days.setdefault(day, [0, 0, {}])
+                totals[0] += 1
+                totals[1] += duration
+                totals[2][key] = totals[2].get(key, 0) + 1
+            res = [
+                (day, total, milliseconds, [
+                    (duration, count, effort, scale)
+                    for (duration, effort, scale), count in sorted(buckets.items())
+                ])
+                for day, (total, milliseconds, buckets) in days.items()
+            ]
+        elif with_effort:
             # Exponents are applied in Python (see below); answers sharing a
             # duration and card state are merged so the renderer stays light.
             calibration = fsrs_calibration(self._config["synced"])
@@ -629,6 +681,40 @@ GROUP BY {} ORDER BY {}""".format(
             self.__debug_cards_done(cmd, res)
 
         return res
+
+    def _template_norms(self, start: Optional[int] = None,
+                        stop: Optional[int] = None) -> Dict[tuple, int]:
+        """Median recorded milliseconds per card template over the same dates.
+
+        The norm describes the material, so it ignores deck exclusions. It only
+        caps what an answer feeds into the concentration clock; recorded
+        durations themselves are never altered.
+        """
+        day = study_day_sql("revlog.id / 1000", self._offset)
+        lims = ["ease >= 1"]
+        if start is not None:
+            lims.append(f"{day} >= {int(start)}")
+        if stop is not None:
+            lims.append(f"{day} < {int(stop)}")
+        rows = self._db.all(f"""\
+SELECT notes.mid, cards.ord, COALESCE(time, 0) / 1000 AS seconds, COUNT()
+FROM revlog JOIN cards ON cards.id = cid JOIN notes ON notes.id = cards.nid
+WHERE {' AND '.join(lims)}
+GROUP BY notes.mid, cards.ord, seconds
+ORDER BY notes.mid, cards.ord, seconds""")
+        histograms: Dict[tuple, List[Tuple[int, int]]] = {}
+        for mid, ord_, seconds, count in rows:
+            histograms.setdefault((mid, ord_), []).append((seconds, count))
+        norms = {}
+        for template, buckets in histograms.items():
+            total = sum(count for _, count in buckets)
+            seen = 0
+            for seconds, count in buckets:
+                seen += count
+                if 2 * seen >= total:
+                    norms[template] = seconds * 1000
+                    break
+        return norms
 
     def __debug_cards_due(self, cmd: str, res: List[Sequence[int]]):
         sched_ver = self._sched_ver

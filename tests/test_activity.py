@@ -27,7 +27,9 @@ class MemoryDB:
         self.connection.executescript(
             "CREATE TABLE revlog (id INTEGER, cid INTEGER, ease INTEGER, time INTEGER,"
             " lastIvl INTEGER DEFAULT 0, factor INTEGER DEFAULT 0);"
-            "CREATE TABLE cards (id INTEGER, did INTEGER, due INTEGER, queue INTEGER);"
+            "CREATE TABLE cards (id INTEGER, did INTEGER, due INTEGER, queue INTEGER,"
+            " nid INTEGER DEFAULT 0, ord INTEGER DEFAULT 0);"
+            "CREATE TABLE notes (id INTEGER, mid INTEGER);"
         )
 
     def all(self, sql, *args):
@@ -94,7 +96,9 @@ def add_review(setup, date, cid=1, ease=3, milliseconds=30000, sequence=0,
 
 
 def test_count_and_time_share_filters_including_deleted_cards(setup):
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)],
+    )
     yesterday = TODAY - 86400
     add_review(setup, yesterday, 1, milliseconds=30000)
     add_review(setup, yesterday, 2, milliseconds=180000, sequence=1)
@@ -119,7 +123,9 @@ def test_count_and_time_share_filters_including_deleted_cards(setup):
 def test_fsrs_mode_weights_answers_by_card_state_and_keeps_filters(setup):
     from review_heatmap.metrics import activity_value, answer_effort, fsrs_calibration
 
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)],
+    )
     earlier, yesterday = TODAY - 31 * 86400, TODAY - 86400
     add_review(setup, earlier, cid=1, factor=400)  # the card's first answer
     add_review(setup, earlier, cid=99, sequence=1)  # SM-2 learning step: factor 0
@@ -162,6 +168,58 @@ def test_fsrs_mode_weights_answers_by_card_state_and_keeps_filters(setup):
     conf.update(limcdel=False, limresched=False)
     assert setup.reporter._cards_done(with_durations=True)[1][3][0] == (0, 1, 1)
     assert activity_value(6, 130000, "fsrs", [(0, 1, 1)], conf) == 0
+
+
+def test_concentration_mode_follows_sessions_across_excluded_answers(setup):
+    from review_heatmap.metrics import (
+        answer_effort, concentration_calibration, concentration_coefficients, fsrs_calibration,
+    )
+
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue, nid, ord) VALUES (?, ?, 0, 2, ?, 0)",
+        [(1, 1, 10), (2, 2, 20), (3, 1, 10)],
+    )
+    setup.db.connection.executemany("INSERT INTO notes (id, mid) VALUES (?, ?)",
+                                   [(10, 100), (20, 200)])
+    earlier, yesterday = TODAY - 31 * 86400, TODAY - 86400
+    minute = 60000
+    # Earlier answers keep every card's first answer, and its new-card weight,
+    # off the day under test without moving the template norms.
+    for cid, duration in ((1, 2 * minute), (2, 6 * minute), (3, 2 * minute)):
+        add_review(setup, earlier, cid=cid, sequence=cid, milliseconds=duration)
+    # Session 1: six 2-minute answers, an excluded 6-minute answer that keeps
+    # the session alive, six more. A 10-minute pause. Session 2: two answers.
+    timeline, end = [], 0
+    for cid, duration in [(1, 2 * minute)] * 6 + [(2, 6 * minute)] + [(3, 2 * minute)] * 6:
+        end += duration
+        timeline.append((end, cid, duration))
+    end += 10 * minute
+    for cid, duration in [(1, 2 * minute)] * 2:
+        end += duration
+        timeline.append((end, cid, duration))
+    for end, cid, duration in timeline:
+        add_review(setup, yesterday, cid=cid, sequence=end, milliseconds=duration,
+                   last_interval=21, factor=550)
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="concentration", limdecks=[2])
+    # Template norms come from the day's own answers: 120 s and 360 s.
+    expected = concentration_coefficients(
+        [(end, duration, duration) for end, _, duration in timeline],
+        concentration_calibration(conf),
+    )
+    assert expected[0] == 1 and 1 < expected[6] < expected[12] == 2 and expected[13] == 1
+    effort = answer_effort(False, 21, 550, fsrs_calibration(conf))
+    rows = setup.reporter._cards_done(with_durations=True)
+    assert len(rows) == 2 and rows[1][:3] == (yesterday, 14, 28 * minute)
+    buckets = rows[1][3]
+    assert all(len(bucket) == 4 and bucket[2] == effort for bucket in buckets)
+    assert sorted(scale for _, count, _, scale in buckets for _ in range(count)) == sorted(
+        round(scale, 2) for (_, cid, _), scale in zip(timeline, expected) if cid != 2
+    )
+    assert setup.reporter.reference_history(yesterday, with_durations=True) == rows[1:]
+    conf["activity_metric"] = "fsrs"
+    plain = setup.reporter._cards_done(with_durations=True)[1][3]
+    assert all(len(bucket) == 3 for bucket in plain)
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires timezone switching")
@@ -210,7 +268,9 @@ def test_rollover_grouping_today_and_forecast_agree_across_dst(setup, monkeypatc
                     tomorrow.replace(hour=3, minute=59, second=59, microsecond=999000),
                     tomorrow.replace(hour=4)]
         for cid, instant in enumerate(instants, 1):
-            setup.db.connection.execute("INSERT INTO cards VALUES (?, 1, 100, 2)", (cid,))
+            setup.db.connection.execute(
+                "INSERT INTO cards (id, did, due, queue) VALUES (?, 1, 100, 2)", (cid,),
+            )
             setup.db.connection.execute(
                 "INSERT INTO revlog (id, cid, ease, time) VALUES (?, ?, 3, 30000)",
                 (round(instant.timestamp() * 1000), cid),
@@ -243,7 +303,7 @@ def test_browser_day_interval_includes_start_but_excludes_next_rollover(setup, m
     import importlib
 
     finder = importlib.import_module("review_heatmap.finder")
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, 1, 0, 2)",
+    setup.db.connection.executemany("INSERT INTO cards (id, did, due, queue) VALUES (?, 1, 0, 2)",
                                    [(cid,) for cid in (1, 2, 3, 4)])
     setup.db.connection.executemany(
         "INSERT INTO revlog (id, cid, ease, time) VALUES (?, ?, 3, 30000)",
@@ -267,7 +327,7 @@ def test_reference_history_excludes_today_and_obeys_history_limits(setup):
 
 
 def test_first_reviews_use_lifetime_answers_then_dates_and_current_decks(setup, monkeypatch):
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)",
+    setup.db.connection.executemany("INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)",
                                    [(1, 1), (2, 2), (3, 1)])
     add_review(setup, TODAY - 90 * 86400, cid=1)
     add_review(setup, TODAY - 2 * 86400, cid=1)  # not new within a shorter date range
@@ -301,7 +361,9 @@ def test_first_reviews_use_lifetime_answers_then_dates_and_current_decks(setup, 
 def test_new_card_layer_has_ice_counts_and_no_forecasts_without_changing_normal_mode(setup):
     from review_heatmap.metrics import adaptive_color, baseline_key, DAY_GROUPING_VERSION
 
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, 1, 101, 2)", [(1,), (2,)])
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue) VALUES (?, 1, 101, 2)", [(1,), (2,)],
+    )
     add_review(setup, TODAY - 2 * 86400, cid=1, milliseconds=240000)
     add_review(setup, TODAY - 2 * 86400, cid=1, sequence=1)
     add_review(setup, TODAY - 86400, cid=2)
@@ -435,7 +497,7 @@ def test_automatic_refresh_keeps_old_goal_with_sparse_history_and_retries_next_d
            "percentile": 90, "selected_on": TODAY - 30 * 86400,
            "day_grouping_version": DAY_GROUPING_VERSION}
     conf["activity_baselines"][key] = old
-    setup.db.connection.execute("INSERT INTO cards VALUES (1, 1, 0, 2)")
+    setup.db.connection.execute("INSERT INTO cards (id, did, due, queue) VALUES (1, 1, 0, 2)")
     for age in range(1, 7):
         add_review(setup, TODAY - age * 86400, milliseconds=60000)
     renderer = make_renderer(setup)
@@ -457,7 +519,9 @@ def test_automatic_refresh_keeps_old_goal_with_sparse_history_and_retries_next_d
 def test_global_and_deck_heatmaps_choose_their_own_days_and_show_reminders(setup, monkeypatch):
     from review_heatmap.metrics import baseline_key, reference_from_day, saved_reference
 
-    setup.db.connection.executemany("INSERT INTO cards VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)])
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)],
+    )
     conf = setup.conf["synced"]
     conf.update(activity_scale="baseline", activity_metric="recorded_time")
     for age in range(1, 11):
@@ -622,7 +686,7 @@ def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
         for sequence in range(count):
             add_review(setup, TODAY - age * 86400, milliseconds=60000, sequence=sequence)
     # Forecast cards and days without reviews must not affect the median.
-    setup.db.connection.execute("INSERT INTO cards VALUES (1, 1, 101, 2)")
+    setup.db.connection.execute("INSERT INTO cards (id, did, due, queue) VALUES (1, 1, 101, 2)")
     report = setup.reporter.get_report(limfcst=2)
     renderer = make_renderer(setup)
     conf = setup.conf["synced"]

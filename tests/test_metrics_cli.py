@@ -7,6 +7,7 @@ import pytest
 
 from review_heatmap.metrics import (
     METRICS, adaptive_color, activity_value, answer_effort, fsrs_calibration,
+    concentration_calibration, concentration_coefficients,
     baseline_color, baseline_value, reference_from_day,
 )
 
@@ -263,7 +264,7 @@ def test_fsrs_answers_and_calibration_match_direct_calls(tmp_path):
     assert data["inputs"] == {"reviews": 4, "minutes": 5.0, "milliseconds": 300000}
     assert data["duration_model"] == "individual"
     fsrs = data["results"]["fsrs"]
-    assert fsrs["calibration"] == calibration
+    assert fsrs["calibration"] == {"fsrs_calibration": calibration}
     assert fsrs["exponents"] == pytest.approx({"reviews": 0.6, "time": 0.4})
     assert fsrs["score"] == pytest.approx(activity_value(4, 300000, "fsrs", buckets, conf))
     assert data["results"]["workload"]["score"] == pytest.approx(
@@ -281,3 +282,33 @@ def test_fsrs_answers_and_calibration_match_direct_calls(tmp_path):
         assert run_cli(["--answers-json", str(path), *bad]).returncode == 2
     path.write_text(json.dumps([[15000.5]]))
     assert run_cli(["--answers-json", str(path)]).returncode == 2
+
+
+def test_concentration_answers_follow_sessions_with_or_without_timestamps(tmp_path):
+    minute = 60000
+    rows = [[2 * minute, 21, 550, 0, (i + 1) * 2 * minute, 2 * minute] for i in range(20)]
+    path = tmp_path / "answers.json"
+    path.write_text(json.dumps(rows))
+    args = ["--answers-json", str(path), "--metric", "concentration",
+            "--concentration-calibration", "warm_up_minutes=0", "full_minutes=10", "--json"]
+    proc = run_cli(args)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)["results"]["concentration"]
+    conf = {"concentration_calibration": {"warm_up_minutes": 0, "full_minutes": 10}}
+    scales = concentration_coefficients(
+        [(row[4], row[0], row[5]) for row in rows], concentration_calibration(conf),
+    )
+    effort = answer_effort(False, 21, 550, fsrs_calibration(conf))
+    expected = sum(round(scale, 2) * effort ** 0.6 * 2 ** 0.4 for scale in scales)
+    assert scales[0] < scales[-1] == 2
+    assert result["score"] == pytest.approx(expected)
+    assert result["calibration"]["concentration_calibration"]["full_minutes"] == 10
+    assert result["calibration"]["fsrs_calibration"] == fsrs_calibration({})
+    path.write_text(json.dumps([row[:4] for row in rows]))  # back-to-back, no norms
+    proc = run_cli(args)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["results"]["concentration"]["score"] == pytest.approx(expected)
+    assert run_cli(args + ["--concentration-calibration", "warm_up_minutes=-1"]).returncode == 2
+    rows[3] = rows[3][:4]
+    path.write_text(json.dumps(rows))
+    assert run_cli(args).returncode == 2

@@ -15,12 +15,18 @@ from typing import Dict, Iterable, List, Optional, Sequence
 METRICS = {
     "reviews": {"label": "Review count (classic)", "time_weight": 0.0},
     "time": {"label": "Workload (linear)", "time_weight": 0.5},
-    "workload": {"label": "Workload (review-weighted)", "time_weight": 0.4},
+    "workload": {"label": "⭐ Workload (review-weighted)", "time_weight": 0.4},
     "custom": {"label": "Workload (custom)", "time_weight": None},
     "recorded_time": {"label": "Recorded time", "time_weight": 1.0},
-    # Shares the review-weighted exponents; only the effort weight is calibrated.
-    "fsrs": {"label": "FSRS-based (experimental)", "time_weight": 0.4},
+    # Experimental measures share the review-weighted exponents; everything
+    # they add is calibrated in the options dialog.
+    "fsrs": {"label": "🧪 FSRS-based (exp.)", "time_weight": 0.4},
+    "concentration": {
+        "label": "🧪 FSRS-based + sustained concentration (exp.)",
+        "time_weight": 0.4,
+    },
 }
+EXPERIMENTAL_METRICS = ("fsrs", "concentration")
 SCALES = {
     "adaptive": {"label": "Classic"},
     "baseline": {"label": "Baseline (based on a reference day)"},
@@ -29,8 +35,10 @@ SCALES = {
 FORMULA_VERSION = 3
 DAY_GROUPING_VERSION = 1
 DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
-# FSRS-based (experimental) replaces each answer's count credit of 1 with an
-# effort weight. These are calibration settings edited in the options dialog.
+# Experimental measures replace each answer's count credit of 1 with an effort
+# weight and, with sustained concentration, scale the whole credit. Every
+# constant below is a calibration setting. Only values a user changed are
+# stored, so updated defaults reach everyone who left a setting alone.
 FSRS_CALIBRATION_DEFAULTS = {
     "new_card_weight": 1.5,
     "step_weight": 1.0,
@@ -48,6 +56,34 @@ FSRS_CALIBRATION_RANGES = {
     "difficulty_pivot": (0.0, 100.0),
     "difficulty_exponent": (0.0, 1.0),
     "weight_limit": (1.0, 10.0),
+}
+CONCENTRATION_DEFAULTS = {
+    "max_bonus": 1.0,
+    "sensitivity_seconds": 45.0,
+    "template_cap": 1.5,
+    "warm_up_minutes": 10.0,
+    "full_minutes": 30.0,
+    "fatigue_cap_minutes": 75.0,
+    "fade_minutes": 30.0,
+    "break_minutes": 5.0,
+}
+CONCENTRATION_RANGES = {
+    "max_bonus": (0.0, 5.0),
+    "sensitivity_seconds": (1.0, 600.0),
+    "template_cap": (1.0, 10.0),
+    "warm_up_minutes": (0.0, 180.0),
+    "full_minutes": (1.0, 240.0),
+    "fatigue_cap_minutes": (5.0, 600.0),
+    "fade_minutes": (1.0, 600.0),
+    "break_minutes": (1.0, 120.0),
+}
+CALIBRATIONS = {
+    "fsrs_calibration": (FSRS_CALIBRATION_DEFAULTS, FSRS_CALIBRATION_RANGES),
+    "concentration_calibration": (CONCENTRATION_DEFAULTS, CONCENTRATION_RANGES),
+}
+METRIC_CALIBRATIONS = {
+    "fsrs": ("fsrs_calibration",),
+    "concentration": ("fsrs_calibration", "concentration_calibration"),
 }
 # Anki writes FSRS difficulty to revlog.factor as ((D - 1) / 9 + 0.1) * 1000,
 # i.e. 100-1100. SM-2 ease factors are 1300 and above; 0 marks SM-2 learning
@@ -81,20 +117,35 @@ def metric_weights(metric: str, conf: Optional[Dict] = None):
     return 1 - weight, weight
 
 
-def fsrs_calibration(conf: Optional[Dict] = None) -> Dict[str, float]:
-    """Saved calibration with defaults filled in; invalid or out-of-range values revert."""
-    saved = (conf or {}).get("fsrs_calibration")
-    if not isinstance(saved, dict):
-        saved = {}
-    calibration = {}
-    for key, default in FSRS_CALIBRATION_DEFAULTS.items():
-        low, high = FSRS_CALIBRATION_RANGES[key]
+def calibration_overrides(conf: Optional[Dict], name: str) -> Dict[str, float]:
+    """Settings the user set manually; unknown, invalid or out-of-range ones are dropped."""
+    defaults, ranges = CALIBRATIONS[name]
+    saved = (conf or {}).get(name)
+    overrides = {}
+    for key, value in (saved.items() if isinstance(saved, dict) else ()):
+        if key not in defaults:
+            continue
         try:
-            value = float(saved.get(key, default))
+            value = float(value)
         except (TypeError, ValueError):
-            value = default
-        calibration[key] = value if low <= value <= high else default
-    return calibration
+            continue
+        low, high = ranges[key]
+        if low <= value <= high:
+            overrides[key] = value
+    return overrides
+
+
+def calibration(conf: Optional[Dict], name: str) -> Dict[str, float]:
+    """Current defaults, replaced only where the user calibrated manually."""
+    return dict(CALIBRATIONS[name][0], **calibration_overrides(conf, name))
+
+
+def fsrs_calibration(conf: Optional[Dict] = None) -> Dict[str, float]:
+    return calibration(conf, "fsrs_calibration")
+
+
+def concentration_calibration(conf: Optional[Dict] = None) -> Dict[str, float]:
+    return calibration(conf, "concentration_calibration")
 
 
 def fsrs_difficulty(factor) -> Optional[float]:
@@ -131,29 +182,75 @@ def answer_effort(first: bool, last_interval: int, factor: int,
     return min(limit, max(1 / limit, effort))
 
 
+def smoothstep(x: float) -> float:
+    x = min(1.0, max(0.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def concentration_coefficients(answers: Sequence,
+                               calibration: Optional[Dict] = None) -> List[float]:
+    """Credit multipliers for sustained concentration on heavy material.
+
+    answers are (end_ms, duration_ms, typical_ms) in chronological order;
+    typical_ms is the card template's usual recorded duration, or None. An
+    answer feeds the session's concentration clock with its duration, capped
+    relative to its template's norm and gated by the sensitivity, so a slow
+    day on quick cards builds nothing. The bonus rises smoothly between the
+    warm-up and full-concentration marks and fades past the fatigue cap. An
+    idle gap longer than the break starts a new session. Recorded durations
+    themselves are never altered.
+    """
+    c = calibration if calibration is not None else concentration_calibration()
+    sensitivity, break_ms = c["sensitivity_seconds"] * 1000, c["break_minutes"] * 60000
+    warm, full, cap = c["warm_up_minutes"], c["full_minutes"], c["fatigue_cap_minutes"]
+    coefficients = []
+    session_start = previous_end = None
+    heavy = 0.0
+    for end, duration, typical in answers:
+        duration = max(0, duration)
+        start = end - duration
+        if previous_end is None or start - previous_end > break_ms:
+            session_start, heavy = start, 0.0
+        previous_end = end
+        limit = duration if typical is None else min(duration, c["template_cap"] * typical)
+        gate = min(1.0, max(0.0, (limit - sensitivity) / sensitivity))
+        heavy += limit * gate / 60000
+        if full > warm:
+            rise = smoothstep((heavy - warm) / (full - warm))
+        else:
+            rise = 1.0 if heavy >= warm else 0.0
+        elapsed = (end - session_start) / 60000
+        fade = 1.0 if elapsed <= cap else math.exp(-(elapsed - cap) / c["fade_minutes"])
+        coefficients.append(1 + c["max_bonus"] * rise * fade)
+    return coefficients
+
+
 def activity_value(reviews: int, milliseconds: int, metric: str,
                    duration_counts=None, conf: Optional[Dict] = None) -> float:
-    """Sum per-answer credit using (milliseconds, count[, effort]) duration buckets.
+    """Sum per-answer credit using (milliseconds, count[, effort[, scale]]) buckets.
 
     Collection callers must supply actual duration buckets. Without them this
     evaluates a synthetic equal-duration scenario, used by the totals-only CLI.
     The uniform assumption is never used to migrate an actual saved reference.
-    Only the FSRS-based measure reads a bucket's effort; others count each
-    answer once.
+    Only experimental measures read a bucket's effort, and only sustained
+    concentration its scale; others count each answer once.
     """
     reviews = max(0, reviews)
     minutes = max(0, milliseconds) / 60000
     review_weight, time_weight = metric_weights(metric, conf)
-    use_effort = metric == "fsrs" and duration_counts is not None
-    if time_weight == 1:
-        return minutes
-    if time_weight == 0 and not use_effort:
-        return float(reviews)
-    if duration_counts is None:
-        return reviews * (minutes / reviews) ** time_weight if reviews else 0.0
+    use_effort = metric in EXPERIMENTAL_METRICS and duration_counts is not None
+    use_scale = metric == "concentration" and duration_counts is not None
+    if not use_effort:
+        if time_weight == 1:
+            return minutes
+        if time_weight == 0:
+            return float(reviews)
+        if duration_counts is None:
+            return reviews * (minutes / reviews) ** time_weight if reviews else 0.0
     return math.fsum(
         bucket[1]
         * (bucket[2] ** review_weight if use_effort and len(bucket) > 2 else 1.0)
+        * (bucket[3] if use_scale and len(bucket) > 3 else 1.0)
         * (max(0, bucket[0]) / 60000) ** time_weight
         for bucket in duration_counts
     )
@@ -177,8 +274,8 @@ def baseline_key(conf: Dict, deck_id: Optional[int] = None) -> str:
     ]
     if metric == "custom":
         parts.append(metric_weights(metric, conf)[1])
-    elif metric == "fsrs":
-        parts.append(fsrs_calibration(conf))
+    elif metric in METRIC_CALIBRATIONS:
+        parts.append({name: calibration(conf, name) for name in METRIC_CALIBRATIONS[metric]})
     if deck_id is not None:
         parts.append(["deck", int(deck_id)])
     return json.dumps(parts, separators=(",", ":"))
@@ -268,7 +365,7 @@ def saved_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]
 
 def _workload_day_key(parts):
     if not isinstance(parts, list) or len(parts) < 7 or parts[1] not in (
-        "time", "workload", "custom", "fsrs",
+        "time", "workload", "custom", "fsrs", "concentration",
     ):
         return None
     scope = parts[-1:] if isinstance(parts[-1], list) else []

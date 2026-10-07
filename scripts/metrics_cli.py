@@ -11,6 +11,7 @@ Usage examples:
     python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json
     python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json
     python scripts/metrics_cli.py --answers-json answers.json --metric fsrs --fsrs-calibration new_card_weight=2
+    python scripts/metrics_cli.py --answers-json answers.json --metric concentration --concentration-calibration max_bonus=0.5
 """
 
 import argparse
@@ -45,6 +46,7 @@ def create_parser() -> argparse.ArgumentParser:
             "  python scripts/metrics_cli.py --reviews 100 --time-ms 600000 --json\n"
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json\n"
             "  python scripts/metrics_cli.py --answers-json answers.json --metric fsrs --fsrs-calibration new_card_weight=2\n"
+            "  python scripts/metrics_cli.py --answers-json answers.json --metric concentration --concentration-calibration max_bonus=0.5\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -70,9 +72,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
     time_group.add_argument(
         "--answers-json", type=Path,
-        help=("JSON array of answers [duration_ms, last_interval, factor, first] as recorded "
-              "in Anki's revlog (lastIvl, factor; first marks the card's earliest answer). "
-              "Trailing fields default to 0/false. Gives exact FSRS-based scores."),
+        help=("JSON array of answers [duration_ms, last_interval, factor, first, end_ms, "
+              "typical_ms] as recorded in Anki's revlog (lastIvl, factor; first marks the "
+              "card's earliest answer; end_ms is the answer's timestamp; typical_ms the "
+              "card template's usual duration). Trailing fields default to 0/false/null; "
+              "without any end_ms the answers are taken as one back-to-back session. "
+              "Gives exact experimental scores."),
     )
     metric_choices = ["all"] + list(metrics.METRICS.keys())
     parser.add_argument("--theme", choices=list(metrics.COLOR_THEMES), default="lime",
@@ -107,6 +112,11 @@ def create_parser() -> argparse.ArgumentParser:
              + ", ".join(metrics.FSRS_CALIBRATION_DEFAULTS) + ".",
     )
     parser.add_argument(
+        "--concentration-calibration", nargs="+", metavar="KEY=VALUE",
+        help="Sustained concentration calibration overrides. Keys: "
+             + ", ".join(metrics.CONCENTRATION_DEFAULTS) + ".",
+    )
+    parser.add_argument(
         "--history-json", type=Path,
         help=("Adaptive history: a JSON array of days, each an array of answer durations "
               "in milliseconds. Supply the full included history, including the evaluated "
@@ -125,45 +135,63 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> List[tuple]:
-    """Read [duration_ms, last_interval, factor, first] rows; trailing fields are optional."""
+    """Read [duration_ms, last_interval, factor, first, end_ms, typical_ms] rows.
+
+    Trailing fields are optional. Without timestamps the answers form one
+    back-to-back session in the given order.
+    """
     try:
         rows = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(rows, list) or not rows:
             raise ValueError("expected a non-empty JSON array of answers")
         answers = []
         for row in rows:
-            if not isinstance(row, list) or not 1 <= len(row) <= 4:
-                raise ValueError("each answer is [duration_ms, last_interval, factor, first]")
-            duration, last_interval, factor, first = (row + [0, 0, False])[:4]
+            if not isinstance(row, list) or not 1 <= len(row) <= 6:
+                raise ValueError("each answer is [duration_ms, last_interval, factor, first, "
+                                 "end_ms, typical_ms]")
+            padding = [0, 0, 0, False, None, None]
+            duration, last_interval, factor, first, end, typical = row + padding[len(row):]
             if any(type(value) is not int for value in (duration, last_interval, factor)):
                 raise ValueError("duration_ms, last_interval and factor must be integers")
             if duration < 0 or factor < 0:
                 raise ValueError("duration_ms and factor cannot be negative")
             if first not in (True, False, 0, 1):
                 raise ValueError("first must be true or false")
-            answers.append((duration, last_interval, factor, bool(first)))
+            for name, value in (("end_ms", end), ("typical_ms", typical)):
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError(f"{name} must be a nonnegative integer or null")
+            answers.append((duration, last_interval, factor, bool(first), end, typical))
+        timestamps = [answer[4] for answer in answers]
+        if any(end is None for end in timestamps) and any(end is not None for end in timestamps):
+            raise ValueError("give end_ms for every answer or for none")
+        if timestamps[0] is None:
+            end = 0
+            for index, answer in enumerate(answers):
+                end += answer[0]
+                answers[index] = answer[:4] + (end, answer[5])
     except (OSError, ValueError) as exc:
         parser.error(f"Invalid {option}: {exc}")
     return answers
 
 
-def parse_calibration(parser: argparse.ArgumentParser,
+def parse_calibration(parser: argparse.ArgumentParser, option: str, name: str,
                       items: Optional[Sequence[str]]) -> Optional[Dict[str, float]]:
     if items is None:
         return None
+    defaults, ranges = metrics.CALIBRATIONS[name]
     calibration: Dict[str, float] = {}
     for item in items:
         key, separator, value = item.partition("=")
-        if not separator or key not in metrics.FSRS_CALIBRATION_DEFAULTS:
-            parser.error("--fsrs-calibration expects KEY=VALUE with KEY one of: "
-                         + ", ".join(metrics.FSRS_CALIBRATION_DEFAULTS) + ".")
+        if not separator or key not in defaults:
+            parser.error(f"{option} expects KEY=VALUE with KEY one of: "
+                         + ", ".join(defaults) + ".")
         try:
             number = float(value)
         except ValueError:
-            parser.error(f"--fsrs-calibration {key} needs a number.")
-        low, high = metrics.FSRS_CALIBRATION_RANGES[key]
+            parser.error(f"{option} {key} needs a number.")
+        low, high = ranges[key]
         if not low <= number <= high:
-            parser.error(f"--fsrs-calibration {key} must be between {low:g} and {high:g}.")
+            parser.error(f"{option} {key} must be between {low:g} and {high:g}.")
         calibration[key] = number
     return calibration
 
@@ -191,7 +219,15 @@ def parse_and_validate(parser: argparse.ArgumentParser, argv: Optional[Sequence[
             parser.error("Reference review count must match the supplied answers.")
         args.reference_reviews = len(args.reference_answers)
         args.reference_minutes = sum(answer[0] for answer in args.reference_answers) / 60000
-    args.calibration = parse_calibration(parser, args.fsrs_calibration)
+    args.calibrations = {}
+    for option, name, items in (
+        ("--fsrs-calibration", "fsrs_calibration", args.fsrs_calibration),
+        ("--concentration-calibration", "concentration_calibration",
+         args.concentration_calibration),
+    ):
+        parsed = parse_calibration(parser, option, name, items)
+        if parsed is not None:
+            args.calibrations[name] = parsed
 
     if args.durations_ms is not None:
         if any(duration < 0 for duration in args.durations_ms):
@@ -284,7 +320,7 @@ def evaluate(
     night_mode: bool = False,
     answers: Optional[Sequence[tuple]] = None,
     ref_answers: Optional[Sequence[tuple]] = None,
-    fsrs_calibration: Optional[Dict[str, float]] = None,
+    calibrations: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     has_reference = ref_reviews is not None and ref_time_ms is not None and ref_minutes is not None
     palette = "bundled_default" if has_reference else f"{theme}_{'dark' if night_mode else 'light'}"
@@ -296,17 +332,25 @@ def evaluate(
 
     results: Dict[str, Any] = {}
     conf = {} if custom_time_weight is None else {"custom_time_weight": custom_time_weight}
-    if fsrs_calibration is not None:
-        conf["fsrs_calibration"] = dict(fsrs_calibration)
-    calibration = metrics.fsrs_calibration(conf)
+    for name, values in (calibrations or {}).items():
+        conf[name] = dict(values)
+    effort_settings = metrics.fsrs_calibration(conf)
+    concentration_settings = metrics.concentration_calibration(conf)
 
     def answer_buckets(rows):
-        # Other measures ignore the effort element; only FSRS-based reads it.
-        counted = Counter(
-            (duration, metrics.answer_effort(first, last_interval, factor, calibration))
-            for duration, last_interval, factor, first in rows
+        # Measures ignore the bucket elements they do not define: only the
+        # experimental ones read effort, only sustained concentration the scale.
+        scales = metrics.concentration_coefficients(
+            [(end, duration, typical) for duration, _, _, _, end, typical in rows],
+            concentration_settings,
         )
-        return [(duration, count, effort) for (duration, effort), count in sorted(counted.items())]
+        counted = Counter(
+            (duration, metrics.answer_effort(first, last_interval, factor, effort_settings),
+             round(scale, 2))
+            for (duration, last_interval, factor, first, _, _), scale in zip(rows, scales)
+        )
+        return [(duration, count, effort, scale)
+                for (duration, effort, scale), count in sorted(counted.items())]
 
     if answers is not None:
         durations = answer_buckets(answers)
@@ -362,8 +406,11 @@ def evaluate(
 
         review_weight, time_weight = metrics.metric_weights(key, conf)
         results[key]["exponents"] = {"reviews": review_weight, "time": time_weight}
-        if key == "fsrs":
-            results[key]["calibration"] = dict(calibration)
+        if key in metrics.METRIC_CALIBRATIONS:
+            results[key]["calibration"] = {
+                name: metrics.calibration(conf, name)
+                for name in metrics.METRIC_CALIBRATIONS[key]
+            }
 
     data: Dict[str, Any] = {
         "schema_version": 2,
@@ -509,7 +556,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             night_mode=args.night_mode,
             answers=args.answers,
             ref_answers=args.reference_answers,
-            fsrs_calibration=args.calibration,
+            calibrations=args.calibrations,
         )
     except (ValueError, OverflowError) as exc:
         sys.stderr.write(f"Error during calculation: {exc}\n")

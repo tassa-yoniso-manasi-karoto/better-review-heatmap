@@ -7,6 +7,8 @@ import pytest
 from review_heatmap.metrics import (
     activity_levels, activity_value, adaptive_anchor, activity_color, adaptive_color,
     answer_effort, fsrs_calibration, fsrs_difficulty, FSRS_CALIBRATION_DEFAULTS,
+    CONCENTRATION_DEFAULTS, EXPERIMENTAL_METRICS, METRICS, calibration_overrides,
+    concentration_calibration, concentration_coefficients,
     COLOR_THEMES,
     automatic_reference, baseline_key,
     baseline_color, baseline_color_level, baseline_value,
@@ -351,3 +353,52 @@ def test_fsrs_scores_read_effort_only_in_their_own_mode():
         activity_value(3, 270000, "fsrs", buckets, fsrs)
     )
     assert saved_reference(fsrs, 5) is None
+
+
+def test_concentration_rises_with_heavy_uninterrupted_study_and_fades():
+    minute = 60000
+    assert concentration_calibration({}) == CONCENTRATION_DEFAULTS
+    heavy = [((i + 1) * 2 * minute, 2 * minute, 2 * minute) for i in range(40)]
+    c = concentration_coefficients(heavy)
+    assert c[:5] == [1] * 5  # warm-up: the first 10 heavy minutes earn nothing
+    assert 1 < c[5] < c[10] < 2
+    assert c[14] == pytest.approx(2) and c[36] == pytest.approx(2)  # full at 30, cap at 75
+    assert c[37] == pytest.approx(1 + math.exp(-1 / 30))
+    assert c[39] == pytest.approx(1 + math.exp(-5 / 30))
+    light = [((i + 1) * 20000, 20000, 20000) for i in range(240)]
+    assert concentration_coefficients(light) == [1] * 240
+    slow = [((i + 1) * 2 * minute, 2 * minute, 20000) for i in range(40)]  # slow on quick cards
+    assert concentration_coefficients(slow) == [1] * 40
+    unknown = [((i + 1) * 2 * minute, 2 * minute, None) for i in range(20)]
+    assert concentration_coefficients(unknown) == c[:20]
+    paused = heavy[:15] + [(38 * minute, 2 * minute, 2 * minute)]
+    assert concentration_coefficients(paused)[-1] == 1
+    step = concentration_calibration({"concentration_calibration": {
+        "max_bonus": 0.5, "warm_up_minutes": 10, "full_minutes": 10,
+    }})
+    assert concentration_coefficients(heavy[:5], step)[3:] == [1, 1.5]
+
+
+def test_calibration_stores_only_manual_changes_and_keys_references():
+    conf = {"fsrs_calibration": {"new_card_weight": 3, "bogus": 1, "weight_limit": "x"},
+            "concentration_calibration": {"max_bonus": 0.5, "fade_minutes": 9999}}
+    assert calibration_overrides(conf, "fsrs_calibration") == {"new_card_weight": 3}
+    assert calibration_overrides(conf, "concentration_calibration") == {"max_bonus": 0.5}
+    assert fsrs_calibration(conf) == dict(FSRS_CALIBRATION_DEFAULTS, new_card_weight=3)
+    assert concentration_calibration(conf) == dict(CONCENTRATION_DEFAULTS, max_bonus=0.5)
+    assert calibration_overrides({"fsrs_calibration": [1]}, "fsrs_calibration") == {}
+    plain = {"activity_metric": "concentration"}
+    assert baseline_key(plain) != baseline_key(dict(conf, activity_metric="concentration"))
+    assert baseline_key(plain) != baseline_key({"activity_metric": "fsrs"})
+    assert json.loads(baseline_key(plain))[7] == {
+        "fsrs_calibration": FSRS_CALIBRATION_DEFAULTS,
+        "concentration_calibration": CONCENTRATION_DEFAULTS,
+    }
+    buckets = [(60000, 2, 1.5, 2.0), (120000, 1, 1.0, 1.0)]
+    assert activity_value(3, 240000, "concentration", buckets) == pytest.approx(
+        2 * 2.0 * 1.5 ** 0.6 + 2 ** 0.4
+    )
+    assert activity_value(3, 240000, "fsrs", buckets) == pytest.approx(2 * 1.5 ** 0.6 + 2 ** 0.4)
+    assert activity_value(3, 240000, "workload", buckets) == pytest.approx(2 + 2 ** 0.4)
+    assert METRICS["workload"]["label"].startswith("⭐ ")
+    assert all(METRICS[key]["label"].startswith("🧪 ") for key in EXPERIMENTAL_METRICS)
