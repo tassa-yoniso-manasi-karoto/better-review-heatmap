@@ -355,6 +355,11 @@ def test_fsrs_scores_read_effort_only_in_their_own_mode():
     assert saved_reference(fsrs, 5) is None
 
 
+def metrics_module_default():
+    import review_heatmap.metrics as metrics
+    return metrics.metric_name({})
+
+
 def test_concentration_rises_with_heavy_uninterrupted_study_and_fades():
     minute = 60000
     assert concentration_calibration({}) == CONCENTRATION_DEFAULTS
@@ -400,5 +405,7 @@ def test_calibration_stores_only_manual_changes_and_keys_references():
     )
     assert activity_value(3, 240000, "fsrs", buckets) == pytest.approx(2 * 1.5 ** 0.6 + 2 ** 0.4)
     assert activity_value(3, 240000, "workload", buckets) == pytest.approx(2 + 2 ** 0.4)
-    assert METRICS["workload"]["label"].startswith("⭐ ")
-    assert all(METRICS[key]["label"].startswith("🧪 ") for key in EXPERIMENTAL_METRICS)
+    assert METRICS["fsrs"]["label"].startswith("⭐ ")
+    assert METRICS["concentration"]["label"].startswith("🧪 ")
+    assert all(METRICS[key]["label"].endswith("(exp.)") for key in EXPERIMENTAL_METRICS)
+    assert metrics_module_default() == "fsrs"

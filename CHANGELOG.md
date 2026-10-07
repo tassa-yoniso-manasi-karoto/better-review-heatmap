@@ -25,6 +25,16 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
+## [Unreleased]
+
+### Added
+- Two experimental measures: FSRS-based, which weighs each answer by how new, recently learned or difficult its card is, and FSRS-based + sustained concentration, which also rewards long uninterrupted stretches on cards that take real time
+- A Calibrate button next to the measure that lists every setting of the experimental measures with an explanation on hover; only settings you change are kept, so improved defaults in later versions still reach you
+
+### Changed
+- FSRS-based is the default measure for new installs; an existing selection is kept
+- Measure names mark the default with a star and experimental ones with a flask
+
 ## [2.1.3] - 2026-10-05
 
 ### Fixed

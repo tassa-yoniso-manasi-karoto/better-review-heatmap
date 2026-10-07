@@ -8,40 +8,59 @@ and retains the inherited daylight-saving fix of [@olliecheng](https://github.co
 
 ## Usage
 
-Open **Tools → Review Heatmap Options → Activity** and choose a measure:
+Open **Tools → Review Heatmap Options → Display Mode** and choose a measure:
 
 - **Review count (classic):** original review counts and color scaling.
-- **Workload (linear):** balances reviews and recorded time with equal ½/½
-  weights.
-- **Workload (review-weighted)** (default): favors review volume with ⅗/⅖
-  review/time weights, while still crediting longer answers.
-- **Workload (custom):** choose your own review/time weights; editing either
-  adjusts the other so they total 1.
-- **Recorded time:** colors reflect total Anki-recorded minutes alone.
+- **Workload (linear):** gives equal weight to review count and time.
+- **Workload (review-weighted):** gives review count slightly more influence
+  than time.
+- **Workload (custom):** allows you to choose your own balance between reviews
+  and time.
+- **Recorded time:** scores days strictly by study duration.
+- **⭐ FSRS-based (exp.)** (default): review-weighted workload where each answer
+  counts a little more when its card is new, recently learned or difficult for
+  you, and a little less when it is mature and easy.
+- **🧪 FSRS-based + sustained concentration (exp.):** the same, plus a bonus
+  that builds up during long uninterrupted stretches on cards that take real
+  time, and fades once a sitting runs past about an hour and a quarter.
 
-See [DESIGN.md](DESIGN.md) for formulas and the reasons behind them.
+*Workload modes sum the effort of individual answers, so scoring stays
+consistent regardless of review pacing.*
 
-Workload and recorded-time modes offer two color scales:
+The experimental measures come with sensible defaults. **Calibrate…**, next to
+the measure, lists every setting with an explanation on hover. Only settings
+you change are kept, so improved defaults in future versions still reach you;
+**Restore defaults** forgets your changes. See [DESIGN.md](DESIGN.md) for the
+formulas.
 
-- **Fixed scale** (default): stable thresholds independent of other days.
-- **Automatic baseline:** selects a strong recent study day, or lets you choose
-  one. Automatic selection uses the 75th percentile by score of included active
-  days in the previous 60 completed days. References are saved separately per mode,
-  custom weight, and history filters. Handpick a day that matches your goals.
+Workload modes offer two color scales:
+
+- **Classic:** scale dynamically adapts to your median historical activity.
+- **Baseline:** selects a strong recent study day, or lets you choose one.
+  Automatic selection uses the **90th percentile** of active days and
+  **refreshes every 30 days** to keep targets relevant as your study habits
+  evolve. **I would strongly recommend taking the time to handpick the
+  reference day yourself to choose something that matches your goals.**
 
 With a baseline, the target and full progress bar represent **85% of the
-reference day's score**. 
+reference day's score**.
 
 > [!IMPORTANT]
 > Time comes directly from Anki. Set **Deck Options → Timers → Maximum answer
 > seconds** to suit your cards.
 
-On the calendar:
+Just like in the original:
 
 - Hover over a past day to see its recorded time and review count. Streaks still
   count days with reviews, and future dates show cards due.
 - Existing review history and settings are preserved. The heatmap is rebuilt
   from Anki's review log; its display cache is not a separate history archive.
+
+**New in v2.1:**
+
+- **New-card toggle:** a compact switch next to the heatmap toggles between
+  overall review activity and a new-card-only heatmap showing when you first
+  learned material, in distinct ice colors.
 
 ## Build and install
 

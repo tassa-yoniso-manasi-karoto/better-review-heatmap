@@ -40,6 +40,7 @@ from aqt import mw
 
 from .consts import ADDON
 from .libaddon.anki.configmanager import ConfigManager
+from .metrics import DEFAULT_METRIC
 
 __all__ = ["heatmap_colors", "heatmap_modes", "config_defaults", "config"]
 
@@ -83,7 +84,7 @@ config_defaults: Dict[str, Dict] = {
         "limcdel": False,
         "limresched": True,
         "limdecks": [],
-        "activity_metric": "workload",
+        "activity_metric": DEFAULT_METRIC,
         "activity_scale": "adaptive",
         "activity_reference_date": 0,
         "activity_baselines": {},

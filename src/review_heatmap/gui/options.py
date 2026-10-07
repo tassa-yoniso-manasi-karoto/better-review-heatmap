@@ -808,13 +808,12 @@ def _on_profile_open():
         config["profile"] = profile
         config.save("profile", profile_unload=True)
         showInfo(
-            "Review Heatmap offers Workload (linear) and Workload "
-            "(review-weighted) color modes in Review Heatmap Options → Activity.\n"
-            "Both use Anki's recorded review time. \n\n"
+            "Review Heatmap colors days by workload, which relies on the time "
+            "Anki records for each answer.\n\n"
             "Please ensure that Deck Options → Timers → Maximum answer seconds has "
             "a time limit that is large enough for every card type you review.\n\n"
-            "Time now affects Review Heatmap's workload estimations and time beyond that limit will "
-            "not be recorded and changing it only affects future reviews' recorded time.\n\n"
+            "Time beyond that limit is not recorded, and changing the limit only "
+            "affects future reviews' recorded time.\n\n"
             "Review Heatmap leaves this setting for you to decide.",
             parent=mw,
             title="Review Heatmap — recorded study time",

@@ -65,10 +65,9 @@ python scripts/metrics_cli.py --answers-json answers.json --metric concentration
   to 0/false/null; give `end_ms` for every answer or for none.
 - `--metric KEY`: defaults to `all`; keys are `reviews`, `time`, `workload`,
   `custom`, `recorded_time`, `fsrs`, `concentration`. Legacy key `time` means
-  **Workload (linear)**; `workload` is the recommended **⭐ Workload
-  (review-weighted)**; `recorded_time` means time alone; `fsrs` is **🧪
-  FSRS-based (exp.)** and `concentration` **🧪 FSRS-based + sustained
-  concentration (exp.)**.
+  **Workload (linear)**; `recorded_time` means time alone; `fsrs` is the
+  add-on's default **⭐ FSRS-based (exp.)** and `concentration` **🧪
+  FSRS-based + sustained concentration (exp.)**.
 - Reference: `--reference-durations-ms D ...`, `--reference-answers-json FILE`,
   or the positive pair `--reference-reviews N --reference-minutes T`. Reference
   total time must be positive. An explicit count must match any supplied

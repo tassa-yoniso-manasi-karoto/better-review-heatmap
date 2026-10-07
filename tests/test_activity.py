@@ -66,6 +66,9 @@ class Config(dict):
 def setup(addon_modules):
     db = MemoryDB()
     conf = Config(addon_modules.config.config_defaults)
+    # Most tests exercise the classic workload family; experimental measures
+    # are selected explicitly where they are under test.
+    conf["synced"]["activity_metric"] = "workload"
     decks = SimpleNamespace(
         all=lambda: [{"id": 1}, {"id": 2}],
         children=lambda did: [],
@@ -761,7 +764,7 @@ def test_additive_settings_migration_preserves_existing_data(addon_modules):
         for key, value in values.items():
             expected = "lime" if storage == "synced" and key == "colors" else value
             assert conf[storage][key] == expected
-    assert conf["synced"]["activity_metric"] == "workload"
+    assert conf["synced"]["activity_metric"] == "fsrs"
     assert conf["profile"]["show_today_progress"] is True
     assert conf["profile"]["time_notice_seen"] is False
     conf["synced"]["activity_metric"] = "workload"
@@ -787,7 +790,7 @@ def test_additive_settings_migration_preserves_existing_data(addon_modules):
 
 def test_workload_defaults_do_not_replace_existing_mode_choices(addon_modules):
     conf = Config(addon_modules.config.config_defaults)
-    assert conf["synced"]["activity_metric"] == "workload"
+    assert conf["synced"]["activity_metric"] == "fsrs"
     assert conf["profile"]["show_today_progress"] is True
     conf["profile"]["show_today_progress"] = False
     for metric in ("reviews", "time", "workload", "custom", "recorded_time"):

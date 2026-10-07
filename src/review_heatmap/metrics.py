@@ -15,18 +15,20 @@ from typing import Dict, Iterable, List, Optional, Sequence
 METRICS = {
     "reviews": {"label": "Review count (classic)", "time_weight": 0.0},
     "time": {"label": "Workload (linear)", "time_weight": 0.5},
-    "workload": {"label": "⭐ Workload (review-weighted)", "time_weight": 0.4},
+    "workload": {"label": "Workload (review-weighted)", "time_weight": 0.4},
     "custom": {"label": "Workload (custom)", "time_weight": None},
     "recorded_time": {"label": "Recorded time", "time_weight": 1.0},
     # Experimental measures share the review-weighted exponents; everything
-    # they add is calibrated in the options dialog.
-    "fsrs": {"label": "🧪 FSRS-based (exp.)", "time_weight": 0.4},
+    # they add is calibrated in the options dialog. FSRS-based only adjusts
+    # review-weighted's scores, so it is the default and carries the star.
+    "fsrs": {"label": "⭐ FSRS-based (exp.)", "time_weight": 0.4},
     "concentration": {
         "label": "🧪 FSRS-based + sustained concentration (exp.)",
         "time_weight": 0.4,
     },
 }
 EXPERIMENTAL_METRICS = ("fsrs", "concentration")
+DEFAULT_METRIC = "fsrs"
 SCALES = {
     "adaptive": {"label": "Classic"},
     "baseline": {"label": "Baseline (based on a reference day)"},
@@ -102,8 +104,8 @@ DEFAULT_BASELINE_GRADIENT = json.loads(
 
 
 def metric_name(conf: Dict) -> str:
-    value = conf.get("activity_metric", "workload")
-    return value if value in METRICS else "workload"
+    value = conf.get("activity_metric", DEFAULT_METRIC)
+    return value if value in METRICS else DEFAULT_METRIC
 
 
 def metric_weights(metric: str, conf: Optional[Dict] = None):
