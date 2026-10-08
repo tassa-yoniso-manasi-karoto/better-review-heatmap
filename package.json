@@ -1,6 +1,6 @@
 {
     "name": "anki-review-heatmap",
-    "version": "2.1.3",
+    "version": "2.2.0",
     "main": "main.ts",
     "scripts": {
         "test": "node --test tests/web.test.cjs",
