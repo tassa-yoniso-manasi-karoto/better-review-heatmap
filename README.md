@@ -17,21 +17,13 @@ Open **Tools → Review Heatmap Options → Display Mode** and choose a measure:
 - **Workload (custom):** allows you to choose your own balance between reviews
   and time.
 - **Recorded time:** scores days strictly by study duration.
-- **⭐ FSRS-based (exp.)** (default): review-weighted workload where each answer
-  counts a little more when its card is new, recently learned or difficult for
-  you, and a little less when it is mature and easy.
-- **🧪 FSRS-based + sustained concentration (exp.):** the same, plus a bonus
-  that builds up during long uninterrupted stretches on cards that take real
-  time, and fades once a sitting runs past about an hour and a quarter.
-
-*Workload modes sum the effort of individual answers, so scoring stays
-consistent regardless of review pacing.*
+- **⭐ FSRS-based (exp.)** (default): based on review-weighted workload, except each answer counts a little more when its card is new, recently learned or difficult for you, and a little less when it is mature and easy.
+- **🧪 FSRS-based + sustained concentration (exp.):** the same but workload calculations additionally rewards long uninterrupted stretches on cards with long review (x s/card) time, reward fades once a sitting runs past about an hour.
 
 The experimental measures come with sensible defaults. **Calibrate…**, next to
 the measure, lists every setting with an explanation on hover. Only settings
 you change are kept, so improved defaults in future versions still reach you;
-**Restore defaults** forgets your changes. See [DESIGN.md](DESIGN.md) for the
-formulas.
+**Restore defaults** forgets your changes. See [DESIGN.md](DESIGN.md) for the formulas.
 
 Workload modes offer two color scales:
 
@@ -65,14 +57,11 @@ Just like in the original:
 - Existing review history and settings are preserved. The heatmap is rebuilt
   from Anki's review log; its display cache is not a separate history archive.
 
-**New in v2.1:**
-
-- **New-card toggle:** a compact switch next to the heatmap toggles between
-  overall review activity and a new-card-only heatmap showing when you first
-  learned material, in distinct ice colors.
-
 ## Build and install
 
+Users should [download the addon from Ankiweb](https://ankiweb.net/shared/info/1868371602).
+
+#### For developers:
 Building requires Python, Node.js, npm, and the system Qt 5 UI compiler
 (`uic-qt5`) on your PATH. In a Python virtual environment, run:
 
@@ -84,7 +73,6 @@ python scripts/build_worktree.py
 
 The script compiles forms for both Qt 5 and Qt 6, bundles JavaScript with
 esbuild, and packages the current files without changing Git history.
-End users do not need the build dependencies.
 
 Open the generated `build/better-review-heatmap-<version>.ankiaddon` in Anki
 and restart.
