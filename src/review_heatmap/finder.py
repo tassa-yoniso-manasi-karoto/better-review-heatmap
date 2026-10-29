@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 def _find_cards_reviewed_between(start_date: int, end_date: int) -> List[int]:
     # select from cards instead of just selecting uniques from revlog
     # in order to exclude deleted cards
+    # WARNING: keep the leading SELECT (see ActivityReporter.set_collection).
     return mw.col.db.list(  # type: ignore
         "SELECT id FROM cards where id in "
         "(SELECT cid FROM revlog where id >= ? and id < ?)",

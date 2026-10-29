@@ -25,6 +25,11 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
+## [2.2.1] - 2026-10-29
+
+### Fixed
+- Anki's Undo works again: showing the heatmap or changing its settings no longer causes Anki to erase its undo history
+
 ## [2.2.0] - 2026-10-08
 
 ### Added

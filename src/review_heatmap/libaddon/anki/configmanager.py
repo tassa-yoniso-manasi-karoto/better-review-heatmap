@@ -552,7 +552,12 @@ class ConfigManager(object):
         Arguments:
             dict -- Dictionary of synced config values
         """
-        self._getStorageObj("synced")[self._conf_key] = dict(config)
+        # WARNING: never write synced config by assigning into mw.col.conf, or
+        # by mutating a dict read from it (Anki writes such dicts back). That
+        # write path silently discards Anki's undo and redo history, so Edit >
+        # Undo stops working. col.set_config() keeps the history.
+        self._getStorageObj("synced")
+        self.mw.col.set_config(self._conf_key, dict(config))
         self.mw.col.setMod()
 
     # Profile storage
@@ -614,6 +619,10 @@ class ConfigManager(object):
 
         default_dict = self._storages[name]["default"]
 
+        # NOTE: for synced storage the writes below go through mw.col.conf and
+        # discard Anki's undo history (see _saveSynced). They only run when the
+        # stored config is missing or older than the defaults, i.e. once after
+        # an install or update.
         # Initialize config
         if conf_key not in storage_obj or storage_obj[conf_key] is None:
             storage_obj[conf_key] = default_dict

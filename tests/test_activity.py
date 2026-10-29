@@ -33,6 +33,11 @@ class MemoryDB:
         )
 
     def all(self, sql, *args):
+        # WARNING: do not remove or relax this check to make a test pass.
+        # It mirrors Anki: a statement through col.db that does not begin with
+        # SELECT, even a read-only WITH query, counts as a write and silently
+        # discards Anki's undo history. Rewrite the query as a subquery.
+        assert sql.lstrip().lower().startswith("select"), sql
         return self.connection.execute(sql, args).fetchall()
 
     def scalar(self, sql, *args):

@@ -199,15 +199,15 @@ class ActivityReporter:
         if stop is not None:
             limits.append(f"day < {int(stop)}")
         where = "WHERE " + " AND ".join(limits) if limits else ""
+        # Subquery, not WITH: see the WARNING in set_collection().
         return self._db.all(f"""
-WITH first_answers AS (
+SELECT {study_day_sql('id / 1000', self._offset)} AS day,
+       {'cid' if card_ids else 'COUNT()'}
+FROM (
     SELECT cid, MIN(id) AS id FROM revlog
     WHERE ease >= 1 {('AND ' + deck_limit) if deck_limit else ''}
     GROUP BY cid
-)
-SELECT {study_day_sql('id / 1000', self._offset)} AS day,
-       {'cid' if card_ids else 'COUNT()'}
-FROM first_answers {where}
+) AS first_answers {where}
 {'ORDER BY cid' if card_ids else 'GROUP BY day ORDER BY day'}
 """)
 
@@ -220,6 +220,13 @@ FROM first_answers {where}
             raise CollectionError("Anki collection and/or database is not ready")
 
         self._col = col
+        # WARNING: every statement sent through col.db must begin with SELECT.
+        # Anki treats anything else, even a read-only WITH (CTE) query or one
+        # starting with an SQL comment, as a write and silently discards its
+        # undo and redo history. The heatmap re-renders on the deck list and
+        # deck overview right after actions taken there, so Edit > Undo (e.g.
+        # "Undo Delete Deck") would then do nothing. Use subqueries instead of
+        # CTEs; tests/test_activity.py enforces this.
         self._db = col.db
 
     # Activity calculations
@@ -584,27 +591,25 @@ GROUP BY day ORDER BY day""".format(
             # A card's earliest answer is found before the date limits, like
             # first_reviews, so a new card is recognized on any displayed day.
             first_limit = "WHERE ease >= 1" + (f" AND {deck_limit}" if deck_limit else "")
-            first_answers = f"""\
-WITH first_answers AS (
+            # Subquery, not WITH: see the WARNING in set_collection().
+            first_answers = f"""(
     SELECT cid AS first_cid, MIN(id) AS first_id FROM revlog {first_limit} GROUP BY cid
-)"""
+) AS first_answers"""
         if with_concentration:
             cmd = f"""\
-{first_answers}
 SELECT {study_day_sql("revlog.id / 1000", self._offset)}
 AS day, revlog.id, COALESCE(time, 0) AS duration, revlog.id = first_id AS is_first,
 CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl,
 COALESCE(revlog.factor, 0) AS factor, {deck_limit or 1} AS included, notes.mid, cards.ord
-FROM revlog LEFT JOIN first_answers ON first_cid = cid
+FROM revlog LEFT JOIN {first_answers} ON first_cid = cid
 LEFT JOIN cards ON cards.id = cid LEFT JOIN notes ON notes.id = cards.nid {lim}
 ORDER BY revlog.id"""
         elif with_effort:
             cmd = f"""\
-{first_answers}
 SELECT {study_day_sql("id / 1000", self._offset)}
 AS day, COUNT(), COALESCE(time, 0) AS duration, id = first_id AS is_first,
 CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl, COALESCE(factor, 0) AS factor
-FROM revlog LEFT JOIN first_answers ON first_cid = cid {lim}
+FROM revlog LEFT JOIN {first_answers} ON first_cid = cid {lim}
 GROUP BY day, duration, is_first, last_ivl, factor
 ORDER BY day, duration, is_first, last_ivl, factor"""
         else:

@@ -320,6 +320,7 @@ def invoke_snanki(parent: Optional[QWidget] = None):
     except AttributeError:
         day_cutoff = mw.col.sched.dayCutoff
 
+    # WARNING: keep the leading SELECT (see ActivityReporter.set_collection).
     done_today = mw.col.db.scalar(
         """select count() from revlog where id > ?""",
         (day_cutoff - 86400) * 1000,
