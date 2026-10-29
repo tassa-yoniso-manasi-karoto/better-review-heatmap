@@ -283,8 +283,7 @@ class HeatmapRenderer:
                     day, with_durations=True, deck_id=deck_id,
                 ), deck_id,
             ):
-                self._config["synced"] = conf
-                self._config.save("synced", profile_unload=True)
+                self._save_automatic_references(conf)
             reference = saved_reference(conf, deck_id)
             today = self._reporter._today
             needs_selection = reference is None and legacy_reference(conf, deck_id) is None
@@ -312,10 +311,18 @@ class HeatmapRenderer:
                         references = {}
                     references[baseline_key(conf, deck_id)] = selected
                     conf["activity_baselines"] = references
-                    self._config["synced"] = conf
-                    # Persist only the reference/settings. Avoid a recursive UI reset.
-                    self._config.save("synced", profile_unload=True)
+                    self._save_automatic_references(conf)
         return activity_levels()
+
+    def _save_automatic_references(self, conf: dict):
+        self._config["synced"] = conf
+        # Any quiet save clears Anki's redo stack. Right after an undo, keep
+        # the reference in memory only; it is saved once Redo is gone (a
+        # render after the next settings change, or at profile close).
+        if self._mw.col.undo_status().redo:
+            return
+        # Persist only the reference/settings. Avoid a recursive UI reset.
+        self._config.save("synced", profile_unload=True)
 
     def _get_css_classes(self, view: HeatmapView, deck_id: Optional[int] = None) -> List[str]:
         conf = self._config["synced"]
@@ -372,14 +379,14 @@ class HeatmapRenderer:
         context = json.dumps([
             self._progress_session, today, baseline_key(conf),
             conf.get("activity_scale"), reference["day"] if reference else None,
-            anchor, self._config["local"].get("baseline_gradient"),
+            anchor, self._config["synced"].get("baseline_gradient"),
         ], sort_keys=True)
         progress = {
             "context": sha256(context.encode("utf-8")).hexdigest(),
             "percent": 100 * value / anchor,
             "color": baseline_color(
                 value, reference, reference_day=today == int(reference["day"]),
-                gradient=self._config["local"].get("baseline_gradient"),
+                gradient=self._config["synced"].get("baseline_gradient"),
             ),
         }
         return progress
@@ -454,7 +461,7 @@ class HeatmapRenderer:
             if reference is not None:
                 options["dayColors"][day] = baseline_color(
                     value, reference, reference_day=day == int(reference["day"]),
-                    gradient=self._config["local"].get("baseline_gradient"),
+                    gradient=self._config["synced"].get("baseline_gradient"),
                 )
                 activity[day] = baseline_color_level(
                     value, reference, reference_day=day == int(reference["day"])

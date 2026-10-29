@@ -60,7 +60,7 @@ class Config(dict):
     def all(self):
         return self
 
-    def load(self):
+    def load(self, storage_name=None):
         pass
 
     def save(self, storage=None, **kwargs):
@@ -74,6 +74,9 @@ def setup(addon_modules):
     # Most tests exercise the classic workload family; experimental measures
     # are selected explicitly where they are under test.
     conf["synced"]["activity_metric"] = "workload"
+    # As after the first load in Anki: the palette has moved into the synced
+    # settings, so later migrations find nothing to add.
+    addon_modules.config.ensure_activity_defaults(conf)
     decks = SimpleNamespace(
         all=lambda: [{"id": 1}, {"id": 2}],
         children=lambda did: [],
@@ -84,6 +87,7 @@ def setup(addon_modules):
     col = SimpleNamespace(
         db=db, decks=decks, crt=TODAY - 100 * 86400, conf={"rollover": 4},
         mod=1, v3_scheduler=lambda: True, sched=SimpleNamespace(today=100),
+        undo_status=lambda: SimpleNamespace(undo="", redo=""),
     )
     class Reporter(addon_modules.activity.ActivityReporter):
         @property
@@ -487,6 +491,20 @@ def test_baseline_stays_stable_between_refreshes_and_adaptive_never_uses_it(setu
     assert len(setup.conf.saves) == 1
 
 
+def test_automatic_reference_waits_while_anki_offers_redo(setup):
+    for age in range(1, 9):
+        add_review(setup, TODAY - age * 86400, milliseconds=age * 60000)
+    renderer = make_renderer(setup)
+    setup.conf["synced"].update(activity_metric="time", activity_scale="baseline")
+    # The redraw right after an undo: a quiet save would delete the redo step.
+    setup.col.undo_status = lambda: SimpleNamespace(undo="", redo="Change Heatmap Measure")
+    levels = renderer._activity_legend([])
+    assert setup.conf.saves == []
+    assert renderer._baseline_reference()["source"] == "automatic"
+    assert renderer._activity_legend([]) == levels
+    assert setup.conf.saves == []
+
+
 def test_automatic_reference_refreshes_after_30_days_without_using_today(setup, monkeypatch):
     from review_heatmap.metrics import baseline_key, saved_reference
 
@@ -746,7 +764,7 @@ def test_adaptive_uses_included_active_history_and_obeys_date_limits(setup):
     assert "rh-baseline" not in renderer._get_css_classes(setup.modules.renderer.HeatmapView.deckbrowser)
     # Adaptive ignores the goal gradient and follows the chosen original theme.
     before = copy.deepcopy(options["dayColors"])
-    setup.conf["local"]["baseline_gradient"]["above"][0]["hsl"] = [0, 100, 50]
+    setup.conf["synced"]["baseline_gradient"]["above"][0]["hsl"] = [0, 100, 50]
     html = renderer._generate_heatmap_elm(report, renderer._activity_legend([]), False)
     assert json.loads(re.search(r"new ReviewHeatmap\((.+)\);", html)[1])["dayColors"] == before
     conf["colors"] = "ice"
@@ -785,6 +803,20 @@ def test_cache_expires_on_day_rollover_or_configuration_change(setup, monkeypatc
     renderer.render(view, limfcst=0)
     monkeypatch.setattr(type(setup.reporter), "_today", property(lambda self: TODAY + 86400))
     assert not renderer._cache_still_valid(view, None, 0, False)
+
+
+def test_old_palette_gains_its_third_point_then_moves_to_the_collection(addon_modules):
+    conf = Config(addon_modules.config.config_defaults)
+    shipped = conf["local"]["baseline_gradient_default"]
+    custom = copy.deepcopy(shipped)
+    custom["above"] = [custom["above"][0], dict(custom["above"][1], workload_ratio=3)]
+    conf["local"].update(baseline_gradient_version=1, baseline_gradient=custom)
+    addon_modules.config.save_activity_defaults(conf)
+    palette = conf["synced"]["baseline_gradient"]
+    assert [point["workload_ratio"] for point in palette["above"]] == [1, 2, 3]
+    assert palette["above"][2] == shipped["above"][2]
+    assert "baseline_gradient" not in conf["local"]
+    assert conf["local"]["baseline_gradient_version"] == 2
 
 
 def test_additive_settings_migration_preserves_existing_data(addon_modules):

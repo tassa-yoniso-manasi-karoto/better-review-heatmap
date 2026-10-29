@@ -25,6 +25,14 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
+## [2.3.0] - Unreleased
+
+### Added
+- Heatmap settings changes can be undone and redone from Anki's Edit menu: palette, measure, color scale, reference day, calibration, exclusions, color scheme and calendar mode
+
+### Changed
+- The palette is now saved in each profile and syncs with your collection; a customized palette moves there automatically and leaves the add-on's Config window
+
 ## [2.2.1] - 2026-10-29
 
 ### Fixed

@@ -48,6 +48,7 @@ from .metrics import metric_name, reference_scope
 from .gui.contrib import invoke_contributions_dialog
 from .gui.extra import invoke_snanki
 from .gui.options import invoke_options_dialog
+from .undo import CALENDAR_MODE, COLOR_SCHEME, DISMISS_REMINDER, commit_synced_change
 
 if TYPE_CHECKING:
     from .libaddon.anki.configmanager import ConfigManager
@@ -198,14 +199,16 @@ class _CommandHandler:
             deck_id = self._reference_deck(payload)
         except ValueError:
             return False
-        conf = self._config["synced"]
-        conf.setdefault("activity_reference_reminders_dismissed", {})[
-            reference_scope(deck_id)
-        ] = True
-        self._config["synced"] = conf
+        scope = reference_scope(deck_id)
+
+        def dismiss(conf):
+            conf.setdefault("activity_reference_reminders_dismissed", {})[scope] = True
+            return conf
+
         # The caller removes this banner; other views pick up the saved state
         # on their next render without resetting the user's current page.
-        self._config.save("synced", profile_unload=True)
+        # Undoing the step brings the banner back through the reload.
+        commit_synced_change(self._config, DISMISS_REMINDER, dismiss, refresh=False)
         return True
 
     @_register_command_handler("mousehint")
@@ -263,20 +266,26 @@ class _CommandHandler:
 
     @_register_command_handler("modeswitch")
     def cycle_hm_modes(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:
-        modes = list(heatmap_modes.keys())
-        cur_idx = modes.index(self._config["synced"]["mode"])
-        new_idx = (cur_idx + 1) % len(modes)
-        self._config["synced"]["mode"] = modes[new_idx]
-        self._config.save()
+        def next_mode(conf):
+            modes = list(heatmap_modes.keys())
+            cur_idx = modes.index(conf["mode"])
+            new_idx = (cur_idx + 1) % len(modes)
+            conf["mode"] = modes[new_idx]
+            return conf
+
+        commit_synced_change(self._config, CALENDAR_MODE, next_mode)
 
     @_register_command_handler("themeswitch")
     def cycle_hm_themes(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:
-        themes = list(heatmap_colors.keys())
-        color = self._config["synced"]["colors"]
-        cur_idx = themes.index(color) if color in themes else -1
-        new_idx = (cur_idx + 1) % len(themes)
-        self._config["synced"]["colors"] = themes[new_idx]
-        self._config.save()
+        def next_theme(conf):
+            themes = list(heatmap_colors.keys())
+            color = conf["colors"]
+            cur_idx = themes.index(color) if color in themes else -1
+            new_idx = (cur_idx + 1) % len(themes)
+            conf["colors"] = themes[new_idx]
+            return conf
+
+        commit_synced_change(self._config, COLOR_SCHEME, next_theme)
 
     @_register_command_handler("snanki")
     def invoke_snanki(self, payload: Any, context: SUPPORTED_CONTEXT_TYPES) -> None:

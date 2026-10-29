@@ -69,7 +69,11 @@ def test_settings_cancel_and_accept_keep_reference_changes_local(setup, options_
     assert conf["synced"]["activity_metric"] == "workload"
     assert conf["profile"]["show_today_progress"] is False
     assert conf["synced"]["activity_baselines"][baseline_key(conf["synced"])] == reference
-    assert len(conf.saves) == 1
+    # One undo step for the synced edits; per-device settings save apart.
+    assert conf.saves == [
+        ("synced", {"profile_unload": True, "undo": "Change Heatmap Options"}),
+        ("profile", {}),
+    ]
 
 
 def test_reference_picker_rejects_empty_days_and_shares_workload_day(
@@ -228,7 +232,13 @@ def test_reference_bridge_uses_explicit_scope_and_saves_dismissal(
     assert calls[-1]["reference_deck_id"] is None
     assert handler("dismissreference", "deck:2", parent) is True
     assert setup.conf["synced"]["activity_reference_reminders_dismissed"] == {"deck:2": True}
-    assert setup.conf.saves == [("synced", {"profile_unload": True})]
+    # An undoable step, saved quietly: the page removes the banner itself.
+    assert setup.conf.saves == [
+        ("synced", {"profile_unload": True, "undo": "Dismiss Heatmap Reference Reminder"}),
+    ]
+    # Dismissing again changes nothing, so it records no empty step, but the
+    # page still gets True and removes the banner.
+    assert handler("dismissreference", "deck:2", parent) is True
     assert handler("dismissreference", "deck:999", parent) is False
     assert handler("dismissreference", "deck:invalid", parent) is False
     assert handler("dismissreference", None, parent) is False
@@ -513,3 +523,137 @@ def test_calibration_popup_stores_only_manual_changes_and_respects_cancel(
     dialog.accept()
     assert setup.conf["synced"]["concentration_calibration"] == {"max_bonus": 0.5}
     assert setup.conf["synced"]["fsrs_calibration"] == {"maturity_exponent": 0.5}
+
+
+def test_options_ok_records_one_labelled_step_for_real_edits_only(setup, options_module):
+    module, app = options_module
+    from aqt.qt import QWidget
+
+    parent = QWidget()
+    parent.col = setup.col
+    conf = setup.conf
+    stored = copy.deepcopy(conf["synced"])
+    # OK without edits: no undo step and no synced write, which would clear
+    # Anki's Redo. Switching the measure away and back is no edit either.
+    module.RevHmOptions(conf, parent).accept()
+    dialog = module.RevHmOptions(conf, parent)
+    metric = dialog.selActivityMetric
+    metric.setCurrentIndex(metric.findData("fsrs"))
+    metric.setCurrentIndex(metric.findData("workload"))
+    dialog.accept()
+    assert conf.saves == [("profile", {}), ("profile", {})]
+    assert conf["synced"] == stored
+
+    # A single edit names its step; values saved meanwhile elsewhere survive.
+    dialog = module.RevHmOptions(conf, parent)
+    dialog.selActivityMetric.setCurrentIndex(dialog.selActivityMetric.findData("fsrs"))
+    conf["synced"]["activity_baselines"]["saved meanwhile"] = {"day": TODAY}
+    dialog.accept()
+    assert conf.saves[2:] == [
+        ("synced", {"profile_unload": True, "undo": "Change Heatmap Measure"}),
+        ("profile", {}),
+    ]
+    assert conf["synced"]["activity_metric"] == "fsrs"
+    assert conf["synced"]["activity_baselines"]["saved meanwhile"] == {"day": TODAY}
+
+
+def test_options_ok_names_reference_steps_after_the_users_action(
+    setup, options_module, monkeypatch,
+):
+    module, app = options_module
+    from aqt.qt import QWidget
+    from review_heatmap.metrics import saved_reference
+
+    monkeypatch.setattr(module.ActivityReporter, "_today", property(lambda self: TODAY))
+    setup.db.connection.execute("INSERT INTO cards (id, did, due, queue) VALUES (1, 1, 0, 2)")
+    for age in range(1, 11):
+        add_review(setup, TODAY - age * 86400, cid=1, milliseconds=age * 60000)
+    setup.conf["synced"]["activity_scale"] = "baseline"
+    parent = QWidget()
+    parent.col = setup.col
+
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.btnAutoReference.click()
+    dialog.accept()
+    assert setup.conf.saves[-2][1]["undo"] == "Use Automatic Heatmap Reference Day"
+    assert saved_reference(setup.conf["synced"])["source"] == "automatic"
+
+    # Approving the displayed automatic day makes it a manual pick.
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog.dateReference.calendarWidget().clicked.emit(dialog.dateReference.date())
+    dialog.accept()
+    assert setup.conf.saves[-2][1]["undo"] == "Set Heatmap Reference Day"
+    assert saved_reference(setup.conf["synced"])["source"] == "selected"
+
+
+def test_options_ok_leaves_a_palette_edited_meanwhile_alone(setup, options_module, monkeypatch):
+    module, app = options_module
+    from aqt.qt import QWidget
+
+    palette = copy.deepcopy(setup.conf["synced"]["baseline_gradient"])
+    palette["below"][0]["hsl"] = [200, 50, 50]
+
+    def commit_palette(dialog):
+        # What the gradient dialog does on closing: its own undo step.
+        dialog.config["synced"] = dict(dialog.config["synced"], baseline_gradient=palette)
+
+    monkeypatch.setattr(module.GradientDialog, "exec", commit_palette)
+    setup.conf["synced"]["activity_scale"] = "baseline"
+    parent = QWidget()
+    parent.col = setup.col
+    dialog = module.RevHmOptions(setup.conf, parent)
+    dialog._onEditGradient()
+    dialog.accept()
+    assert setup.conf["synced"]["baseline_gradient"] == palette
+    assert setup.conf.saves == [("profile", {})]
+
+
+def test_palette_dialog_session_is_one_undo_step(setup, options_module):
+    from review_heatmap.gui.gradient import GradientDialog
+
+    conf = setup.conf
+    # Opening and closing records nothing, although normalization reshapes
+    # the stored palette.
+    GradientDialog(conf).done(0)
+    assert conf.saves == []
+
+    dialog = GradientDialog(conf)
+    dialog.gradient["below"][0]["opacity"] = 55
+    dialog._save()
+    assert conf.saves == [("synced", {})]  # live preview
+    dialog.done(0)
+    # Back to the palette stored at opening, then one step to the final one.
+    assert conf.saves[1:] == [
+        ("synced", {"profile_unload": True}),
+        ("synced", {"profile_unload": False, "undo": "Change Heatmap Gradient"}),
+    ]
+    assert conf["synced"]["baseline_gradient"]["below"][0]["opacity"] == 55
+    dialog.done(0)
+    assert len(conf.saves) == 3
+
+    # Edits reverted before closing record nothing.
+    dialog = GradientDialog(conf)
+    point = dialog.gradient["below"][0]
+    previous = point["opacity"]
+    point["opacity"] = 10
+    dialog._save()
+    point["opacity"] = previous
+    dialog._save()
+    dialog.done(0)
+    assert conf.saves[3:] == [("synced", {}), ("synced", {})]
+
+
+def test_toolbar_shortcuts_are_undoable_steps(setup, options_module):
+    from aqt.qt import QWidget
+    from types import SimpleNamespace
+
+    bridge = importlib.import_module("review_heatmap.web_bridge")
+    handler = bridge._CommandHandler(SimpleNamespace(col=setup.col), setup.conf)
+    parent = QWidget()
+    handler("modeswitch", None, parent)
+    handler("themeswitch", None, parent)
+    assert (setup.conf["synced"]["mode"], setup.conf["synced"]["colors"]) == ("months", "olive")
+    assert setup.conf.saves == [
+        ("synced", {"profile_unload": False, "undo": "Change Heatmap Calendar Mode"}),
+        ("synced", {"profile_unload": False, "undo": "Change Heatmap Color Scheme"}),
+    ]

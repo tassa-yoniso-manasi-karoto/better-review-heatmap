@@ -11,6 +11,7 @@ from aqt.qt import (
 )
 
 from ..metrics import DEFAULT_BASELINE_GRADIENT, gradient_stops, gradient_opacity, point_opacity
+from ..undo import GRADIENT, commit_synced_change
 
 
 class GradientDialog(QDialog):
@@ -18,9 +19,11 @@ class GradientDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle("Heatmap gradient colors")
-        self.gradient = deepcopy(
-            config["local"].get("baseline_gradient", DEFAULT_BASELINE_GRADIENT)
+        # The palette lives in the collection so that Anki can undo it.
+        self._stored = deepcopy(
+            config["synced"].get("baseline_gradient", DEFAULT_BASELINE_GRADIENT)
         )
+        self.gradient = deepcopy(self._stored)
         # Normalize malformed JSON using the same fallback as the renderer.
         self.gradient = {
             side: [
@@ -30,6 +33,9 @@ class GradientDialog(QDialog):
             ]
             for side in ("below", "above")
         }
+        # Normalization alone must not count as an edit.
+        self._initial = deepcopy(self.gradient)
+        self._previewed = False
         layout = QVBoxLayout(self)
         self.groups = QVBoxLayout()
         layout.addLayout(self.groups)
@@ -102,10 +108,27 @@ class GradientDialog(QDialog):
             self.groups.addWidget(group)
 
     def _save(self):
-        local = deepcopy(self.config["local"])
-        local["baseline_gradient"] = deepcopy(self.gradient)
-        self.config["local"] = local
-        self.config.save("local")
+        # Live preview: a plain save keeps Anki's undo history and redraws the
+        # heatmap; done() turns the whole session into one undo step.
+        synced = deepcopy(self.config["synced"])
+        synced["baseline_gradient"] = deepcopy(self.gradient)
+        self.config["synced"] = synced
+        self.config.save("synced")
+        self._previewed = True
+
+    def done(self, result):
+        # Close, Esc and the window's close button all end here. Undoing the
+        # step returns to the palette stored when the dialog opened, however
+        # many previews happened; edits that were reverted record nothing.
+        if self._previewed and self.gradient != self._initial:
+            gradient = deepcopy(self.gradient)
+            commit_synced_change(
+                self.config, GRADIENT,
+                lambda synced: dict(synced, baseline_gradient=gradient),
+                before={"baseline_gradient": self._stored},
+            )
+        self._previewed = False
+        super().done(result)
 
     def _set_opacity(self, point, value, button):
         point["opacity"] = value

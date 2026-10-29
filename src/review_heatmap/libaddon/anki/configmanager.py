@@ -231,7 +231,8 @@ class ConfigManager(object):
             self._config[name] = getter()
             self._storages[name]["loaded"] = True
 
-    def save(self, storage_name=None, profile_unload=False, reset=False):
+    def save(self, storage_name=None, profile_unload=False, reset=False,
+             undo=None):
         """
         Write config values to their corresponding storages.
 
@@ -244,6 +245,8 @@ class ConfigManager(object):
                                      unload
             reset {bool} -- whether to reset mw upon save (overwrites
                             reset_req instance attribute)
+            undo {str} -- record the synced write as one Edit > Undo step
+                          with this label (default: {None})
         """
         if storage_name:
             storages = [storage_name]  # limit to specific storage
@@ -255,12 +258,15 @@ class ConfigManager(object):
             saver = getattr(self, "_save" + name.capitalize())
             if name not in self._config:
                 self.load(storage_name=name)
-            saver(self._config[name])
+            if name == "synced":
+                saver(self._config[name], undo=undo)
+            else:
+                saver(self._config[name])
             self._storages[name]["dirty"] = False
         
-        self.afterSave(reset=reset, profile_unload=profile_unload)
+        self.afterSave(reset=reset, profile_unload=profile_unload, undo=undo)
 
-    def afterSave(self, reset=False, profile_unload=False):
+    def afterSave(self, reset=False, profile_unload=False, undo=None):
         """Trigger actions that are supposed to be run after saving config
         
         Keyword Arguments:
@@ -268,9 +274,14 @@ class ConfigManager(object):
                                      unload
             reset {bool} -- whether to reset mw upon save (overwrites
                             reset_req instance attribute)
+            undo {str} -- label of the undo step the save recorded, if any
         """
         if (self._reset_req or reset) and not profile_unload:
             self.mw.reset()
+        elif undo:
+            # mw.reset() refreshes the Edit menu; a quiet save must do it here
+            # or the menu would not offer the new undo step.
+            self.mw.update_undo_actions()
 
         if not profile_unload:
             runHook("config_saved_{}".format(self._conf_key))
@@ -545,20 +556,31 @@ class ConfigManager(object):
         """
         return dict(self._getStorageObj("synced")[self._conf_key])
 
-    def _saveSynced(self, config: dict):
+    def _saveSynced(self, config: dict, undo=None):
         """
         Save synced storage config to Anki collection object
 
         Arguments:
             dict -- Dictionary of synced config values
+
+        Keyword Arguments:
+            undo {str} -- label of the Edit > Undo step to record, if any
         """
         # WARNING: never write synced config by assigning into mw.col.conf, or
         # by mutating a dict read from it (Anki writes such dicts back). That
         # write path silently discards Anki's undo and redo history, so Edit >
-        # Undo stops working. col.set_config() keeps the history.
+        # Undo stops working. col.set_config() keeps the history. A write
+        # without undo still clears Redo, like any change in Anki; see
+        # docs/anki-undo-redo.md before adding writes.
         self._getStorageObj("synced")
-        self.mw.col.set_config(self._conf_key, dict(config))
-        self.mw.col.setMod()
+        col = self.mw.col
+        if undo:
+            step = col.add_custom_undo_entry(undo)
+            col.set_config(self._conf_key, dict(config), undoable=True)
+            col.merge_undo_entries(step)
+        else:
+            col.set_config(self._conf_key, dict(config))
+        col.setMod()
 
     # Profile storage
     ######################################################################

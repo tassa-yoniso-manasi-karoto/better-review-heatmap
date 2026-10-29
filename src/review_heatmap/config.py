@@ -34,13 +34,13 @@ Handles add-on configuration
 """
 
 from copy import deepcopy
-from typing import Dict
+from typing import Dict, Optional, Set
 
 from aqt import mw
 
 from .consts import ADDON
 from .libaddon.anki.configmanager import ConfigManager
-from .metrics import DEFAULT_METRIC
+from .metrics import DEFAULT_BASELINE_GRADIENT, DEFAULT_METRIC
 
 __all__ = ["heatmap_colors", "heatmap_modes", "config_defaults", "config"]
 
@@ -110,17 +110,23 @@ config_defaults: Dict[str, Dict] = {
 # The tooltip note about the mouse buttons appears on this many distinct days.
 MOUSE_HINT_DAYS = 10
 
+# Collection config key holding the synced settings; Anki can undo changes to
+# it (see docs/anki-undo-redo.md).
+CONF_KEY = "heatmap"
+
 config: ConfigManager = ConfigManager(
-    mw, config_dict=config_defaults, conf_key="heatmap", reset_req=True
+    mw, config_dict=config_defaults, conf_key=CONF_KEY, reset_req=True
 )
 
 
-def ensure_activity_defaults(manager: ConfigManager) -> None:
+def ensure_activity_defaults(manager: ConfigManager) -> Set[str]:
     """Add new settings without replacing existing configuration or history.
 
     Older installations may carry the same version string, so this additive
-    migration intentionally does not depend on the add-on version.
+    migration intentionally does not depend on the add-on version. Returns
+    the names of the storages it changed.
     """
+    changed_storages = set()
     for storage, keys in (
         ("synced", ("activity_metric", "activity_scale", "activity_reference_date",
                     "activity_baselines", "custom_time_weight", "fsrs_calibration",
@@ -136,24 +142,71 @@ def ensure_activity_defaults(manager: ConfigManager) -> None:
                 changed = True
         if changed:
             manager[storage] = values
+            changed_storages.add(storage)
 
     synced = manager["synced"]
     if synced.get("colors") == "ice":
         synced["colors"] = "lime"
         manager["synced"] = synced
+        changed_storages.add("synced")
     if synced.get("activity_scale") == "fixed":
         synced["activity_scale"] = "adaptive"
         manager["synced"] = synced
+        changed_storages.add("synced")
 
     local = manager["local"]
     if local.get("baseline_gradient_version", 1) < 2:
-        defaults = manager.defaults["local"]
+        shipped = manager.defaults["local"]["baseline_gradient_default"]
+        # baseline_gradient is the palette saved before 2.3.0, if any.
         for key in ("baseline_gradient_default", "baseline_gradient"):
-            gradient = deepcopy(local.get(key, defaults[key]))
+            if key not in local:
+                continue
+            gradient = deepcopy(local[key])
             above = gradient.get("above", [])
             if len(above) == 2 and float(above[1].get("workload_ratio", 0)) == 3:
                 above[1]["workload_ratio"] = 2
-                above.append(deepcopy(defaults[key]["above"][2]))
+                above.append(deepcopy(shipped["above"][2]))
             local[key] = gradient
         local["baseline_gradient_version"] = 2
         manager["local"] = local
+        changed_storages.add("local")
+
+    # The palette moved from meta.json into the collection so that Anki can
+    # undo its edits; save_activity_defaults then removes the old copy.
+    # WARNING: never give baseline_gradient a synced default. libaddon merges
+    # the defaults into the stored settings after every add-on update, which
+    # would skip this copy and silently drop the user's palette.
+    if "baseline_gradient" not in synced:
+        synced["baseline_gradient"] = deepcopy(
+            local.get("baseline_gradient", DEFAULT_BASELINE_GRADIENT)
+        )
+        manager["synced"] = synced
+        changed_storages.add("synced")
+    return changed_storages
+
+
+def save_activity_defaults(manager: ConfigManager) -> None:
+    """Add missing settings and save them at once, quietly.
+
+    The collection must match the cache before any undo step exists: the
+    reload after an undo then finds nothing to write, and a write there would
+    delete the redo step the undo just created.
+    """
+    for storage in ensure_activity_defaults(manager):
+        manager.save(storage, profile_unload=True)
+    # Only once the palette is saved in the collection, drop the copy from
+    # before 2.3.0, so the Config window shows no palette without effect.
+    # meta.json is shared by the computer's profiles: profiles opened later
+    # get the default palette (one profile per computer is assumed).
+    local = manager["local"]
+    if "baseline_gradient" in local and "baseline_gradient" in manager["synced"]:
+        local = dict(local)
+        del local["baseline_gradient"]
+        manager["local"] = local
+        manager.save("local", profile_unload=True)
+
+
+def load_config(manager: ConfigManager, storage_name: Optional[str] = None) -> None:
+    """(Re)load settings from their storages, then save missing defaults."""
+    manager.load(storage_name=storage_name)
+    save_activity_defaults(manager)

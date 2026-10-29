@@ -51,7 +51,9 @@ from aqt.theme import theme_manager
 from aqt.utils import showInfo
 
 from ..activity import ActivityReporter
-from ..config import config, ensure_activity_defaults, heatmap_colors, heatmap_modes
+from ..config import (
+    config, heatmap_colors, heatmap_modes, load_config, save_activity_defaults,
+)
 from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
@@ -63,6 +65,7 @@ from ..metrics import (
 from ..libaddon.gui.dialog_options import OptionsDialog
 from ..libaddon.platform import PLATFORM
 from ..times import daystart_epoch
+from ..undo import commit_synced_change, describe_change, three_way_patch
 from .forms import options as qtform_options
 from .gradient import GradientDialog
 
@@ -338,7 +341,9 @@ class RevHmOptions(OptionsDialog):
         self.mw = mw
         self._activity_ready = False
         self._initial_reference_deck = reference_deck_id
-        ensure_activity_defaults(config)
+        # Source of the reference day picked or recalculated here, if any.
+        self._reference_source = None
+        save_activity_defaults(config)
         super(RevHmOptions, self).__init__(
             self._mapped_widgets,
             config,
@@ -350,6 +355,9 @@ class RevHmOptions(OptionsDialog):
         self._data = deepcopy(self._data)
         self._activity_ready = True
         self._refreshActivitySettings()
+        # Taken after the dialog's own clean-up and migrations, so that OK
+        # applies only what the user edited (see _onAccept).
+        self._saved_synced = deepcopy(self.getData()["synced"])
         if focus_reference:
             self.form.tabWidget.setCurrentIndex(1)
             self.dateReference.setFocus()
@@ -602,6 +610,7 @@ class RevHmOptions(OptionsDialog):
 
     def _setReference(self, conf, reference):
         set_reference(conf, reference, self.selReferenceScope.currentData())
+        self._reference_source = reference.get("source")
         self._refreshActivitySettings()
 
     def _onEditCustomWeights(self):
@@ -646,9 +655,22 @@ class RevHmOptions(OptionsDialog):
                 )
 
     def _onAccept(self):
-        for storage, values in self.getData().items():
-            self.config[storage] = values
-        self.config.save()
+        data = self.getData()
+        saved, edited = self._saved_synced, data["synced"]
+        # One undo step for the synced edits, applied onto the stored values
+        # so changes saved meanwhile survive. Derived data alone (reference
+        # migrations) gets no step and no write: the renderer recomputes it,
+        # and a write would clear Anki's Redo.
+        label = describe_change(saved, edited, self._reference_source)
+        if label:
+            commit_synced_change(
+                self.config, label,
+                lambda stored: three_way_patch(stored, saved, edited),
+                refresh=False,
+            )
+        # Per-device settings are not undoable. This save also redraws.
+        self.config["profile"] = data["profile"]
+        self.config.save("profile")
 
     def restoreData(self):
         super().restoreData()
@@ -676,10 +698,9 @@ class RevHmOptions(OptionsDialog):
     # Actions:
 
     def _onEditGradient(self):
+        # The gradient dialog records its own undo step. OK cannot revert it:
+        # only the edits made in this dialog are applied (see _onAccept).
         GradientDialog(self.config, self).exec()
-        # The options dialog keeps a tentative copy of all settings. Refresh
-        # its local copy so pressing OK does not undo palette changes.
-        self._data["local"] = deepcopy(self.config["local"])
 
     # Deck list buttons
     # TODO: Migrate to custom widget
@@ -779,7 +800,8 @@ def invoke_options_dialog(parent: Optional[QWidget] = None, reference_deck_id=No
 
 
 def initialize_options():
-    # Keep Anki's Config button available for the editable gradient JSON.
+    # Keep Anki's Config button for the JSON settings (Restore Defaults
+    # palette). The active palette lives in the collection since 2.3.0.
     config.setConfigAction(None)
     # Set up menu entry:
     options_action = QAction("🟩 Better Review &Heatmap Options...", mw)
@@ -792,8 +814,7 @@ def initialize_options():
 
 
 def _on_profile_open():
-    config.load()
-    ensure_activity_defaults(config)
+    load_config(config)
     collection = mw.col
     if config["profile"]["time_notice_seen"]:
         return
