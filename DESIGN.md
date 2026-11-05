@@ -286,6 +286,12 @@ felt effort, which is why ratings are collected at all.
 | `tiring` | Evening, on leaving the reviewer | Judges every formula, decides the gate |
 | `learned` | Evening, on leaving the reviewer | Reported beside `tiring`, outside the gate |
 
+Reviews done elsewhere can join the same data through sealed recording files in the
+media folder, which sync like any media. Fit resolves their note keys and matches
+them to the synced revlog, which alone supplies the answer button. Time spent in a
+survey that sits inside a card's timer is removed for fitting only: heatmap scores
+keep it.
+
 ## Calibrated effort
 
 Each answer's credit is fitted, and the score sums it like any other measure:

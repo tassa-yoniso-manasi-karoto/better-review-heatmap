@@ -270,7 +270,7 @@ Copy Weights as JSON copies the model body for shipping. It says `"status": "loc
 
 The report appears in the tab, top to bottom:
 
-**Counts.** Cost ratings here exclude undone answers, so this can read lower than the tab's live count. `unlogged` counts revlog answers since recording began with no `ans` event: phone reviews, or answers while recording was off. `undone` counts `ans` events whose revlog row is gone. Check Cost use: if nearly everything is on one or two labels, the scale isn't being used.
+**Counts.** Cost ratings here exclude undone answers, so this can read lower than the tab's live count. `unlogged` counts revlog answers since recording began with no `ans` event: phone reviews without recording files, or answers while recording was off. `undone` counts `ans` events whose revlog row is gone. Check Cost use: if nearly everything is on one or two labels, the scale isn't being used.
 
 **Fit.** `sigma` is the noise in your ratings, in log units: smaller means steadier. `DID NOT CONVERGE` means the rest of the report can't be trusted, and the gate fails.
 
@@ -376,7 +376,35 @@ Then turn devmode on in the real profile and follow the Runbook.
 
 ## Known limits
 
-- The recorder sees this desktop only. Phone reviews count as unlogged, though they still score through the revlog.
+- The recorder sees this desktop only. Reviews from elsewhere join through recording files, see below. Without them they count as unlogged, though they still score through the revlog.
 - Split timing and sharpness can't score historic days or public users. They explain the fit; only revlog-derived inputs score.
 - The weights describe one person. Ordering transferred to an unseen note type in the research, level did not.
 - Ratings measure felt cost, not truth.
+
+## Recordings from other devices
+
+The recorder only runs on desktop. Reviews done elsewhere can reach Fit as recording files, which a separate tool has to write: none ships with the add-on. Fit reads every file named `_brh_cal_*` in the media folder, so media sync carries them. Check Phone in the tab shows matched answers, front and back medians, and key failures, without waiting for 300 cost ratings. Their raw cost ratings count towards that threshold.
+
+Write each file once and never touch it again. Media sync doesn't notice a file growing in place, and re-uploads a whole file on any change.
+
+Each file is JSON lines, beginning with a `meta` event. Every event has `v` (1), a unique `id` for deduplication, `t` and `ts` (ms). Card events also carry `card`, as `Note type/Template`, and `key`, which is the note id or the raw text of the note's first field. A key that doesn't name exactly one card is dropped and counted.
+
+| Event | Fields |
+| --- | --- |
+| `q`, `a` | Question or answer shown |
+| `size` | `side`, `chars`, `media` |
+| `focus` | `state`, `hidden` or `visible` |
+| `audio` | `kind` `replay`, `front` |
+| `state` | `phase`, `before` or `after`, with card fields and FSRS memory |
+| `offer` | `cost` with `rotation`, `show_at_ms`, `p_base`, `p_long`, then `why_p` and `why`. Or `sharpness` |
+| `due` | A delayed cost offer reached the card |
+| `prompt` | `kind` `answer`, `sharpness` or `day`, with `wording_v`, `answers`, `rt_ms`, `skipped`, `panel_ms`. `day` adds `day_answers` and `note` |
+
+Files never hold the answer button. Fit matches each interval ending in a real revlog answer to the card's events, within one hour: a redraw keeps the first question and flip, and another card or a reopened app starts a new presentation. Events waiting for a revlog sync are picked up by a later Fit.
+
+- An offer with no matching answer counts as skipped, once it could have been seen: a delayed offer needs the answer to have run that long.
+- `why` is kept only for a real Again on a review card, since the survey comes before the button.
+- `panel_ms` is removed from that answer's duration for fitting only. Heatmap scores keep it.
+- The earliest recorded event starts the baseline if it predates desktop's.
+
+Split timing and sharpness remain diagnostics, never scoring inputs. Files are never deleted or rewritten here.

@@ -7,6 +7,7 @@ or Anki's undo history.
 
 import traceback
 from datetime import datetime
+from statistics import median
 
 from aqt.operations import QueryOp
 from aqt.qt import (
@@ -29,7 +30,8 @@ from aqt.utils import openFolder, showWarning, tooltip
 
 from ..activity import ActivityReporter
 from ..calibration import activate_model
-from ..calibration.dataset import revlog_sql
+from ..calibration.dataset import read_dataset, revlog_sql
+from ..calibration.phone import merge_phone, read_files
 from ..calibration.recorder import active_recorder, start_recording, stop_recording
 from ..calibration.report import (
     format_report,
@@ -64,6 +66,7 @@ class CalibrationTab(QWidget):
     def __init__(self, mw, parent=None):
         super().__init__(parent)
         self._mw = mw
+        self._phoneDiagnostics = None
         self._store = Store.for_profile(mw.pm.profileFolder())
         # With the report, this outgrows a small screen.
         content = QWidget()
@@ -95,8 +98,14 @@ class CalibrationTab(QWidget):
         self.btnDataFolder = QPushButton("Open Data Folder", group)
         self.btnDataFolder.clicked.connect(self._onOpenDataFolder)
         buttons.addWidget(self.btnDataFolder)
+        self.btnPhone = QPushButton("Check Phone", group)
+        self.btnPhone.clicked.connect(self._onCheckPhone)
+        buttons.addWidget(self.btnPhone)
         buttons.addStretch(1)
         layout.addLayout(buttons)
+        self.labPhoneDetails = QLabel(group)
+        self.labPhoneDetails.setWordWrap(True)
+        layout.addWidget(self.labPhoneDetails)
         self._layout.addWidget(group)
 
     def _setupPromptSection(self):
@@ -159,9 +168,19 @@ class CalibrationTab(QWidget):
             f"Baseline days left: {baseline_days_left(state, now)}",
             f"Errors: {self._store.error_count()}",
         ]
+        phone = read_files(_media_dir(self._mw.col))
+        diagnostics = self._phoneDiagnostics or (self._report or {}).get("phone", {})
+        self.btnPhone.setEnabled(bool(phone.files))
+        lines.append(f"Phone: {phone.files} files, "
+                     f"{diagnostics.get('unresolved', 'not fitted')} unresolved keys, "
+                     f"{diagnostics.get('ambiguous', 'not fitted')} ambiguous keys")
         self.labRecording.setText("\n".join(lines))
         self.btnRecording.setText("Stop Recording" if recording else "Start Recording")
-        counts = prompt_counts(self._store.read_events("prompt"))
+        counts = prompt_counts([
+            *self._store.read_events("prompt"),
+            *(dict(event, skipped=event.get("skipped", [])) for event in phone.events
+              if event["t"] == "prompt" and isinstance(event.get("answers"), dict)),
+        ])
         skip_rate = counts["skipped"] / counts["prompts"] if counts["prompts"] else 0
         self.labPrompts.setText("\n".join((
             f"Cost ratings: {counts['cost']}/{_COST_RATINGS_GOAL}",
@@ -185,6 +204,36 @@ class CalibrationTab(QWidget):
         self.txtReport.setPlainText(format_report(report) if report else "")
         self.btnUseFit.setEnabled(bool(report))
         self.btnCopyWeights.setEnabled(bool(report))
+
+    def _onCheckPhone(self):
+        offset = ActivityReporter(self._mw.col, config)._offset
+
+        def check(col):
+            files = read_files(_media_dir(col))
+            index = _phone_index(col, {e["card"] for e in files.events if "card" in e})
+            data = merge_phone(files, col.db.all(revlog_sql(offset)), index)
+            logged = read_dataset(data.events, data.rows).logged
+            names = _template_names(col)
+            lines = [f"Phone answers matched: {len(logged)}"]
+            for template in sorted({a.template for a in logged if a.template}):
+                timed = [a for a in logged if a.template == template and a.front_ms is not None]
+                if timed:
+                    front = median(a.front_ms for a in timed) / 1000
+                    back = median(a.back_ms for a in timed) / 1000
+                    lines.append(f"{names.get(template, str(template))}: "
+                                 f"{front:.1f} s front, {back:.1f} s back (medians)")
+            return data.diagnostics, "\n".join(lines)
+
+        def done(result):
+            if sip.isdeleted(self):
+                return
+            self._phoneDiagnostics, details = result
+            self.labPhoneDetails.setText(details)
+            self._refreshRecordingSection()
+
+        QueryOp(parent=self, op=check, success=done).failure(
+            self._onFitFailed
+        ).with_progress("Checking phone recordings").run_in_background()
 
     def _onSettingChanged(self, key, value):
         self._store.update_state(**{key: value})
@@ -220,7 +269,10 @@ class CalibrationTab(QWidget):
 
         def fit(col):
             rows = col.db.all(revlog_sql(offset))
-            return run_fit(self._store, rows, conf, _template_names(col), progress)
+            phone = read_files(_media_dir(col))
+            index = _phone_index(col, {event["card"] for event in phone.events if "card" in event})
+            return run_fit(self._store, rows, conf, _template_names(col), progress,
+                           _media_dir(col), index)
 
         QueryOp(parent=self, op=fit, success=self._onFitDone).failure(
             self._onFitFailed
@@ -231,6 +283,7 @@ class CalibrationTab(QWidget):
         if sip.isdeleted(self):
             return
         self._report = report
+        self._refreshRecordingSection()
         self._refreshFitSection()
 
     def _onFitFailed(self, error):
@@ -263,3 +316,28 @@ def _template_names(col) -> dict:
 
 def _date(epoch_ms: int) -> str:
     return datetime.fromtimestamp(epoch_ms / 1000).strftime("%Y-%m-%d")
+
+
+def _phone_index(col, cards):
+    index = {}
+    for model in col.models.all():
+        for ordinal, template in enumerate(model["tmpls"]):
+            name = f"{model['name']}/{template['name']}"
+            if name not in cards:
+                continue
+            keys = index.setdefault(name, {})
+            rows = col.db.all("""\
+SELECT cards.id, notes.id,
+CASE WHEN instr(notes.flds, char(31)) = 0 THEN notes.flds
+ELSE substr(notes.flds, 1, instr(notes.flds, char(31)) - 1) END
+FROM cards JOIN notes ON notes.id = cards.nid
+WHERE notes.mid = ? AND cards.ord = ?""", model["id"], ordinal)
+            for cid, nid, first in rows:
+                for key in {str(nid), first}:
+                    keys.setdefault(key, set()).add(cid)
+    return index
+
+
+def _media_dir(col):
+    media = getattr(col, "media", None)
+    return media.dir() if media else None

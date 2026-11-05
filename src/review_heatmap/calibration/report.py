@@ -25,6 +25,7 @@ from .fit import (
     OrderedFit, fit_ordered, mean_log_loss, one_sided_t_5_percent, partial_rank_t,
     predict_eta, spearman,
 )
+from .phone import merge_phone, read_files
 from .sampling import prompt_counts
 from .store import DAY_MS, Store, now_ms
 
@@ -58,13 +59,19 @@ _MIN_STRATUM = 5
 
 def run_fit(store: Store, rows: Sequence[Sequence], conf: Optional[Dict],
             template_names: Dict[Tuple[int, int], str],
-            progress: Callable[[str], None]) -> dict:
+            progress: Callable[[str], None], media_dir=None, phone_index=None) -> dict:
     """Read the data, fit, and save the report. Rows as in dataset.revlog_sql."""
     progress("Reading the calibration events")
     state = store.load_state()
-    dataset = read_dataset(store.read_events(), rows, state["block_gap_hours"])
+    events = list(store.read_events())
+    phone = merge_phone(read_files(media_dir), rows, phone_index or {})
+    if phone.earliest_ms is not None:
+        state["recording_since"] = min(state["recording_since"] or phone.earliest_ms,
+                                       phone.earliest_ms)
+    dataset = read_dataset([*events, *phone.events], phone.rows, state["block_gap_hours"])
     version = next_model_version(store.folder)
     report = build_report(dataset, state, conf, template_names, version, progress)
+    report["phone"] = phone.diagnostics
     write_report(store.folder, report)
     return report
 
