@@ -68,6 +68,7 @@ def initialize_addon():
     from .controller import initialize_controller
     from .views import initialize_views
     from .finder import initialize_finder
+    from .calibration import initialize_calibration
 
     initialize_qt_resources()
     initialize_options()
@@ -75,6 +76,7 @@ def initialize_addon():
     controller = initialize_controller(mw, config_manager)
     initialize_views(controller)
     initialize_finder()
+    initialize_calibration()
 
 
 initialize_addon()

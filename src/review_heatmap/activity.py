@@ -35,6 +35,7 @@ Components related to gathering and analyzing user activity
 
 import datetime
 import time
+from collections import Counter
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -58,14 +59,19 @@ from .errors import CollectionError
 from .libaddon.anki.configmanager import ConfigManager
 from .libaddon.debug import isDebuggingOn, logger
 from .metrics import (
-    EXPERIMENTAL_METRICS, answer_effort, concentration_calibration,
-    concentration_coefficients, fsrs_calibration, metric_name, template_norms,
+    EXPERIMENTAL_METRICS, MODEL_TEMPLATE_DAYS, CardHistory, active_effort_model,
+    answer_effort, answer_inputs, concentration_calibration, concentration_coefficients,
+    effort_model_credit, fsrs_calibration, metric_name, template_norms, template_profiles,
 )
 from .times import daystart_epoch, study_day_sql
 from .types import DeckId
 
 # limit max forecast to 200 years to protect against invalid due dates
 MAX_FORECAST_DAYS = 73000
+
+# Fitted credits need every answer, and reporters come and go with each dialog,
+# so the last result outlives them until the collection or its model changes.
+_answer_credit_cache: Optional[Tuple] = None
 
 
 class ActivityType(Enum):
@@ -561,6 +567,7 @@ GROUP BY day ORDER BY day""".format(
             the answer's card state with the saved calibration, and sustained
             concentration also its session coefficient:
             [(duration_ms, answer_count, effort[, scale]), ...].
+            The fitted measure appends the model's credit in place of effort.
         """
         metric = metric_name(self._config["synced"])
         if with_effort is None:
@@ -569,6 +576,7 @@ GROUP BY day ORDER BY day""".format(
             with_concentration = metric == "concentration"
         with_concentration = with_durations and with_concentration
         with_effort = with_durations and (with_effort or with_concentration)
+        with_model = with_effort and not with_concentration and metric == "effort_model"
 
         lims = []
         if start is not None:
@@ -580,6 +588,8 @@ GROUP BY day ORDER BY day""".format(
             lims.append("ease >= 1")
 
         deck_limit = self._revlog_limit(current_deck_only, deck_id)
+        if with_model:
+            return self._credited_days(start, stop, deck_limit)
         # Sessions span every answer the user gave, so sustained concentration
         # reads excluded answers too and credits only the included ones.
         if deck_limit and not with_concentration:
@@ -687,6 +697,69 @@ GROUP BY {} ORDER BY {}""".format(
             self.__debug_cards_done(cmd, res)
 
         return res
+
+    def _credited_days(self, start: Optional[int], stop: Optional[int],
+                       deck_limit: str) -> List[Sequence]:
+        """Whole-history credits cut down to the view after they are computed."""
+        credits = self._answer_credits()
+        cids = None
+        if deck_limit:
+            cids = {row[0] for row in self._db.all(
+                f"SELECT DISTINCT cid FROM revlog WHERE {deck_limit}"
+            )}
+        answers_only = self._ignore_rescheduled_entries
+        res = []
+        for day in sorted(credits):
+            if (start is not None and day < start) or (stop is not None and day >= stop):
+                continue
+            # Credits are continuous, so buckets would hardly ever merge.
+            buckets = [
+                (duration, 1, credit) for cid, ease, duration, credit in credits[day]
+                if not (answers_only and ease < 1) and (cids is None or cid in cids)
+            ]
+            if buckets:
+                res.append((day, len(buckets), sum(row[0] for row in buckets), buckets))
+        return res
+
+    def _answer_credits(self) -> Dict[int, List[Tuple]]:
+        """(cid, ease, duration_ms, credit) per study day, for the whole revlog.
+
+        Each card's whole history feeds its answers, whatever the date range
+        or deck limit, so a day scores the same on every view and as a
+        reference. A reschedule took no effort, so it earns no credit.
+        """
+        global _answer_credit_cache
+        model = active_effort_model()
+        offset = self._offset
+        key = (self._col.mod, offset)
+        cache = _answer_credit_cache
+        if cache and cache[0] is self._col and cache[1] is model and cache[2] == key:
+            return cache[3]
+        rows = self._db.all(f"""\
+SELECT cid, revlog.id, ease, COALESCE(time, 0),
+CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END, notes.mid, cards.ord,
+{study_day_sql("revlog.id / 1000", offset)}
+FROM revlog LEFT JOIN cards ON cards.id = cid LEFT JOIN notes ON notes.id = cards.nid
+ORDER BY revlog.id""")
+        # The rows _template_norms reads, without a second pass over the revlog.
+        template_rows = Counter(
+            (row[5], row[6], row[7], row[3] // 1000)
+            for row in rows if row[2] >= 1 and row[5] is not None
+        )
+        profiles = template_profiles(
+            sorted((*row, count) for row, count in template_rows.items()), MODEL_TEMPLATE_DAYS,
+        )
+        history = CardHistory()
+        days: Dict[int, List[Tuple]] = {}
+        for row in rows:
+            credit = 0.0
+            if row[2] >= 1:
+                credit = effort_model_credit(
+                    answer_inputs(row, history, profiles), model, row[5:7],
+                )
+            days.setdefault(row[7], []).append((row[0], row[2], row[3], credit))
+        _answer_credit_cache = (self._col, model, key, days)
+        return days
 
     def _template_norms(self, days: float) -> Dict[tuple, int]:
         """Norm per card template and study day, read from the days before it.

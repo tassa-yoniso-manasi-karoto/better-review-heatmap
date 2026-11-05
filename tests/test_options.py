@@ -525,6 +525,29 @@ def test_calibration_popup_stores_only_manual_changes_and_respects_cancel(
     assert setup.conf["synced"]["fsrs_calibration"] == {"maturity_exponent": 0.5}
 
 
+def test_calibrated_effort_stays_hidden_until_a_model_is_available(setup, options_module):
+    module, app = options_module
+    from aqt.qt import QWidget
+    from review_heatmap.metrics import use_effort_model
+
+    parent = QWidget()
+    parent.col = setup.col
+    setup.conf["synced"]["activity_metric"] = "effort_model"
+    dialog = module.RevHmOptions(setup.conf, parent)
+    assert dialog.selActivityMetric.findData("effort_model") == -1
+    assert dialog.selActivityMetric.currentData() == "fsrs"
+
+    use_effort_model({"status": "local", "version": 1})
+    try:
+        dialog = module.RevHmOptions(setup.conf, parent)
+        assert dialog.selActivityMetric.findData("effort_model") >= 0
+        assert dialog.selActivityMetric.currentData() == "effort_model"
+        assert dialog.selActivityMetric.currentText() == "🧪 Calibrated effort (exp.)"
+        assert not dialog.btnCalibration.isVisibleTo(dialog)
+    finally:
+        use_effort_model()
+
+
 def test_options_ok_records_one_labelled_step_for_real_edits_only(setup, options_module):
     module, app = options_module
     from aqt.qt import QWidget

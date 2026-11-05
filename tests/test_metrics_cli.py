@@ -8,7 +8,7 @@ import pytest
 from review_heatmap.metrics import (
     METRICS, adaptive_color, activity_value, answer_effort, fsrs_calibration,
     concentration_calibration, concentration_coefficients,
-    baseline_color, baseline_value, reference_from_day,
+    baseline_color, baseline_value, reference_from_day, effort_model_credit, model_inputs,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -312,3 +312,57 @@ def test_concentration_answers_follow_sessions_with_or_without_timestamps(tmp_pa
     rows[3] = rows[3][:4]
     path.write_text(json.dumps(rows))
     assert run_cli(args).returncode == 2
+
+
+def test_effort_model_scores_answers_through_the_shared_functions(tmp_path):
+    model = {"status": "local", "version": 2, "intercept": 0.1,
+             "weights": {"log_d": 0.5, "rich": 0.2, "again": 0.3, "overdue": 0.1, "reps": -0.1}}
+    model_path = tmp_path / "model.json"
+    model_path.write_text(json.dumps(model))
+    rows = [[30000, 0, 0, True, 1000, None, 1],
+            [90000, 10, 550, False, 2000, 80000, 3, 15.5, 2, 20000]]
+    path = tmp_path / "answers.json"
+    path.write_text(json.dumps(rows))
+    args = ["--answers-json", str(path), "--effort-model", str(model_path), "--json"]
+    proc = run_cli(args + ["--metric", "effort_model",
+                           "--reference-answers-json", str(path)])
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)["results"]["effort_model"]
+    expected = (
+        effort_model_credit(model_inputs(30000, 1, True, 0, None, 0, None), model)
+        + effort_model_credit(model_inputs(90000, 3, False, 10, 15.5, 2, (20000, 80000)), model)
+    )
+    assert result["score"] == pytest.approx(expected)
+    assert result["reference_score"] == pytest.approx(expected)
+    assert result["exponents"] == {"reviews": 1, "time": 0}
+    assert result["model"] == {"status": "local", "version": 2, "available": True}
+    # Other measures keep reading the same answers their own way.
+    proc = run_cli(args)
+    assert proc.returncode == 0, proc.stderr
+    results = json.loads(proc.stdout)["results"]
+    assert results["effort_model"]["score"] == pytest.approx(expected)
+    assert results["reviews"]["score"] == 2
+    effort = answer_effort(True, 0, 0, fsrs_calibration({}))
+    assert results["fsrs"]["score"] == pytest.approx(
+        effort ** 0.6 * 0.5 ** 0.4
+        + answer_effort(False, 10, 550, fsrs_calibration({})) ** 0.6 * 1.5 ** 0.4
+    )
+
+
+def test_effort_model_needs_a_model_and_rejects_bad_input(tmp_path):
+    path = tmp_path / "answers.json"
+    path.write_text(json.dumps([[30000, 0, 0, True]]))
+    args = ["--answers-json", str(path)]
+    assert run_cli(args + ["--metric", "effort_model"]).returncode == 2
+    proc = run_cli(args + ["--json"])
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["results"]["effort_model"]["model"]["available"] is False
+    model_path = tmp_path / "model.json"
+    for bad in ('{"weights": {"reps": "1"}}', '{"weights": 1}', "[]", "{"):
+        model_path.write_text(bad)
+        assert run_cli(args + ["--effort-model", str(model_path)]).returncode == 2
+    model_path.write_text('{"weights": {}}')
+    for bad_row in ([1000, 0, 0, False, None, None, 5], [1000, 0, 0, False, None, None, 3, -1],
+                    [1000, 0, 0, False, None, None, 3, 1, -2]):
+        path.write_text(json.dumps([bad_row]))
+        assert run_cli(args + ["--effort-model", str(model_path)]).returncode == 2

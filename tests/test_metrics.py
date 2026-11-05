@@ -14,7 +14,10 @@ from review_heatmap.metrics import (
     baseline_color, baseline_color_level, baseline_value,
     legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference, set_reference, show_reference_reminder,
-    template_norms, time_weighted_median,
+    template_norms, template_profiles, time_weighted_median,
+    MODEL_INPUTS, MODEL_TEMPLATE_DAYS, CardHistory, active_effort_model, answer_inputs,
+    effort_model_available, effort_model_credit, load_effort_model, metric_name,
+    model_inputs, use_effort_model, workload_reference_day,
 )
 
 
@@ -431,3 +434,134 @@ def test_calibration_stores_only_manual_changes_and_keys_references():
     assert METRICS["concentration"]["label"].startswith("🧪 ")
     assert all(METRICS[key]["label"].endswith("(exp.)") for key in EXPERIMENTAL_METRICS)
     assert metrics_module_default() == "fsrs"
+
+
+@pytest.fixture
+def fitted_model():
+    model = {"status": "local", "version": 3, "intercept": 0.25,
+             "weights": {"log_d": 0.5, "again": 0.3, "reps·rich": -0.1}}
+    use_effort_model(model)
+    yield model
+    use_effort_model()
+
+
+def test_template_profiles_share_the_norms_window():
+    rows = [(1, 0, 0, 2, 40), (1, 0, 0, 100, 4), (1, 0, 86400, 3, 1), (1, 0, 200 * 86400, 7, 1),
+            (2, 1, 0, 9, 1)]
+    profiles = template_profiles(rows, 60)
+    norms = template_norms(rows, 60)
+    assert set(profiles) == set(norms) == {(1, 0, 86400), (1, 0, 200 * 86400)}
+    # Past 60 days only one answer is recent, so all earlier ones are read.
+    assert profiles[(1, 0, 86400)] == (2000, 100000)
+    assert profiles[(1, 0, 200 * 86400)] == (2000, 100000)
+    assert all(profiles[key][1] == norms[key] for key in norms)
+    enough = [(1, 0, 0, 100, 40), (1, 0, 150 * 86400, 2, 30), (1, 0, 200 * 86400, 7, 1)]
+    assert template_profiles(enough, MODEL_TEMPLATE_DAYS)[(1, 0, 200 * 86400)] == (2000, 2000)
+
+
+def test_card_history_reads_only_what_came_before():
+    history = CardHistory()
+    day = 86400000
+    assert history.advance(1, day, 0) == (True, None, 0)
+    assert history.advance(2, day, 0) == (True, None, 0)
+    assert history.advance(1, day + 600000, -600) == (False, 600000 / day, 0)
+    assert history.advance(1, 3 * day, 2) == (False, pytest.approx(2 - 600000 / day), 0)
+    assert history.advance(1, 9 * day, 6) == (False, 6, 1)
+    assert history.advance(1, 10 * day, 0) == (False, 1, 2)
+
+
+def test_model_inputs_match_a_hand_calculation():
+    inputs = model_inputs(40000, 1, False, 10, 15.0, 3, (20000, 80000))
+    assert tuple(inputs) == MODEL_INPUTS and len(MODEL_INPUTS) == 12
+    rich, log_d, reps = math.log(4), math.log(4), math.log(4)
+    assert inputs == pytest.approx({
+        "log_d": log_d, "rich": rich, "t_med": math.log(2), "log_d·rich": log_d * rich,
+        "new": 0, "step": 0, "again": 1, "hard": 0, "easy": 0,
+        "overdue": math.log(1.5), "reps": reps, "reps·rich": reps * rich,
+    })
+    new = model_inputs(0, 3, True, 0, None, 0, None)
+    assert new["log_d"] == pytest.approx(math.log(0.03))  # no logarithm of 0 ms
+    assert (new["rich"], new["t_med"], new["new"], new["step"]) == (0, 0, 1, 0)
+    step = model_inputs(5000, 4, False, -600, 0.01, 2, (0, 0))
+    assert (step["step"], step["easy"], step["overdue"], step["rich"]) == (1, 1, 0, 0)
+    assert step["t_med"] == pytest.approx(math.log(0.03))
+    assert model_inputs(5000, 2, False, 10, 1000.0, 2, None)["overdue"] == pytest.approx(math.log(50))
+    assert model_inputs(5000, 2, False, 10, 0.0, 2, None)["overdue"] == pytest.approx(math.log(0.2))
+    assert model_inputs(5000, 2, False, 10, 0.0, 2, None)["hard"] == 1
+    assert model_inputs(5000, 3, False, 10, 10.0, 0, (1000, 500))["rich"] == 0
+    assert model_inputs(5000, 3, False, 10, 10.0, 0, (1000, 10 ** 8))["rich"] == 3
+
+
+def test_answer_inputs_stream_each_cards_history_through_the_shared_function():
+    profiles = {(7, 1, 864000): (20000, 80000)}
+    history = CardHistory()
+    day = 86400000
+    rows = [(1, day, 3, 10000, 0, 7, 1, 86400), (1, 11 * day, 3, 40000, 10, 7, 1, 864000)]
+    assert answer_inputs(rows[0], history, profiles) == model_inputs(
+        10000, 3, True, 0, None, 0, None,
+    )
+    assert answer_inputs(rows[1], history, profiles) == model_inputs(
+        40000, 3, False, 10, 10.0, 0, (20000, 80000),
+    )
+
+
+def test_effort_model_credit_is_exp_eta_and_clamped():
+    inputs = model_inputs(40000, 1, False, 10, 15.0, 3, (20000, 80000))
+    model = {"intercept": 0.25, "weights": {"log_d": 0.5, "again": 0.3, "unknown": 9}}
+    assert effort_model_credit(inputs, model) == pytest.approx(
+        math.exp(0.25 + 0.5 * math.log(4) + 0.3)
+    )
+    assert effort_model_credit(inputs, {"status": "none", "version": 0}) == 1
+    assert effort_model_credit(inputs, {"intercept": 50}) == pytest.approx(32)
+    assert effort_model_credit(inputs, {"intercept": -50}) == pytest.approx(1 / 16)
+
+
+def test_only_a_profile_model_reads_the_template():
+    inputs = model_inputs(10000, 3, False, 0, None, 0, None)
+    model = {"intercept": 0.25, "offsets": {"7:1": 0.5}}
+    assert effort_model_credit(inputs, model, (7, 1)) == pytest.approx(math.exp(0.75))
+    assert effort_model_credit(inputs, model, [7, 1]) == pytest.approx(math.exp(0.75))
+    assert effort_model_credit(inputs, model, (7, 2)) == pytest.approx(math.exp(0.25))
+    assert effort_model_credit(inputs, model, (None, None)) == pytest.approx(math.exp(0.25))
+    assert effort_model_credit(inputs, model) == pytest.approx(math.exp(0.25))
+    assert effort_model_credit(inputs, {"intercept": 0.25}, (7, 1)) == pytest.approx(math.exp(0.25))
+
+
+def test_fitted_measure_is_hidden_until_a_model_is_validated_or_local(fitted_model):
+    use_effort_model()
+    assert load_effort_model() == {"status": "none", "version": 0}
+    assert not effort_model_available()
+    assert "effort_model" in METRICS and "effort_model" in EXPERIMENTAL_METRICS
+    conf = {"activity_metric": "effort_model"}
+    assert metric_name(conf) == "fsrs"
+    assert baseline_key(conf) == baseline_key({"activity_metric": "fsrs"})
+    use_effort_model({"status": "validated", "version": 1})
+    assert effort_model_available() and metric_name(conf) == "effort_model"
+    use_effort_model(fitted_model)
+    assert effort_model_available() and active_effort_model() is fitted_model
+    assert metric_name(conf) == "effort_model"
+    use_effort_model()
+    assert metric_name(conf) == "fsrs" and metric_name({}) == "fsrs"
+
+
+def test_fitted_score_sums_credits_and_references_follow_the_model(fitted_model):
+    assert metric_weights("effort_model") == (1, 0)
+    buckets = [(60000, 2, 1.5), (0, 1, 0.5)]
+    assert activity_value(3, 120000, "effort_model", buckets) == pytest.approx(3.5)
+    assert activity_value(3, 120000, "workload", [(60000, 2), (0, 1)]) == pytest.approx(2)
+    conf = {"activity_metric": "effort_model"}
+    first_key = baseline_key(conf)
+    assert json.loads(first_key)[7] == 3
+    day = 1776000000
+    set_reference(conf, {"day": day, "value": 50, "source": "selected",
+                         "day_grouping_version": 1})
+    assert saved_reference(conf)["value"] == 50
+    use_effort_model(dict(fitted_model, version=4))
+    assert baseline_key(conf) != first_key
+    assert saved_reference(conf) is None
+    # The chosen day survives new weights, and is shared with other workloads.
+    assert workload_reference_day(conf)["day"] == day
+    assert workload_reference_day({"activity_metric": "workload", **conf,
+                                   "activity_metric": "fsrs"})["day"] == day
+    deck_key = json.loads(baseline_key(conf, 5))
+    assert deck_key[7] == 4 and deck_key[8] == ["deck", 5]

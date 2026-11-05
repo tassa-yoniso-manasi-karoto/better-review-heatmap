@@ -12,6 +12,7 @@ Usage examples:
     python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json
     python scripts/metrics_cli.py --answers-json answers.json --metric fsrs --fsrs-calibration new_card_weight=2
     python scripts/metrics_cli.py --answers-json answers.json --metric concentration --concentration-calibration max_bonus=0.5
+    python scripts/metrics_cli.py --answers-json answers.json --metric effort_model --effort-model model.json
 """
 
 import argparse
@@ -47,6 +48,7 @@ def create_parser() -> argparse.ArgumentParser:
             "  python scripts/metrics_cli.py --reviews 100 --minutes 10 --reference-reviews 200 --reference-minutes 40 --json\n"
             "  python scripts/metrics_cli.py --answers-json answers.json --metric fsrs --fsrs-calibration new_card_weight=2\n"
             "  python scripts/metrics_cli.py --answers-json answers.json --metric concentration --concentration-calibration max_bonus=0.5\n"
+            "  python scripts/metrics_cli.py --answers-json answers.json --metric effort_model --effort-model model.json\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -73,11 +75,13 @@ def create_parser() -> argparse.ArgumentParser:
     time_group.add_argument(
         "--answers-json", type=Path,
         help=("JSON array of answers [duration_ms, last_interval, factor, first, end_ms, "
-              "typical_ms] as recorded in Anki's revlog (lastIvl, factor; first marks the "
-              "card's earliest answer; end_ms is the answer's timestamp; typical_ms the "
-              "card template's usual duration). Trailing fields default to 0/false/null; "
-              "without any end_ms the answers are taken as one back-to-back session. "
-              "Gives exact experimental scores."),
+              "typical_ms, ease, elapsed_days, interday_answers, median_ms] as recorded in "
+              "Anki's revlog (lastIvl, factor; first marks the card's earliest answer; end_ms "
+              "is the answer's timestamp; typical_ms the card template's usual duration; the "
+              "last four feed the fitted measure: the button pressed, days since the card's "
+              "previous answer, its earlier interday answers and the template's median). "
+              "Trailing fields default to 0/false/null, with ease 3; without any end_ms the "
+              "answers are taken as one back-to-back session. Gives exact experimental scores."),
     )
     metric_choices = ["all"] + list(metrics.METRICS.keys())
     parser.add_argument("--theme", choices=list(metrics.COLOR_THEMES), default="lime",
@@ -117,6 +121,12 @@ def create_parser() -> argparse.ArgumentParser:
              + ", ".join(metrics.CONCENTRATION_DEFAULTS) + ".",
     )
     parser.add_argument(
+        "--effort-model", type=Path,
+        help=("Model JSON ({\"version\", \"intercept\", \"weights\"}) for the fitted measure, "
+              "in place of the shipped one. --metric effort_model needs it until the shipped "
+              "model is validated. Weight keys: " + ", ".join(metrics.MODEL_INPUTS) + "."),
+    )
+    parser.add_argument(
         "--history-json", type=Path,
         help=("Adaptive history: a JSON array of days, each an array of answer durations "
               "in milliseconds. Supply the full included history, including the evaluated "
@@ -135,7 +145,8 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> List[tuple]:
-    """Read [duration_ms, last_interval, factor, first, end_ms, typical_ms] rows.
+    """Read [duration_ms, last_interval, factor, first, end_ms, typical_ms, ease,
+    elapsed_days, interday_answers, median_ms] rows.
 
     Trailing fields are optional. Without timestamps the answers form one
     back-to-back session in the given order.
@@ -146,21 +157,31 @@ def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> Li
             raise ValueError("expected a non-empty JSON array of answers")
         answers = []
         for row in rows:
-            if not isinstance(row, list) or not 1 <= len(row) <= 6:
+            if not isinstance(row, list) or not 1 <= len(row) <= 10:
                 raise ValueError("each answer is [duration_ms, last_interval, factor, first, "
-                                 "end_ms, typical_ms]")
-            padding = [0, 0, 0, False, None, None]
-            duration, last_interval, factor, first, end, typical = row + padding[len(row):]
+                                 "end_ms, typical_ms, ease, elapsed_days, interday_answers, "
+                                 "median_ms]")
+            padding = [0, 0, 0, False, None, None, 3, None, 0, None]
+            duration, last_interval, factor, first, end, typical, ease, elapsed, interday, \
+                typical_median = row + padding[len(row):]
             if any(type(value) is not int for value in (duration, last_interval, factor)):
                 raise ValueError("duration_ms, last_interval and factor must be integers")
             if duration < 0 or factor < 0:
                 raise ValueError("duration_ms and factor cannot be negative")
             if first not in (True, False, 0, 1):
                 raise ValueError("first must be true or false")
-            for name, value in (("end_ms", end), ("typical_ms", typical)):
+            for name, value in (("end_ms", end), ("typical_ms", typical),
+                                ("median_ms", typical_median)):
                 if value is not None and (type(value) is not int or value < 0):
                     raise ValueError(f"{name} must be a nonnegative integer or null")
-            answers.append((duration, last_interval, factor, bool(first), end, typical))
+            if ease not in (1, 2, 3, 4):
+                raise ValueError("ease must be 1, 2, 3 or 4")
+            if elapsed is not None and (type(elapsed) not in (int, float) or elapsed < 0):
+                raise ValueError("elapsed_days must be a nonnegative number or null")
+            if type(interday) is not int or interday < 0:
+                raise ValueError("interday_answers must be a nonnegative integer")
+            answers.append((duration, last_interval, factor, bool(first), end, typical,
+                            ease, elapsed, interday, typical_median))
         timestamps = [answer[4] for answer in answers]
         if any(end is None for end in timestamps) and any(end is not None for end in timestamps):
             raise ValueError("give end_ms for every answer or for none")
@@ -168,10 +189,23 @@ def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> Li
             end = 0
             for index, answer in enumerate(answers):
                 end += answer[0]
-                answers[index] = answer[:4] + (end, answer[5])
+                answers[index] = answer[:4] + (end,) + answer[5:]
     except (OSError, ValueError) as exc:
         parser.error(f"Invalid {option}: {exc}")
     return answers
+
+
+def load_effort_model(parser: argparse.ArgumentParser, path: Path) -> Dict[str, Any]:
+    try:
+        model = json.loads(path.read_text(encoding="utf-8"))
+        weights = model.get("weights") if isinstance(model, dict) else None
+        if not isinstance(weights, dict) or any(
+            type(weight) not in (int, float) for weight in weights.values()
+        ) or type(model.get("intercept", 0)) not in (int, float):
+            raise ValueError("expected a numeric intercept and weights")
+    except (OSError, ValueError) as exc:
+        parser.error(f"Invalid --effort-model: {exc}")
+    return model
 
 
 def parse_calibration(parser: argparse.ArgumentParser, option: str, name: str,
@@ -198,6 +232,12 @@ def parse_calibration(parser: argparse.ArgumentParser, option: str, name: str,
 
 def parse_and_validate(parser: argparse.ArgumentParser, argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
+
+    if args.effort_model is not None:
+        metrics.use_effort_model(load_effort_model(parser, args.effort_model))
+    if args.metric == "effort_model" and not metrics.effort_model_available():
+        parser.error("--metric effort_model needs --effort-model until the shipped model "
+                     "is validated.")
 
     args.answers = None
     if args.answers_json is not None:
@@ -341,22 +381,38 @@ def evaluate(
         # Measures ignore the bucket elements they do not define: only the
         # experimental ones read effort, only sustained concentration the scale.
         scales = metrics.concentration_coefficients(
-            [(end, duration, typical) for duration, _, _, _, end, typical in rows],
+            [(row[4], row[0], row[5]) for row in rows],
             concentration_settings,
         )
         counted = Counter(
             (duration, metrics.answer_effort(first, last_interval, factor, effort_settings),
              round(scale, 2))
-            for (duration, last_interval, factor, first, _, _), scale in zip(rows, scales)
+            for (duration, last_interval, factor, first, *_), scale in zip(rows, scales)
         )
         return [(duration, count, effort, scale)
                 for (duration, effort, scale), count in sorted(counted.items())]
 
-    if answers is not None:
-        durations = answer_buckets(answers)
-    else:
-        durations = list(Counter(durations_ms).items()) if durations_ms is not None else None
+    def credit_buckets(rows):
+        model = metrics.active_effort_model()
+        counted: Counter = Counter()
+        for (duration, last_interval, _, first, _, typical, ease, elapsed, interday,
+             typical_median) in rows:
+            profile = None if typical is None or typical_median is None else (
+                typical_median, typical,
+            )
+            inputs = metrics.model_inputs(duration, ease, first, last_interval, elapsed,
+                                          interday, profile)
+            counted[(duration, metrics.effort_model_credit(inputs, model))] += 1
+        return [(duration, count, credit)
+                for (duration, credit), count in sorted(counted.items())]
+
+    def buckets_for(key, rows):
+        return credit_buckets(rows) if key == "effort_model" else answer_buckets(rows)
+
+    durations = list(Counter(durations_ms).items()) if durations_ms is not None else None
     for key in keys:
+        if answers is not None:
+            durations = buckets_for(key, answers)
         label = metrics.METRICS[key]["label"]
         score = metrics.activity_value(reviews, time_ms, key, durations, conf)
         if not math.isfinite(score):
@@ -368,7 +424,7 @@ def evaluate(
             if has_reference:
                 row = (0, ref_reviews, ref_time_ms)
                 if ref_answers is not None:
-                    row += (answer_buckets(ref_answers),)
+                    row += (buckets_for(key, ref_answers),)
                 elif ref_durations_ms is not None:
                     row += (list(Counter(ref_durations_ms).items()),)
                 ref = metrics.reference_from_day(row, key, "cli", conf)
@@ -410,6 +466,13 @@ def evaluate(
             results[key]["calibration"] = {
                 name: metrics.calibration(conf, name)
                 for name in metrics.METRIC_CALIBRATIONS[key]
+            }
+        if key == "effort_model":
+            model = metrics.active_effort_model()
+            results[key]["model"] = {
+                "status": model.get("status"),
+                "version": model.get("version"),
+                "available": metrics.effort_model_available(),
             }
 
     data: Dict[str, Any] = {

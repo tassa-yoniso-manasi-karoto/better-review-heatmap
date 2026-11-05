@@ -2,6 +2,7 @@
 
 import copy
 import json
+import math
 import re
 import sqlite3
 import time
@@ -258,6 +259,155 @@ def test_concentration_rewards_long_answers_after_years_of_quick_ones(setup):
     conf["concentration_calibration"] = {"template_norm_days": 1}  # old clicks prevail
     capped = setup.reporter._cards_done(with_durations=True)[-1]
     assert {scale for _, _, _, scale in capped[3]} == {1}
+
+
+@pytest.fixture
+def fitted(setup):
+    from review_heatmap.metrics import use_effort_model
+
+    def fit(**model):
+        use_effort_model(dict({"status": "local", "version": 1}, **model))
+        setup.conf["synced"]["activity_metric"] = "effort_model"
+    yield fit
+    use_effort_model()
+
+
+def add_cards(setup, *rows):
+    """rows are (cid, did, mid); each card gets its own note, on ord 0."""
+    for cid, did, mid in rows:
+        setup.db.connection.execute(
+            "INSERT INTO cards (id, did, due, queue, nid, ord) VALUES (?, ?, 0, 2, ?, 0)",
+            (cid, did, cid),
+        )
+        setup.db.connection.execute("INSERT INTO notes (id, mid) VALUES (?, ?)", (cid, mid))
+
+
+def test_fitted_day_scores_the_same_on_every_view(setup, fitted):
+    from review_heatmap.metrics import activity_value, reference_from_day
+
+    add_cards(setup, (1, 1, 100), (2, 1, 100), (3, 2, 100))
+    yesterday = TODAY - 86400
+    add_review(setup, TODAY - 90 * 86400, cid=1)  # first answer, far outside the range
+    add_review(setup, TODAY - 60 * 86400, cid=1, last_interval=30)
+    add_review(setup, TODAY - 30 * 86400, cid=1, last_interval=30)
+    add_review(setup, TODAY - 30 * 86400, cid=3, sequence=1)
+    add_review(setup, yesterday, cid=1, last_interval=30, ease=1)
+    add_review(setup, yesterday, cid=2, sequence=1)
+    add_review(setup, yesterday, cid=3, sequence=2, last_interval=29)
+    fitted(weights={"reps": 1, "new": math.log(4), "again": math.log(0.5)})
+    conf = setup.conf["synced"]
+    calendar = setup.reporter._cards_done(with_durations=True)
+    row = calendar[-1]
+    assert row == (yesterday, 3, 90000, [(30000, 1, pytest.approx(credit))
+                                         for credit in (1.5, 4, 1)])
+    assert calendar[0][3] == [(30000, 1, pytest.approx(4))]  # the card's first answer
+    # Narrow dates, deck limits and the reference all read each whole history.
+    assert setup.reporter._cards_done(start=yesterday, with_durations=True) == [row]
+    assert setup.reporter._cards_done(start=yesterday, stop=TODAY, with_durations=True) == [row]
+    assert setup.reporter._cards_done(stop=yesterday, with_durations=True) == calendar[:-1]
+    assert setup.reporter.reference_history(yesterday, with_durations=True) == [row]
+    assert setup.reporter.reference_history(yesterday, with_durations=True, deck_id=1)[0][3] == (
+        row[3][:2]
+    )
+    assert setup.reporter._cards_done(
+        start=yesterday, current_deck_only=True, with_durations=True,
+    ) == [(yesterday, 2, 60000, row[3][:2])]
+    conf["limdecks"] = [2]
+    assert setup.reporter._cards_done(start=yesterday, with_durations=True)[0][3] == row[3][:2]
+    conf["limdecks"] = []
+    value = reference_from_day(row, "effort_model", "selected", conf)["value"]
+    assert value == pytest.approx(6.5)
+    report = setup.reporter.get_report(limfcst=0)
+    assert make_renderer(setup)._activity_scores(report)[yesterday] == pytest.approx(value)
+    assert activity_value(*row[1:3], "effort_model", row[3], conf) == pytest.approx(value)
+
+
+def test_fitted_credit_reads_template_profiles_from_earlier_days_only(setup, fitted):
+    add_cards(setup, (1, 1, 100), (2, 1, 100), (3, 1, 200))
+    yesterday = TODAY - 86400
+    for sequence in range(30):
+        add_review(setup, TODAY - 10 * 86400, cid=2, sequence=sequence, milliseconds=20000)
+    for sequence in range(10):
+        add_review(setup, TODAY - 10 * 86400, cid=2, sequence=100 + sequence,
+                   milliseconds=200000)
+    add_review(setup, yesterday, cid=1, milliseconds=900000)  # a day never reads itself
+    add_review(setup, yesterday, cid=3, sequence=1)  # template with no earlier answers
+    add_review(setup, yesterday, cid=99, sequence=2)  # deleted card
+    fitted(weights={"rich": 1, "t_med": 1})
+    assert setup.reporter._template_norms(60)[(100, 0, yesterday)] == 200000
+    rows = setup.reporter._cards_done(start=yesterday, with_durations=True)
+    assert rows[0][3] == [
+        (900000, 1, pytest.approx(20)), (30000, 1, 1), (30000, 1, 1),
+    ]
+    assert setup.reporter._cards_done(stop=yesterday, with_durations=True)[0][3][0][2] == 1
+
+
+def test_a_profile_model_adds_its_offsets_to_its_own_templates_only(setup, fitted):
+    add_cards(setup, (1, 1, 100), (2, 1, 200))
+    yesterday = TODAY - 86400
+    add_review(setup, yesterday, cid=1)
+    add_review(setup, yesterday, cid=2, sequence=1)
+    add_review(setup, yesterday, cid=99, sequence=2)  # deleted card
+    fitted(offsets={"100:0": math.log(2)})
+    row = setup.reporter._cards_done(start=yesterday, with_durations=True)[0]
+    assert [bucket[2] for bucket in row[3]] == [pytest.approx(2), 1, 1]
+
+
+def test_fitted_rescheduling_counts_as_no_answer_and_leaves_history_alone(setup, fitted):
+    from review_heatmap.metrics import activity_value
+
+    yesterday = TODAY - 86400
+    add_review(setup, TODAY - 2 * 86400, cid=1)
+    add_review(setup, TODAY - 2 * 86400, cid=1, sequence=1, last_interval=3)
+    add_review(setup, TODAY - 2 * 86400, cid=1, sequence=2, ease=0, last_interval=9)
+    add_review(setup, yesterday, cid=1, last_interval=3, milliseconds=60000)
+    add_review(setup, yesterday, cid=1, ease=0, sequence=1, last_interval=9, milliseconds=0)
+    fitted(weights={"reps": 1})
+    conf = setup.conf["synced"]
+    assert setup.reporter._cards_done(start=yesterday, with_durations=True) == [
+        (yesterday, 1, 60000, [(60000, 1, pytest.approx(2))]),
+    ]
+    conf["limresched"] = False
+    row = setup.reporter._cards_done(start=yesterday, with_durations=True)[0]
+    assert row == (yesterday, 2, 60000, [(60000, 1, pytest.approx(2)), (0, 1, 0)])
+    assert activity_value(*row[1:3], "effort_model", row[3], conf) == pytest.approx(2)
+
+
+def test_fitted_credits_are_cached_until_the_collection_or_model_changes(setup, fitted):
+    add_review(setup, TODAY - 86400)
+    fitted(intercept=math.log(2))
+    reads = []
+    query = setup.db.all
+    setup.db.all = lambda sql, *args: (reads.append(sql) or query(sql, *args))
+
+    def history_reads():
+        return sum("LEFT JOIN notes" in sql for sql in reads)
+    first = setup.reporter._cards_done(with_durations=True)
+    other_reporter = type(setup.reporter)(setup.col, setup.conf)
+    assert other_reporter._cards_done(with_durations=True) == first
+    assert history_reads() == 1
+    add_review(setup, TODAY - 86400, sequence=1)
+    setup.col.mod += 1
+    assert setup.reporter._cards_done(with_durations=True)[0][1] == 2
+    assert history_reads() == 2
+    fitted(intercept=math.log(3))
+    assert setup.reporter._cards_done(with_durations=True)[0][3][0][2] == pytest.approx(3)
+    assert history_reads() == 3
+
+
+def test_fitted_buckets_stay_out_of_other_measures_and_unavailable_models(setup, fitted):
+    add_review(setup, TODAY - 86400, factor=550)
+    conf = setup.conf["synced"]
+    conf["activity_metric"] = "fsrs"
+    fsrs = setup.reporter._cards_done(with_durations=True)
+    conf["activity_metric"] = "effort_model"  # nothing validated: the default measure
+    assert setup.reporter._cards_done(with_durations=True) == fsrs
+    fitted(intercept=1.0)
+    assert setup.reporter._cards_done(with_durations=True, with_effort=False)[0][3] == [(30000, 1)]
+    assert setup.reporter._cards_done() == [(TODAY - 86400, 1, 30000)]
+    assert setup.reporter._cards_done(with_durations=True)[0][3][0][2] == pytest.approx(math.e)
+    conf["activity_metric"] = "fsrs"
+    assert setup.reporter._cards_done(with_durations=True) == fsrs
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires timezone switching")

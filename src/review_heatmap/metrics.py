@@ -8,7 +8,9 @@ import math
 from bisect import bisect_right
 from collections import Counter
 from colorsys import hls_to_rgb
-from itertools import groupby
+from functools import lru_cache
+from itertools import groupby, repeat
+from operator import mul
 from pathlib import Path
 from statistics import median
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -28,8 +30,10 @@ METRICS = {
         "label": "🧪 FSRS-based + sustained concentration (exp.)",
         "time_weight": 0.4,
     },
+    # A fitted credit already holds each answer's time, so nothing is added.
+    "effort_model": {"label": "🧪 Calibrated effort (exp.)", "time_weight": 0.0},
 }
-EXPERIMENTAL_METRICS = ("fsrs", "concentration")
+EXPERIMENTAL_METRICS = ("fsrs", "concentration", "effort_model")
 DEFAULT_METRIC = "fsrs"
 SCALES = {
     "adaptive": {"label": "Classic"},
@@ -97,6 +101,18 @@ TEMPLATE_NORM_MIN_ANSWERS = 30
 # i.e. 100-1100. SM-2 ease factors are 1300 and above; 0 marks SM-2 learning
 # steps and cramming.
 FSRS_FACTOR_RANGE = (100, 1100)
+# What the fitted model reads about an answer. Fitting and scoring both go
+# through answer_inputs, so they cannot drift apart.
+MODEL_INPUTS = (
+    "log_d", "rich", "t_med", "log_d·rich", "new", "step",
+    "again", "hard", "easy", "overdue", "reps", "reps·rich",
+)
+MODEL_TEMPLATE_DAYS = 60
+# Answers and template medians can read 0 ms, which has no logarithm.
+MODEL_MIN_MS = 300
+MODEL_RICH_RANGE = (0.0, 3.0)
+MODEL_OVERDUE_RANGE = (0.2, 50.0)
+MODEL_ETA_RANGE = (math.log(1 / 16), math.log(32))
 BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
 MIN_REFERENCE_DAYS = 7
@@ -109,8 +125,34 @@ DEFAULT_BASELINE_GRADIENT = json.loads(
 )["baseline_gradient_default"]
 
 
+def load_effort_model() -> Dict:
+    """The shipped weights; status "validated" releases them to every user."""
+    return json.loads(Path(__file__).with_name("effort_model.json").read_text(encoding="utf-8"))
+
+
+_effort_model = load_effort_model()
+_effort_model_is_local = False
+
+
+def use_effort_model(model: Optional[Dict] = None):
+    """Score with a local fit, or with the shipped weights again when given None."""
+    global _effort_model, _effort_model_is_local
+    _effort_model = load_effort_model() if model is None else model
+    _effort_model_is_local = model is not None
+
+
+def active_effort_model() -> Dict:
+    return _effort_model
+
+
+def effort_model_available() -> bool:
+    return _effort_model_is_local or _effort_model.get("status") == "validated"
+
+
 def metric_name(conf: Dict) -> str:
     value = conf.get("activity_metric", DEFAULT_METRIC)
+    if value == "effort_model" and not effort_model_available():
+        return DEFAULT_METRIC
     return value if value in METRICS else DEFAULT_METRIC
 
 
@@ -202,7 +244,7 @@ def time_weighted_median(histogram: Dict[int, int]) -> int:
     clicks with long reading it sits on the clicks, though the time went to
     the reading.
     """
-    half = sum(duration * count for duration, count in histogram.items()) / 2
+    half = sum(map(mul, histogram, histogram.values())) / 2
     spent = 0
     for duration in sorted(histogram):
         spent += duration * histogram[duration]
@@ -211,16 +253,27 @@ def time_weighted_median(histogram: Dict[int, int]) -> int:
     return 0
 
 
-def template_norms(rows: Iterable[Sequence], days: float) -> Dict[tuple, int]:
-    """Each template's norm in milliseconds per study day it was answered on.
+def histogram_median(histogram: Dict[int, int]) -> int:
+    """The typical answer's duration, from {duration: answers}."""
+    half = sum(histogram.values()) / 2
+    seen = 0
+    for duration in sorted(histogram):
+        seen += histogram[duration]
+        if seen >= half:
+            return duration
+    return 0
+
+
+def _template_windows(rows: Iterable[Sequence], days: float):
+    """Yield (mid, ord, day, {seconds: answers}) for each template's study days.
 
     rows are (mid, ord, day, seconds, count) ordered by template and day. A
-    day's norm reads the given number of days before it, or every earlier day
-    when those hold too few answers, and never the day itself or later ones:
-    one slow day cannot raise its own cap and later study cannot rescore it.
-    A template's first day has nothing to read, so it has no norm.
+    day reads the given number of days before it, or every earlier day when
+    those hold too few answers, and never the day itself or later ones: one
+    slow day cannot raise its own norm and later study cannot rescore it. A
+    template's first day has nothing to read, so it yields nothing. The
+    histogram changes between days, so read it before advancing.
     """
-    norms = {}
     for (mid, card_ord), answers in groupby(rows, key=lambda row: row[:2]):
         answers = list(answers)
         earlier, recent = Counter(), Counter()
@@ -235,9 +288,25 @@ def template_norms(rows: Iterable[Sequence], days: float) -> Dict[tuple, int]:
                 left += 1
             if earlier:
                 enough = sum(recent.values()) >= TEMPLATE_NORM_MIN_ANSWERS
-                seconds = time_weighted_median(recent if enough else earlier)
-                norms[(mid, card_ord, day)] = seconds * 1000
-    return norms
+                yield mid, card_ord, day, recent if enough else earlier
+
+
+def template_norms(rows: Iterable[Sequence], days: float) -> Dict[tuple, int]:
+    """Each template's norm in milliseconds per study day it was answered on."""
+    return {
+        (mid, card_ord, day): time_weighted_median(histogram) * 1000
+        for mid, card_ord, day, histogram in _template_windows(rows, days)
+    }
+
+
+def template_profiles(rows: Iterable[Sequence], days: float) -> Dict[tuple, tuple]:
+    """(median_ms, time_weighted_ms) per template and study day; rows as in norms."""
+    return {
+        (mid, card_ord, day): (
+            histogram_median(histogram) * 1000, time_weighted_median(histogram) * 1000,
+        )
+        for mid, card_ord, day, histogram in _template_windows(rows, days)
+    }
 
 
 def concentration_coefficients(answers: Sequence,
@@ -309,6 +378,93 @@ def activity_value(reviews: int, milliseconds: int, metric: str,
     )
 
 
+class CardHistory:
+    """What a card's earlier answers left behind, fed one answer at a time.
+
+    Feed every answer of the collection in revlog order, whatever gets scored:
+    a day then reads the same on any view. Reschedules (ease 0) are not answers.
+    """
+
+    def __init__(self):
+        self._cards: Dict[int, tuple] = {}
+
+    def advance(self, cid: int, answer_ms: int, last_ivl: int) -> tuple:
+        """(first, days since the card's last answer, interday answers before this)."""
+        previous, interday = self._cards.get(cid, (None, 0))
+        self._cards[cid] = (answer_ms, interday + (last_ivl >= 1))
+        if previous is None:
+            return True, None, 0
+        return False, (answer_ms - previous) / 86400000, interday
+
+
+@lru_cache(maxsize=4096)
+def _template_inputs(median_ms: int, time_weighted_ms: int) -> tuple:
+    typical = max(median_ms, MODEL_MIN_MS)
+    rich = math.log(max(time_weighted_ms, MODEL_MIN_MS) / typical)
+    return math.log(typical / 10000), min(MODEL_RICH_RANGE[1], max(MODEL_RICH_RANGE[0], rich))
+
+
+def model_inputs(duration_ms: int, ease: int, first: bool, last_ivl: int,
+                 elapsed_days: Optional[float], interday_answers: int,
+                 profile: Optional[Sequence[int]]) -> Dict[str, float]:
+    """The fitted model's MODEL_INPUTS for one answer.
+
+    last_ivl is revlog.lastIvl: days when at least 1, otherwise a same-day
+    step. profile is the template's (median_ms, time_weighted_ms), or None
+    when the card is deleted or its template has no earlier answers.
+    """
+    log_d = math.log(max(duration_ms, MODEL_MIN_MS) / 10000)
+    t_med, rich = (0.0, 0.0) if profile is None else _template_inputs(*profile)
+    interday = last_ivl >= 1
+    overdue = 0.0
+    if interday and elapsed_days is not None:
+        low, high = MODEL_OVERDUE_RANGE
+        overdue = math.log(min(high, max(low, elapsed_days / last_ivl)))
+    reps = math.log1p(interday_answers)
+    return {
+        "log_d": log_d,
+        "rich": rich,
+        "t_med": t_med,
+        "log_d·rich": log_d * rich,
+        "new": 1.0 if first else 0.0,
+        "step": 0.0 if first or interday else 1.0,
+        "again": 1.0 if ease == 1 else 0.0,
+        "hard": 1.0 if ease == 2 else 0.0,
+        "easy": 1.0 if ease == 4 else 0.0,
+        "overdue": overdue,
+        "reps": reps,
+        "reps·rich": reps * rich,
+    }
+
+
+def answer_inputs(row: Sequence, history: CardHistory, profiles: Dict) -> Dict[str, float]:
+    """Inputs for a revlog row (cid, id, ease, duration_ms, last_ivl, mid, ord, day).
+
+    profiles comes from template_profiles over MODEL_TEMPLATE_DAYS. Call this
+    for every answer in revlog order, skipping only reschedules (ease 0).
+    """
+    cid, answer_ms, ease, duration_ms, last_ivl, mid, card_ord, day = row
+    first, elapsed_days, interday_answers = history.advance(cid, answer_ms, last_ivl)
+    return model_inputs(duration_ms, ease, first, last_ivl, elapsed_days, interday_answers,
+                        profiles.get((mid, card_ord, day)))
+
+
+def effort_model_credit(inputs: Dict[str, float], model: Dict,
+                        template: Optional[Sequence] = None) -> float:
+    """exp(eta) of raw, unstandardised inputs; a missing weight counts as 0.
+
+    template is the answer's (mid, ord). Only a fit kept on its own profile has
+    "offsets", keyed "mid:ord": they mean nothing on another collection, so a
+    shipped model never holds any.
+    """
+    weights = map(model.get("weights", {}).get, inputs, repeat(0.0))
+    eta = model.get("intercept", 0.0) + sum(map(mul, weights, inputs.values()))
+    offsets = model.get("offsets")
+    if offsets and template:
+        eta += offsets.get("{}:{}".format(*template), 0.0)
+    return math.exp(min(MODEL_ETA_RANGE[1], max(MODEL_ETA_RANGE[0], eta)))
+
+
 def reference_scope(deck_id: Optional[int] = None) -> str:
     return "global" if deck_id is None else f"deck:{int(deck_id)}"
 
@@ -329,6 +485,8 @@ def baseline_key(conf: Dict, deck_id: Optional[int] = None) -> str:
         parts.append(metric_weights(metric, conf)[1])
     elif metric in METRIC_CALIBRATIONS:
         parts.append({name: calibration(conf, name) for name in METRIC_CALIBRATIONS[metric]})
+    elif metric == "effort_model":
+        parts.append(active_effort_model().get("version", 0))
     if deck_id is not None:
         parts.append(["deck", int(deck_id)])
     return json.dumps(parts, separators=(",", ":"))
@@ -418,7 +576,7 @@ def saved_reference(conf: Dict, deck_id: Optional[int] = None) -> Optional[Dict]
 
 def _workload_day_key(parts):
     if not isinstance(parts, list) or len(parts) < 7 or parts[1] not in (
-        "time", "workload", "custom", "fsrs", "concentration",
+        "time", "workload", "custom", "fsrs", "concentration", "effort_model",
     ):
         return None
     scope = parts[-1:] if isinstance(parts[-1], list) else []

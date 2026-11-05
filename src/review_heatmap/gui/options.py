@@ -51,6 +51,7 @@ from aqt.theme import theme_manager
 from aqt.utils import showInfo
 
 from ..activity import ActivityReporter
+from ..calibration import is_devmode
 from ..config import (
     config, heatmap_colors, heatmap_modes, load_config, save_activity_defaults,
 )
@@ -58,7 +59,7 @@ from ..metrics import (
     METRICS, SCALES, baseline_key, metric_name,
     legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference, set_reference, automatic_reference,
-    calibration, calibration_overrides,
+    calibration, calibration_overrides, effort_model_available,
     AUTO_REFERENCE_PERCENTILE, AUTO_REFERENCE_REFRESH_DAYS,
     CALIBRATIONS, METRIC_CALIBRATIONS,
 )
@@ -282,7 +283,9 @@ class RevHmOptions(OptionsDialog):
             "selActivityMetric",
             (
                 ("items", {"setter": "_setActivityMetricItems"}),
-                ("value", {"dataPath": "synced/activity_metric"}),
+                ("value", {
+                    "dataPath": "synced/activity_metric", "setter": "_setActivityMetricValue",
+                }),
             ),
         ),
         (
@@ -374,6 +377,7 @@ class RevHmOptions(OptionsDialog):
         super(RevHmOptions, self)._setupUI()
         self._setupActivityTab()
         self._setupChangelogTab()
+        self._setupCalibrationTab()
 
         # manually adjust title label font sizes on Windows
         # gap between default windows font sizes and sizes that work well
@@ -463,6 +467,16 @@ class RevHmOptions(OptionsDialog):
         layout.addStretch()
         self.form.tabWidget.insertTab(1, tab, "Display Mode")
 
+
+    def _setupCalibrationTab(self):
+        if not is_devmode():
+            return
+        from .calibration_tab import CalibrationTab
+
+        tabs = self.form.tabWidget
+        tabs.insertTab(
+            tabs.indexOf(self.form.tab_3), CalibrationTab(self.mw, self), "Calibration"
+        )
 
     def _setupChangelogTab(self):
         from aqt.qt import QVBoxLayout, QTextBrowser
@@ -767,7 +781,15 @@ class RevHmOptions(OptionsDialog):
         return self._getComboItems(heatmap_modes)
 
     def _setActivityMetricItems(self, data_val):
-        return self._getComboItems(METRICS)
+        return self._getComboItems({
+            key: val for key, val in METRICS.items()
+            if key != "effort_model" or effort_model_available()
+        })
+
+    def _setActivityMetricValue(self, data_val):
+        # A hidden measure is missing from the items, and the combo box would
+        # silently stay on its first entry.
+        return metric_name({"activity_metric": data_val})
 
     def _setActivityScaleItems(self, data_val):
         return self._getComboItems(SCALES)

@@ -50,6 +50,11 @@ python scripts/metrics_cli.py --answers-json answers.json --metric fsrs \
 # without end_ms the answers form one back-to-back session
 python scripts/metrics_cli.py --answers-json answers.json --metric concentration \
   --concentration-calibration warm_up_minutes=5 --json
+
+# Fitted measure: add ease, elapsed_days, interday_answers and median_ms per
+# answer; until the shipped model is validated, name a model to score with
+python scripts/metrics_cli.py --answers-json answers.json --metric effort_model \
+  --effort-model model.json --json
 ```
 
 ## CLI Flags
@@ -59,15 +64,23 @@ python scripts/metrics_cli.py --answers-json answers.json --metric concentration
   milliseconds are integers. With individual durations or answers, count is
   inferred; an explicit count must match their number.
 - `--answers-json FILE`: JSON array of `[duration_ms, last_interval, factor,
-  first, end_ms, typical_ms]` rows (revlog `lastIvl` and `factor`; `first`
-  marks the card's earliest answer; `end_ms` the answer's timestamp;
-  `typical_ms` the card template's median duration). Trailing fields default
-  to 0/false/null; give `end_ms` for every answer or for none.
+  first, end_ms, typical_ms, ease, elapsed_days, interday_answers, median_ms]`
+  rows (revlog `lastIvl` and `factor`; `first` marks the card's earliest answer;
+  `end_ms` the answer's timestamp; `typical_ms` the card template's
+  time-weighted median duration, `median_ms` its plain one; `ease` the button;
+  `elapsed_days` the time since the card's previous answer; `interday_answers`
+  its earlier interday answers). Trailing fields default to 0/false/null, with
+  `ease` 3; give `end_ms` for every answer or for none.
 - `--metric KEY`: defaults to `all`; keys are `reviews`, `time`, `workload`,
-  `custom`, `recorded_time`, `fsrs`, `concentration`. Legacy key `time` means
-  **Workload (linear)**; `recorded_time` means time alone; `fsrs` is the
-  add-on's default **⭐ FSRS-based (exp.)** and `concentration` **🧪
-  FSRS-based + sustained concentration (exp.)**.
+  `custom`, `recorded_time`, `fsrs`, `concentration`, `effort_model`. Legacy key
+  `time` means **Workload (linear)**; `recorded_time` means time alone; `fsrs`
+  is the add-on's default **⭐ FSRS-based (exp.)**, `concentration` **🧪
+  FSRS-based + sustained concentration (exp.)** and `effort_model` **🧪
+  Calibrated effort (exp.)**. `all` lists `effort_model` at credit 1 while no
+  model is available; asking for it by name is then an error.
+- `--effort-model FILE`: JSON `{"status", "version", "intercept", "weights"}`
+  scored in place of the shipped `effort_model.json`. `weights` are per raw
+  `MODEL_INPUTS` name (`metrics.py`); missing ones count as 0, others are ignored.
 - Reference: `--reference-durations-ms D ...`, `--reference-answers-json FILE`,
   or the positive pair `--reference-reviews N --reference-minutes T`. Reference
   total time must be positive. An explicit count must match any supplied
@@ -97,6 +110,7 @@ Keys:
   - `exponents`: `reviews` and `time` weights.
   - `calibration`: experimental measures only; the calibrations in effect,
     keyed `fsrs_calibration` and, for concentration, `concentration_calibration`.
+  - `model`: `effort_model` only; `status`, `version` and `available`.
   - `fixed_thresholds`: Levels from `activity_levels(metric)`. Null for classic.
   - `reference_score`: Reference day score. Null for classic or no reference.
   - `target_score`: 85% of reference score (`baseline_value(reference)`).
