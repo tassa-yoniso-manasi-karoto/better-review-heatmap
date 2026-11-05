@@ -14,6 +14,7 @@ from review_heatmap.metrics import (
     baseline_color, baseline_color_level, baseline_value,
     legacy_reference, metric_weights, migrate_activity_references,
     reference_from_day, saved_reference, set_reference, show_reference_reminder,
+    template_norms, time_weighted_median,
 )
 
 
@@ -382,6 +383,27 @@ def test_concentration_rises_with_heavy_uninterrupted_study_and_fades():
         "max_bonus": 0.5, "warm_up_minutes": 10, "full_minutes": 10,
     }})
     assert concentration_coefficients(heavy[:5], step)[3:] == [1, 1.5]
+
+
+def test_template_norm_follows_recent_recorded_time():
+    # Long answers hold most of the time even as a minority; a median says 10 s.
+    assert time_weighted_median({10: 30, 200: 10}) == 200
+    day = 86400
+    rows = [(0, 8, 1000), (100, 10, 30), (100, 200, 10), (101, 200, 1), (160, 8, 40), (161, 8, 1)]
+    norms = template_norms([(7, 0, date * day, seconds, count)
+                            for date, seconds, count in rows], 60)
+    # Day 100 reads nothing recent and never itself, so it keeps earlier answers.
+    assert norms[(7, 0, 100 * day)] == 8000
+    # By day 101 the old clicks are outside the window.
+    assert norms[(7, 0, 101 * day)] == 200000
+    # Exactly 60 days back still counts; a day later it has left.
+    assert norms[(7, 0, 160 * day)] == 200000
+    assert norms[(7, 0, 161 * day)] == 8000
+    assert (7, 0, 0) not in norms  # a first day has nothing to read
+    assert template_norms([(7, 0, 0, 8, 1), (7, 0, day, 8, 1),
+                           (8, 1, 0, 90, 1), (8, 1, day, 90, 1)], 60) == {
+        (7, 0, day): 8000, (8, 1, day): 90000,
+    }
 
 
 def test_calibration_stores_only_manual_changes_and_keys_references():

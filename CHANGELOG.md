@@ -33,6 +33,10 @@ Guidelines for LLMs updating this changelog from git history:
 ### Changed
 - The palette is now saved in each profile and syncs with your collection; a customized palette moves there automatically and leaves the add-on's Config window
 
+### Fixed
+- FSRS-based + sustained concentration now rewards long sittings on cards that mix quick and long answers, which could earn no bonus before; each card type is judged on its last 60 days, adjustable in Calibrate
+- In that measure, a reference day now scores the same as it does on the calendar
+
 ## [2.2.1] - 2026-10-29
 
 ### Fixed

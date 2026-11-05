@@ -6,7 +6,9 @@ See LICENSE for the add-on's license and additional terms.
 import json
 import math
 from bisect import bisect_right
+from collections import Counter
 from colorsys import hls_to_rgb
+from itertools import groupby
 from pathlib import Path
 from statistics import median
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -63,6 +65,7 @@ CONCENTRATION_DEFAULTS = {
     "max_bonus": 1.0,
     "sensitivity_seconds": 45.0,
     "template_cap": 1.5,
+    "template_norm_days": 60.0,
     "warm_up_minutes": 10.0,
     "full_minutes": 30.0,
     "fatigue_cap_minutes": 75.0,
@@ -73,6 +76,7 @@ CONCENTRATION_RANGES = {
     "max_bonus": (0.0, 5.0),
     "sensitivity_seconds": (1.0, 600.0),
     "template_cap": (1.0, 10.0),
+    "template_norm_days": (1.0, 3650.0),
     "warm_up_minutes": (0.0, 180.0),
     "full_minutes": (1.0, 240.0),
     "fatigue_cap_minutes": (5.0, 600.0),
@@ -87,6 +91,8 @@ METRIC_CALIBRATIONS = {
     "fsrs": ("fsrs_calibration",),
     "concentration": ("fsrs_calibration", "concentration_calibration"),
 }
+# With fewer recent answers, a template's norm reads all its earlier ones.
+TEMPLATE_NORM_MIN_ANSWERS = 30
 # Anki writes FSRS difficulty to revlog.factor as ((D - 1) / 9 + 0.1) * 1000,
 # i.e. 100-1100. SM-2 ease factors are 1300 and above; 0 marks SM-2 learning
 # steps and cramming.
@@ -189,14 +195,59 @@ def smoothstep(x: float) -> float:
     return x * x * (3 - 2 * x)
 
 
+def time_weighted_median(histogram: Dict[int, int]) -> int:
+    """The duration that splits recorded time in half, from {duration: answers}.
+
+    A plain median describes the typical answer. On a template mixing quick
+    clicks with long reading it sits on the clicks, though the time went to
+    the reading.
+    """
+    half = sum(duration * count for duration, count in histogram.items()) / 2
+    spent = 0
+    for duration in sorted(histogram):
+        spent += duration * histogram[duration]
+        if spent >= half:
+            return duration
+    return 0
+
+
+def template_norms(rows: Iterable[Sequence], days: float) -> Dict[tuple, int]:
+    """Each template's norm in milliseconds per study day it was answered on.
+
+    rows are (mid, ord, day, seconds, count) ordered by template and day. A
+    day's norm reads the given number of days before it, or every earlier day
+    when those hold too few answers, and never the day itself or later ones:
+    one slow day cannot raise its own cap and later study cannot rescore it.
+    A template's first day has nothing to read, so it has no norm.
+    """
+    norms = {}
+    for (mid, card_ord), answers in groupby(rows, key=lambda row: row[:2]):
+        answers = list(answers)
+        earlier, recent = Counter(), Counter()
+        entered = left = 0
+        for day in sorted({row[2] for row in answers}):
+            while answers[entered][2] < day:
+                earlier[answers[entered][3]] += answers[entered][4]
+                recent[answers[entered][3]] += answers[entered][4]
+                entered += 1
+            while answers[left][2] < day - days * 86400:
+                recent[answers[left][3]] -= answers[left][4]
+                left += 1
+            if earlier:
+                enough = sum(recent.values()) >= TEMPLATE_NORM_MIN_ANSWERS
+                seconds = time_weighted_median(recent if enough else earlier)
+                norms[(mid, card_ord, day)] = seconds * 1000
+    return norms
+
+
 def concentration_coefficients(answers: Sequence,
                                calibration: Optional[Dict] = None) -> List[float]:
     """Credit multipliers for sustained concentration on heavy material.
 
     answers are (end_ms, duration_ms, typical_ms) in chronological order;
-    typical_ms is the card template's usual recorded duration, or None. An
-    answer feeds the session's concentration clock with its duration, capped
-    relative to its template's norm and gated by the sensitivity, so a slow
+    typical_ms is the card template's norm, or None. An answer feeds the
+    session's concentration clock with its duration, capped relative to that
+    norm and gated by the sensitivity, so a slow
     day on quick cards builds nothing. The bonus rises smoothly between the
     warm-up and full-concentration marks and fades past the fatigue cap. An
     idle gap longer than the break starts a new session. Recorded durations

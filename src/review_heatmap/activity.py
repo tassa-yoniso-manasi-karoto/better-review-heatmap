@@ -59,7 +59,7 @@ from .libaddon.anki.configmanager import ConfigManager
 from .libaddon.debug import isDebuggingOn, logger
 from .metrics import (
     EXPERIMENTAL_METRICS, answer_effort, concentration_calibration,
-    concentration_coefficients, fsrs_calibration, metric_name,
+    concentration_coefficients, fsrs_calibration, metric_name, template_norms,
 )
 from .times import daystart_epoch, study_day_sql
 from .types import DeckId
@@ -629,10 +629,11 @@ GROUP BY {} ORDER BY {}""".format(
         if with_concentration:
             conf = self._config["synced"]
             effort_settings = fsrs_calibration(conf)
-            norms = self._template_norms(start, stop)
+            concentration_settings = concentration_calibration(conf)
+            norms = self._template_norms(concentration_settings["template_norm_days"])
             coefficients = concentration_coefficients(
-                [(row[1], row[2], norms.get((row[7], row[8]))) for row in res],
-                concentration_calibration(conf),
+                [(row[1], row[2], norms.get((row[7], row[8], row[0]))) for row in res],
+                concentration_settings,
             )
             days = {}
             for row, scale in zip(res, coefficients):
@@ -687,39 +688,21 @@ GROUP BY {} ORDER BY {}""".format(
 
         return res
 
-    def _template_norms(self, start: Optional[int] = None,
-                        stop: Optional[int] = None) -> Dict[tuple, int]:
-        """Median recorded milliseconds per card template over the same dates.
+    def _template_norms(self, days: float) -> Dict[tuple, int]:
+        """Norm per card template and study day, read from the days before it.
 
-        The norm describes the material, so it ignores deck exclusions. It only
-        caps what an answer feeds into the concentration clock; recorded
+        The norm describes the material, so it ignores deck exclusions and the
+        displayed dates: a day scores the same on every view and as a reference.
+        It only caps what an answer feeds into the concentration clock; recorded
         durations themselves are never altered.
         """
         day = study_day_sql("revlog.id / 1000", self._offset)
-        lims = ["ease >= 1"]
-        if start is not None:
-            lims.append(f"{day} >= {int(start)}")
-        if stop is not None:
-            lims.append(f"{day} < {int(stop)}")
-        rows = self._db.all(f"""\
-SELECT notes.mid, cards.ord, COALESCE(time, 0) / 1000 AS seconds, COUNT()
+        return template_norms(self._db.all(f"""\
+SELECT notes.mid, cards.ord, {day} AS day, COALESCE(time, 0) / 1000 AS seconds, COUNT()
 FROM revlog JOIN cards ON cards.id = cid JOIN notes ON notes.id = cards.nid
-WHERE {' AND '.join(lims)}
-GROUP BY notes.mid, cards.ord, seconds
-ORDER BY notes.mid, cards.ord, seconds""")
-        histograms: Dict[tuple, List[Tuple[int, int]]] = {}
-        for mid, ord_, seconds, count in rows:
-            histograms.setdefault((mid, ord_), []).append((seconds, count))
-        norms = {}
-        for template, buckets in histograms.items():
-            total = sum(count for _, count in buckets)
-            seen = 0
-            for seconds, count in buckets:
-                seen += count
-                if 2 * seen >= total:
-                    norms[template] = seconds * 1000
-                    break
-        return norms
+WHERE ease >= 1
+GROUP BY notes.mid, cards.ord, day, seconds
+ORDER BY notes.mid, cards.ord, day"""), days)
 
     def __debug_cards_due(self, cmd: str, res: List[Sequence[int]]):
         sched_ver = self._sched_ver

@@ -234,6 +234,32 @@ def test_concentration_mode_follows_sessions_across_excluded_answers(setup):
     assert all(len(bucket) == 3 for bucket in plain)
 
 
+def test_concentration_rewards_long_answers_after_years_of_quick_ones(setup):
+    setup.db.connection.execute(
+        "INSERT INTO cards (id, did, due, queue, nid, ord) VALUES (1, 1, 0, 2, 10, 0)")
+    setup.db.connection.execute("INSERT INTO notes (id, mid) VALUES (10, 100)")
+    yesterday, minute = TODAY - 86400, 60000
+    for sequence in range(300):  # a template that used to take 8 s an answer
+        add_review(setup, TODAY - 400 * 86400, sequence=sequence, milliseconds=8000)
+    for sequence in range(40):  # recently a mix: most answers quick, most time long
+        add_review(setup, TODAY - 20 * 86400, sequence=sequence,
+                   milliseconds=200000 if sequence % 4 == 0 else 10000)
+    for sequence in range(20):  # a 40-minute sitting of 2-minute answers
+        add_review(setup, yesterday, sequence=sequence * 2 * minute, milliseconds=2 * minute,
+                   last_interval=21)
+    conf = setup.conf["synced"]
+    conf["activity_metric"] = "concentration"
+    calendar = setup.reporter._cards_done(with_durations=True)[-1]
+    assert calendar[0] == yesterday
+    assert max(scale for _, _, _, scale in calendar[3]) == 2
+    # The norm ignores the view: narrower dates and the reference read agree.
+    assert setup.reporter._cards_done(start=yesterday, with_durations=True) == [calendar]
+    assert setup.reporter.reference_history(yesterday, with_durations=True) == [calendar]
+    conf["concentration_calibration"] = {"template_norm_days": 1}  # old clicks prevail
+    capped = setup.reporter._cards_done(with_durations=True)[-1]
+    assert {scale for _, _, _, scale in capped[3]} == {1}
+
+
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="requires timezone switching")
 def test_dst_grouping_and_streaks_retain_original_calendar_days(setup, monkeypatch):
     original_tz = __import__("os").environ.get("TZ")
@@ -393,7 +419,7 @@ def test_new_card_layer_has_ice_counts_and_no_forecasts_without_changing_normal_
     assert options["dayColors"][str(reference["day"])] == "#ffffff"
     assert options["theme"] == "magenta"
     assert 'New cards/day:' in html and 'Daily average:' in html
-    assert html.index('title="Go back') < html.index('title="Today"') < html.index('title="Go forward')
+    assert html.index('title="Go back') < html.index('title="Go forward') < html.index('title="Today"')
     assert html.index('title="Go forward') < html.index('id="review-heatmap-new-cards"')
     assert conf == original
 

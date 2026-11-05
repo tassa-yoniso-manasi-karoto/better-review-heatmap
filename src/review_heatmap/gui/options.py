@@ -158,8 +158,12 @@ class CalibrationDialog(QDialog):
              "answers twice as long count their full duration."),
             ("template_cap", "Template cap (×)", 1, 0.1,
              "An answer feeds the clock at most this many times its card "
-             "template's usual duration, so a slow day on quick cards builds no "
+             "template's norm, so a slow day on quick cards builds no "
              "concentration."),
+            ("template_norm_days", "Template norm window (days)", 0, 10,
+             "Days before an answer that set its template's norm: the answer "
+             "length that splits the template's recorded time in half. With "
+             "under 30 answers in that span, all earlier answers are used."),
             ("warm_up_minutes", "Warm-up (min)", 0, 1,
              "Heavy study in a session before any bonus."),
             ("full_minutes", "Full concentration (min)", 0, 1,
