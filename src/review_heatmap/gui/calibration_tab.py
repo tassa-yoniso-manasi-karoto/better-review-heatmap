@@ -6,6 +6,7 @@ or Anki's undo history.
 """
 
 import traceback
+from collections import Counter
 from datetime import datetime
 from statistics import median
 
@@ -31,7 +32,7 @@ from aqt.utils import openFolder, showWarning, tooltip
 from ..activity import ActivityReporter
 from ..calibration import activate_model
 from ..calibration.dataset import read_dataset, revlog_sql
-from ..calibration.phone import merge_phone, read_files
+from ..calibration.phone import SHEET_WORDING, merge_phone, read_files
 from ..calibration.recorder import active_recorder, start_recording, stop_recording
 from ..calibration.report import (
     format_report,
@@ -190,6 +191,10 @@ class CalibrationTab(QWidget):
             f"Sharpness: {counts['sharpness']}",
             f"Day ratings: {counts['tiring']}",
             f"Skip rate: {skip_rate:.0%}",
+            # Asked by recordings from other devices, which no fit reads yet.
+            f"Effort after a card: {counts['effort']}",
+            f"Sittings rated: {counts['work']}",
+            f"Days rated on amount: {counts['amount']}",
         )))
         self.btnFit.setEnabled(counts["cost"] >= _FIT_MIN_COST_RATINGS)
 
@@ -222,6 +227,7 @@ class CalibrationTab(QWidget):
                     back = median(a.back_ms for a in timed) / 1000
                     lines.append(f"{names.get(template, str(template))}: "
                                  f"{front:.1f} s front, {back:.1f} s back (medians)")
+            lines += _sheet_lines(data)
             return data.diagnostics, "\n".join(lines)
 
         def done(result):
@@ -316,6 +322,28 @@ def _template_names(col) -> dict:
 
 def _date(epoch_ms: int) -> str:
     return datetime.fromtimestamp(epoch_ms / 1000).strftime("%Y-%m-%d")
+
+
+def _sheet_lines(data) -> list:
+    """Questions asked once a card was answered: how many came up, and how."""
+    sheets = [
+        event for event in data.events
+        if event["t"] == "prompt" and event["kind"] == "answer"
+        and event.get("wording_v", 0) >= SHEET_WORDING
+    ]
+    unshown = data.diagnostics.get("unshown", 0)
+    if not sheets and not unshown:
+        return []
+    rated = sum("effort" in event["answers"] for event in sheets)
+    lines = [f"Cards asked about: {len(sheets)} shown, {rated} rated on effort, "
+             f"{unshown} never shown"]
+    # "leave" is the normal way; the others cover a card left before its plan came.
+    paths = Counter(str(event.get("via")) for event in sheets)
+    if paths:
+        lines.append("Shown by: " + ", ".join(
+            f"{path} {count}" for path, count in paths.most_common()
+        ))
+    return lines
 
 
 def _phone_index(col, cards):

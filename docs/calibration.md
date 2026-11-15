@@ -408,3 +408,32 @@ Files never hold the answer button. Fit matches each interval ending in a real r
 - The earliest recorded event starts the baseline if it predates desktop's.
 
 Split timing and sharpness remain diagnostics, never scoring inputs. Files are never deleted or rewritten here.
+
+### Wording 5
+
+A recording tool may ask other questions than the dialogs above. From `wording_v` 5 on, files are read as follows. No fit reads these answers yet: they are counted in the tab, and Check Phone reports them.
+
+A card is asked about once it is answered, on a sheet shown over whatever follows it. That keeps the question off the card being rated, and off its clock.
+
+| Event | Fields |
+| --- | --- |
+| `offer` | `ask`, the question ids planned for this answer, and `p`, the chance it had of being asked about |
+| `prompt`, `kind` `answer` | `wording_v` 5, `answers`, `rt_ms`, `skipped`, `after` true, `at` (ms, when the sheet closed) and `sheet_ms`. Its `ts` lies inside its own card's review, after the answer side was shown |
+| `prompt`, `kind` `session` | A sitting: `answers`, `from_ms`, `to_ms`. No `card` |
+| `prompt`, `kind` `day` | As before, with the answers below |
+
+| Answer | Values |
+| --- | --- |
+| `effort` | 1 to 6: how hard the card made you think, with no reference review and no time in it |
+| `familiar` | 0 to 3: what was known of a new card before it |
+| `know` | 0 to 100: how much of the card is known |
+| `gained` | 0 to 4: what the review left behind |
+| `wrong` | A list from `blank`, `other`, `form`, `sense`, `misread`, `purpose`, `else` |
+| `work`, `focus` | 1 to 5, about a sitting: how much work it was, and how well you could concentrate |
+| `amount` | 1 to 7, about the day: how much study was done |
+| `strain`, `rest`, `versus`, `pair` | 1 to 5, about the day: how hard it felt, what the rest of the day took, and two comparisons |
+
+- An `offer` with no `prompt` for its answer was never shown. It is counted as such, never as a skip.
+- `wrong` is kept only after a real Again.
+- `sheet_ms` is removed from the duration of the card that was on screen while the sheet was up, for fitting only.
+- A day rated on these questions has no `tiring` rating, so the judge above doesn't count it.

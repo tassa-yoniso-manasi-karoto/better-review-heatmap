@@ -329,7 +329,8 @@ def _category_use(prompts: Sequence[dict]) -> Dict[str, Dict[str, int]]:
     use: Dict[str, Counter] = {}
     for event in prompts:
         for question, value in event["answers"].items():
-            use.setdefault(question, Counter())[value] += 1
+            # A question answered with several choices counts each of them.
+            use.setdefault(question, Counter()).update(value if isinstance(value, list) else [value])
     return {
         question: {str(value): count for value, count in sorted(values.items())}
         for question, values in use.items()

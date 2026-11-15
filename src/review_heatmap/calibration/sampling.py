@@ -82,8 +82,13 @@ def prompts_since(events: Iterable[dict], start_ms: int) -> int:
 
 
 def prompt_counts(events: Iterable[dict]) -> dict:
-    """Answers per question from "prompt" events, plus prompts and skips."""
-    counts = dict.fromkeys(("cost", "why", "sharpness", "tiring", *ROTATION), 0)
+    """Answers per question from "prompt" events, plus prompts and skips.
+
+    The last three are asked by recordings from other devices: effort after a
+    card, the amount of work in a day, and in one sitting."""
+    counts = dict.fromkeys(
+        ("cost", "why", "sharpness", "tiring", *ROTATION, "effort", "amount", "work"), 0,
+    )
     counts.update(prompts=0, skipped=0)
     for event in events:
         counts["prompts"] += 1

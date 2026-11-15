@@ -29,7 +29,7 @@ def test_no_files_changes_nothing(tmp_path):
     assert data.events == []
     assert data.rows == [row()]
     assert data.earliest_ms is None
-    assert data.diagnostics == dict(files=0, unresolved=0, ambiguous=0)
+    assert data.diagnostics == dict(files=0, unresolved=0, ambiguous=0, unshown=0)
 
 
 def test_files_are_deduped_and_damaged_lines_ignored(tmp_path):
@@ -51,7 +51,7 @@ def test_exact_raw_keys(key, cid):
 def test_ambiguous_and_unresolved_keys_are_dropped_and_counted():
     data = merge([event('q', 80_000, 'same'), event('a', 90_000, 'same'), event('q', 95_000, 'x&y')])
     assert not data.events
-    assert data.diagnostics == dict(files=1, ambiguous=1, unresolved=1)
+    assert data.diagnostics == dict(files=1, ambiguous=1, unresolved=1, unshown=0)
 
 
 def test_first_question_and_answer_survive_redraws():
@@ -232,6 +232,124 @@ def test_semantically_damaged_lines_are_ignored(tmp_path):
     damaged = [dict(valid, id='missing-key', key=None),
                dict(v=1, id='no-card', t='q', ts=90_000),
                event('prompt', 91_000, kind='answer', answers=None),
+               dict(v=1, id='cardless', t='prompt', ts=91_500, kind='answer', answers={'effort': 2}),
                event('offer', 92_000, cost='broken')]
     (tmp_path / '_brh_cal_bad.txt').write_text('\n'.join(map(json.dumps, [valid, *damaged])))
     assert read_files(tmp_path).events == [valid]
+
+
+# Wording 5: a card is asked about once it is answered, on a sheet over the next card.
+
+
+def sheet(ts, at, key='extra::คำ', **fields):
+    """Sent after its card's answer, and stamped back inside that card's review."""
+    return event('prompt', ts, key, kind='answer', wording_v=5, after=True, at=at, **fields)
+
+
+def two_cards(*extra):
+    """One card answered at 100 s, the next shown half a second later and answered at 110 s."""
+    return [event('q', 90_000), event('a', 95_000), event('q', 100_500, 'x&amp;y'),
+            event('a', 106_000, 'x&amp;y'), *extra]
+
+
+def test_sheet_rates_the_card_before_it_and_takes_its_time_off_the_card_under_it():
+    rows = [row(), row(110_000, cid=2, duration=9500)]
+    data = merge(two_cards(
+        event('offer', 95_001, ask=['effort', 'gained'], p=.33, situation='review'),
+        sheet(95_001, 103_500, answers={'effort': 3, 'gained': 2}, rt_ms={'effort': 900},
+              sheet_ms=3000, via='leave'),
+    ), rows)
+    dataset = read_dataset(data.events, data.rows)
+    prompt, = (e for e in dataset.prompts if e['kind'] == 'answer')
+    assert prompt['rev_id'] == 100_000 and prompt['ease'] == 3
+    assert prompt['answers'] == {'effort': 3, 'gained': 2} and prompt['skipped'] == []
+    assert prompt['wording_v'] == 5 and prompt['answer_p'] == .33 and prompt['via'] == 'leave'
+    assert prompt['sheet_ms'] == 3000 and prompt['panel_ms'] == 0
+    assert not dataset.rated
+    rated, covered = dataset.logged
+    assert data.rows[0][3] == 10_000 and rated.taken_ms == 10_000
+    assert data.rows[1][3] == 6500 and covered.taken_ms == 6500
+    assert covered.front_ms == 2500 and covered.back_ms == 4000
+    assert rows[1][3] == 9500
+
+
+def test_sheet_closed_after_the_flip_leaves_the_front_time_alone():
+    data = merge(two_cards(sheet(95_001, 108_000, answers={'effort': 1}, sheet_ms=2000)),
+                 [row(), row(110_000, cid=2)])
+    covered = read_dataset(data.events, data.rows).logged[1]
+    assert covered.front_ms == 5500 and covered.back_ms == 2000
+
+
+@pytest.mark.parametrize('ease,kept', [(1, ['blank', 'form']), (3, None)])
+def test_reasons_count_only_after_a_real_again(ease, kept):
+    data = merge([event('q', 90_000), event('a', 95_000),
+                  sheet(95_001, 101_000, sheet_ms=4000, skipped=['gained', 'bogus'],
+                        answers={'effort': 5, 'wrong': ['form', 'made up', 'blank'], 'know': 101})],
+                 [row(ease=ease)])
+    prompt = next(e for e in data.events if e['t'] == 'prompt')
+    assert prompt['answers'].get('wrong') == kept
+    assert prompt['answers']['effort'] == 5 and 'know' not in prompt['answers']
+    assert prompt['skipped'] == ['gained']
+    # Its own card ended before the sheet opened.
+    assert data.rows[0][3] == 10_000
+
+
+def test_sheet_closed_unanswered_is_a_skip_and_a_question_never_shown_is_not():
+    closed = merge([event('q', 90_000), event('a', 95_000),
+                    event('offer', 95_001, ask=['effort'], p=.05),
+                    sheet(95_001, 101_000, answers={}, skipped=['effort'], sheet_ms=800)])
+    prompt = next(e for e in closed.events if e['t'] == 'prompt')
+    assert prompt['answers'] == {} and prompt['skipped'] == ['effort']
+    assert closed.diagnostics['unshown'] == 0
+    unshown = merge([event('q', 90_000), event('a', 95_000),
+                     event('offer', 95_001, ask=['effort'], p=.05)])
+    assert not [e for e in unshown.events if e['t'] == 'prompt']
+    assert unshown.diagnostics['unshown'] == 1
+    silent = merge([event('q', 90_000), event('a', 95_000), event('offer', 95_001, ask=[])])
+    assert silent.diagnostics['unshown'] == 0
+
+
+def test_earlier_wording_keeps_its_own_rules_beside_the_sheet():
+    data = merge([event('q', 90_000), event('a', 92_000),
+                  event('prompt', 96_000, kind='answer', wording_v=4, answers={'cost': 6}, panel_ms=2000)])
+    dataset = read_dataset(data.events, data.rows)
+    assert dataset.rated[0].cost == 6
+    assert dataset.logged[0].taken_ms == 8000
+
+
+def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
+    from review_heatmap.calibration.report import _category_use
+    from review_heatmap.calibration.sampling import prompt_counts
+    extra = [dict(v=1, id='sitting', t='prompt', ts=99_000, kind='session', wording_v=5,
+                  answers={'work': 4, 'focus': 9}, from_ms=80_000, to_ms=99_000),
+             dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=5,
+                  answers={'amount': 5, 'strain': 2, 'pair': 1, 'tiring': 0}, pair_cards=['a', 'b'])]
+    events = [event('q', 90_000), event('a', 95_000),
+              sheet(95_001, 100_800, answers={'effort': 2, 'wrong': ['sense']}), *extra]
+    (tmp_path / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, events)))
+    assert read_files(tmp_path).events == sorted(events, key=lambda e: e['ts'])
+    data = merge(events, [row(ease=1)])
+    dataset = read_dataset(data.events, data.rows)
+    sitting = next(e for e in dataset.prompts if e['kind'] == 'session')
+    assert sitting['answers'] == {'work': 4} and sitting['from_ms'] == 80_000
+    day = next(e for e in dataset.prompts if e['kind'] == 'day')
+    assert day['answers'] == {'amount': 5, 'strain': 2, 'pair': 1}
+    assert day['pair_cards'] == ['a', 'b']
+    # The day is known, but the earlier judge has no rating of it to read.
+    assert dataset.days[0].tiring is None and dataset.days[0].learned is None
+    counts = prompt_counts(dataset.prompts)
+    assert (counts['effort'], counts['work'], counts['amount'], counts['cost']) == (1, 1, 1, 0)
+    assert _category_use(dataset.prompts)['wrong'] == {'sense': 1}
+
+
+def test_check_phone_reports_the_sheets(addon_modules):
+    from review_heatmap.gui.calibration_tab import _sheet_lines
+    data = merge([event('q', 90_000), event('a', 95_000),
+                  sheet(95_001, 101_000, answers={'effort': 2}, via='leave'),
+                  event('q', 105_000, 'x&amp;y'), event('a', 106_000, 'x&amp;y'),
+                  event('offer', 106_001, 'x&amp;y', ask=['effort'], p=.05)],
+                 [row(), row(110_000, cid=2)])
+    assert _sheet_lines(data) == [
+        'Cards asked about: 1 shown, 1 rated on effort, 1 never shown', 'Shown by: leave 1',
+    ]
+    assert _sheet_lines(merge([event('q', 90_000), event('a', 95_000)])) == []

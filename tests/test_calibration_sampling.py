@@ -152,7 +152,7 @@ def test_counts_add_up_per_question():
     ])
     assert counts == {
         "cost": 2, "gain": 1, "grasp": 0, "why": 1, "sharpness": 1, "tiring": 1,
-        "prompts": 6, "skipped": 2,
+        "effort": 0, "amount": 0, "work": 0, "prompts": 6, "skipped": 2,
     }
 
 

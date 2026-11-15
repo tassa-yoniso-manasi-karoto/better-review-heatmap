@@ -5,12 +5,26 @@ opens a collection or infers an answer button from template events.
 """
 
 import json
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
 from .dataset import CID, ID, EASE, DURATION, LAST_IVL
+
+# From this wording on, a card is asked about on a sheet shown once it is answered,
+# over the card that follows. Earlier wordings asked on the card itself.
+SHEET_WORDING = 5
+# Lowest and highest value of each answer. No id has meant two scales.
+SCALES = {
+    'cost': (0, 10), 'gain': (0, 6), 'grasp': (0, 10), 'why': (0, 4),
+    'sharpness': (1, 7), 'tiring': (1, 7), 'learned': (1, 7),
+    'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 4),
+    'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
+    'work': (1, 5), 'focus': (1, 5),
+}
+# What went wrong on a failed card: any number of these, kept in this order.
+REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')
 
 
 class PhoneFiles(NamedTuple):
@@ -51,8 +65,8 @@ def read_files(folder) -> PhoneFiles:
                             continue
                         if event['t'] == 'prompt' and (
                                 not isinstance(event.get('answers'), dict)
-                                or event.get('kind') not in ('answer', 'sharpness', 'day')
-                                or (event['kind'] != 'day' and 'card' not in event)):
+                                or event.get('kind') not in ('answer', 'sharpness', 'day', 'session')
+                                or (event['kind'] in ('answer', 'sharpness') and 'card' not in event)):
                             continue
                         if event['t'] == 'offer' and event.get('cost') is not None and not isinstance(event['cost'], dict):
                             continue
@@ -64,16 +78,33 @@ def read_files(folder) -> PhoneFiles:
     return PhoneFiles(sorted(events.values(), key=lambda event: event['ts']), files)
 
 
+def _answers(raw) -> dict:
+    """Answers on a known scale; anything else a file holds is dropped."""
+    answers = {}
+    for key, value in raw.items() if isinstance(raw, dict) else ():
+        if key == 'wrong':
+            reasons = [reason for reason in REASONS if reason in value] if isinstance(value, list) else []
+            if reasons:
+                answers[key] = reasons
+        elif (key in SCALES and isinstance(value, int) and not isinstance(value, bool)
+                and SCALES[key][0] <= value <= SCALES[key][1]):
+            answers[key] = value
+    return answers
+
+
+def _skipped(raw) -> list:
+    return [key for key in raw if isinstance(key, str) and (key in SCALES or key == 'wrong')
+            ] if isinstance(raw, list) else []
+
+
 def _prompt(event, **fields):
-    answers = event.get('answers', {})
-    scales = {'cost': 10, 'gain': 6, 'grasp': 10, 'why': 4,
-              'sharpness': 7, 'tiring': 7, 'learned': 7}
-    answers = {key: value for key, value in answers.items()
-               if key in scales and isinstance(value, int) and not isinstance(value, bool)
-               and (1 if key in ('sharpness', 'tiring', 'learned') else 0) <= value <= scales[key]} if isinstance(answers, dict) else {}
-    return {**event, 'run': 'phone', 'answers': answers,
-            'skipped': [key for key in event.get('skipped', []) if isinstance(key, str) and key in scales]
-            if isinstance(event.get('skipped', []), list) else [], **fields}
+    return {**event, 'run': 'phone', 'answers': _answers(event.get('answers')),
+            'skipped': _skipped(event.get('skipped', [])), **fields}
+
+
+def _is_sheet(event) -> bool:
+    version = event.get('wording_v')
+    return isinstance(version, int) and version >= SHEET_WORDING
 
 
 def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
@@ -83,7 +114,8 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     question, a future survey, or a row removed by undo cannot create an answer.
     """
     if not phone.events:
-        return PhoneData([], rows, None, {'files': phone.files, 'unresolved': 0, 'ambiguous': 0})
+        return PhoneData([], rows, None,
+                         {'files': phone.files, 'unresolved': 0, 'ambiguous': 0, 'unshown': 0})
     # A different card, or reopening after hiding the reviewer, starts a new
     # presentation. Within it keep the first q: order redraws must not reset time.
     presentations = {}
@@ -103,10 +135,22 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     unresolved, ambiguous = set(), set()
     output = []
     earliest = min((e['ts'] for e in phone.events if e['t'] != 'meta'), default=None)
+    # A sheet is answered over the next card, on that card's clock: when it closed, and
+    # how long it had been up.
+    sheets = sorted(
+        (event['at'], event['sheet_ms']) for event in phone.events
+        if event['t'] == 'prompt' and _is_sheet(event) and event.get('after') is True
+        and all(isinstance(event.get(name), int) and not isinstance(event.get(name), bool)
+                and event[name] > 0 for name in ('at', 'sheet_ms'))
+    )
+    closed = [at for at, _ in sheets]
+    unshown = 0
     for event in phone.events:
         if 'card' not in event:
             if event['t'] == 'prompt' and event.get('kind') == 'day':
                 output.append(_prompt(event, day_end_ms=event['ts'] + 1, p=1))
+            elif event['t'] == 'prompt' and event.get('kind') == 'session':
+                output.append(_prompt(event, p=1))
             continue
         identity = (event['card'], event['key'])
         candidates = set(index.get(identity[0], {}).get(identity[1], ()))
@@ -145,7 +189,9 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
         prompts = [e for e in window if e['t'] == 'prompt']
         panel = sum(e.get('panel_ms', 0) for e in prompts
                     if isinstance(e.get('panel_ms', 0), int) and e.get('panel_ms', 0) > 0)
-        panel = min(panel, rev_id - q['ts'])
+        # Sheets about the card before this one, closed while this one was on screen.
+        over = sheets[bisect_left(closed, q['ts']):bisect_left(closed, rev_id)]
+        panel = min(panel + sum(ms for _, ms in over), rev_id - q['ts'])
         raw = rev_id - q['ts'] - panel
         seq += 1
         common = {'v': 1, 'run': 'phone', 'seq': seq, 'cid': cid, 'rev_id': rev_id}
@@ -155,6 +201,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
             front_panel = sum(e.get('panel_ms', 0) for e in prompts
                               if e['ts'] <= a['ts'] and isinstance(e.get('panel_ms'), int)
                               and e['panel_ms'] > 0)
+            front_panel += sum(ms for at, ms in over if at <= a['ts'])
             output.append({**a, **common, 'ts': max(q['ts'], a['ts'] - front_panel)})
         output.append({**common, 't': 'ans', 'ts': rev_id - panel,
                        'ease': row[EASE], 'taken_capped_ms': row[DURATION],
@@ -162,7 +209,35 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
         if panel:
             revised[DURATION] = min(row[DURATION], raw)
         corrected.append(revised)
-        answer_prompts = [e for e in prompts if e.get('kind') == 'answer']
+        sheet_prompts = [e for e in prompts if e.get('kind') == 'answer' and _is_sheet(e)]
+        asks = [e for e in window if e['t'] == 'offer' and isinstance(e.get('ask'), list) and e['ask']]
+        if sheet_prompts:
+            answers, skipped, rt, sheet_ms = {}, set(), {}, 0
+            for event in sheet_prompts:
+                cleaned = _prompt(event)
+                answers.update(cleaned['answers'])
+                skipped.update(cleaned['skipped'])
+                if isinstance(event.get('rt_ms'), dict):
+                    rt.update(event['rt_ms'])
+                if isinstance(event.get('sheet_ms'), int) and event['sheet_ms'] > 0:
+                    sheet_ms += event['sheet_ms']
+            # The card can't know its button: reasons only count after a real Again.
+            if row[EASE] != 1:
+                answers.pop('wrong', None)
+                skipped.discard('wrong')
+            skipped -= answers.keys()
+            asked, last = (asks[-1] if asks else {}), sheet_prompts[-1]
+            # panel_ms stays 0: the sheet took its time from the next card, not this one.
+            output.append({**common, 't': 'prompt', 'kind': 'answer', 'ts': rev_id,
+                           'ease': row[EASE], 'wording_v': last['wording_v'], 'answers': answers,
+                           'skipped': sorted(skipped), 'rt_ms': rt, 'panel_ms': 0,
+                           'sheet_ms': sheet_ms, 'answer_p': asked.get('p'),
+                           'situation': asked.get('situation'), 'know_q': last.get('know_q'),
+                           'via': last.get('via'), 'why_p': 0, 'rotation_p': 0.5})
+        elif asks:
+            # Planned and never shown: reviewing stopped before anything followed the card.
+            unshown += 1
+        answer_prompts = [e for e in prompts if e.get('kind') == 'answer' and not _is_sheet(e)]
         offers = [e for e in window if e['t'] == 'offer' and 'cost' in e]
         for offer in window:
             if (offer['t'] == 'offer' and offer.get('sharpness')
@@ -200,4 +275,5 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     # Dataset consumes question before flip before answer, even after panel correction.
     output.sort(key=lambda e: (e['ts'], {'q': 0, 'a': 1, 'ans': 2}.get(e['t'], 3)))
     return PhoneData(output, corrected, earliest,
-                     {'files': phone.files, 'unresolved': len(unresolved), 'ambiguous': len(ambiguous)})
+                     {'files': phone.files, 'unresolved': len(unresolved),
+                      'ambiguous': len(ambiguous), 'unshown': unshown})
