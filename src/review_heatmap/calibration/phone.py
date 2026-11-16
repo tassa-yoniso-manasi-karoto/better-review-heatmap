@@ -71,12 +71,40 @@ def read_files(folder) -> PhoneFiles:
                             continue
                         if event['t'] == 'offer' and event.get('cost') is not None and not isinstance(event['cost'], dict):
                             continue
+                        if event['t'] == 'revision' and (not isinstance(event.get('of'), str)
+                                                         or not isinstance(event.get('answers'), dict)):
+                            continue
                         events.setdefault(event['id'], event)
                     except (ValueError, TypeError):
                         continue
         except OSError:
             continue
-    return PhoneFiles(sorted(events.values(), key=lambda event: event['ts']), files)
+    return PhoneFiles(sorted(_revised(events), key=lambda event: event['ts']), files)
+
+
+def _revised(events: dict) -> list:
+    """Prompts with the answers of their newest revision; the revisions themselves drop out.
+
+    A recording is never rewritten: a later answer to the same card arrives as a revision
+    naming the prompt it replaces. Withdrawn answers leave the prompt shown, all skipped.
+    A revision of a prompt not read yet waits for it.
+    """
+    newest = {}
+    for event in events.values():
+        if event['t'] == 'revision' and (event['of'] not in newest
+                                         or event['ts'] >= newest[event['of']]['ts']):
+            newest[event['of']] = event
+    out = []
+    for event in events.values():
+        if event['t'] == 'revision':
+            continue
+        revision = newest.get(event['id']) if event['t'] == 'prompt' else None
+        if revision:
+            event = {**event, 'answers': revision['answers'],
+                     'skipped': revision.get('skipped', []), 'revised': True,
+                     'withdrawn': revision.get('withdrawn') is True}
+        out.append(event)
+    return out
 
 
 def _answers(raw) -> dict:
@@ -248,6 +276,8 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
                            'skipped': sorted(skipped), 'rt_ms': rt, 'panel_ms': 0,
                            'sheet_ms': sheet_ms,
                            'timer_credit_ms': sum(credits) if credits else None,
+                           'revised': any(e.get('revised') is True for e in sheet_prompts),
+                           'withdrawn': any(e.get('withdrawn') is True for e in sheet_prompts),
                            'answer_p': asked.get('p'),
                            'situation': asked.get('situation'), 'know_q': last.get('know_q'),
                            'via': last.get('via'), 'why_p': 0, 'rotation_p': 0.5})

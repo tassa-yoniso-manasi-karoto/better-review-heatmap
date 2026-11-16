@@ -343,6 +343,10 @@ def _sheet_lines(data) -> list:
         lines.append("Shown by: " + ", ".join(
             f"{path} {count}" for path, count in paths.most_common()
         ))
+    revised = sum(event.get("revised") is True for event in sheets)
+    if revised:
+        withdrawn = sum(event.get("withdrawn") is True for event in sheets)
+        lines.append(f"Answers changed afterwards: {revised}, {withdrawn} of them withdrawn")
     credited = sum(event.get("timer_credit_ms") is not None for event in sheets)
     if credited:
         lines.append(f"Sheet time already off the clock: {credited} of {len(sheets)} sheets")

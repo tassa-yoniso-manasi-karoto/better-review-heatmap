@@ -300,6 +300,48 @@ def test_sheet_without_a_valid_credit_is_still_taken_off_for_fitting(credit):
     assert data.diagnostics['credit_gap_ms'] is None and data.diagnostics['credit_answers'] == 0
 
 
+def revision(of, ts, answers, **fields):
+    return dict(v=1, id=f'revision-{ts}', t='revision', ts=ts, of=of, answers=answers, **fields)
+
+
+def test_newest_revision_replaces_the_sheets_answers_and_drops_out(tmp_path):
+    rated = sheet(95_001, 103_500, answers={'effort': 3, 'gained': 2}, skipped=[], sheet_ms=3000)
+    lines = [rated, revision(rated['id'], 200_000, {'effort': 5}, skipped=['gained']),
+             revision(rated['id'], 150_000, {'effort': 1}, skipped=[]),
+             revision('never-read', 210_000, {'effort': 6})]
+    (tmp_path / '_brh_cal_a.txt').write_text(
+        '\n'.join(json.dumps(line, ensure_ascii=False) for line in lines), encoding='utf-8')
+    files = read_files(tmp_path)
+    assert [e['t'] for e in files.events] == ['prompt']
+    prompt, = files.events
+    assert prompt['answers'] == {'effort': 5} and prompt['skipped'] == ['gained']
+    assert prompt['revised'] is True and prompt['withdrawn'] is False
+    data = merge(two_cards(*files.events), [row(), row(110_000, cid=2, duration=9500)])
+    merged, = (e for e in data.events if e['t'] == 'prompt')
+    assert merged['answers'] == {'effort': 5} and merged['skipped'] == ['gained']
+    assert merged['revised'] is True and merged['sheet_ms'] == 3000
+    assert data.rows[1][3] == 6500
+    assert json.loads((tmp_path / '_brh_cal_a.txt').read_text(encoding='utf-8').splitlines()[0]) == rated
+
+
+def test_withdrawn_answers_leave_the_sheet_shown_and_skipped(tmp_path):
+    rated = sheet(95_001, 103_500, answers={'effort': 3}, asked=['effort'], sheet_ms=3000)
+    lines = [rated, revision(rated['id'], 200_000, {}, skipped=['effort'], withdrawn=True),
+             dict(v=1, id='bad', t='revision', ts=1, answers={'effort': 1})]
+    (tmp_path / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, lines)), encoding='utf-8')
+    data = merge(two_cards(*read_files(tmp_path).events), [row(), row(110_000, cid=2)])
+    merged, = (e for e in data.events if e['t'] == 'prompt')
+    assert merged['answers'] == {} and merged['skipped'] == ['effort'] and merged['withdrawn'] is True
+
+
+def test_check_phone_reports_changed_answers(addon_modules):
+    from review_heatmap.gui.calibration_tab import _sheet_lines
+    data = merge(two_cards(sheet(95_001, 103_500, answers={}, skipped=['effort'], sheet_ms=3000,
+                                 revised=True, withdrawn=True)),
+                 [row(), row(110_000, cid=2)])
+    assert 'Answers changed afterwards: 1, 1 of them withdrawn' in _sheet_lines(data)
+
+
 def test_sheet_closed_after_the_flip_leaves_the_front_time_alone():
     data = merge(two_cards(sheet(95_001, 108_000, answers={'effort': 1}, sheet_ms=2000)),
                  [row(), row(110_000, cid=2)])

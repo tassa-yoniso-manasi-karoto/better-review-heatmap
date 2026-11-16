@@ -421,6 +421,7 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 | `prompt`, `kind` `answer` | `wording_v` 5, `answers`, `rt_ms`, `skipped`, `after` true, `at` (ms, when the sheet closed) and `sheet_ms`. Its `ts` lies inside its own card's review, after the answer side was shown. `timer_credit_ms` when the recording tool already took the sheet's time off the clock of the card under it |
 | `prompt`, `kind` `session` | A sitting: `answers`, `from_ms`, `to_ms`. No `card` |
 | `prompt`, `kind` `day` | As before, with the answers below |
+| `revision` | A later change to a card's answers: `of`, the prompt's id, then `answers`, `skipped` and `withdrawn`. No `card` |
 
 | Answer | Values |
 | --- | --- |
@@ -445,6 +446,7 @@ minutes receiving a sustained concentration coefficient above 1, once about
 40 rated sittings are available.
 
 - An `offer` with no `prompt` for its answer was never shown. It is counted as such, never as a skip.
+- A prompt with revisions is read with the answers and skips of its newest one, and the revisions themselves are dropped. The file keeps the original. A withdrawn revision answers nothing: the sheet still counts as shown, its questions as skipped. Check Phone counts changed and withdrawn answers. A revision whose prompt isn't read yet waits for it.
 - `wrong` is kept only after a real Again.
 - `sheet_ms` is removed from the duration of the card that was on screen while the sheet was up, for fitting only.
 - `timer_credit_ms` says how much of that time the recording tool already gave back to that card's clock, so the revlog never held it. The revlog time then matches the time without the sheet, and nothing is removed twice. Check Phone shows how far recorded times sit from it under such sheets: near 0 when the credit works, about a sheet's length when it doesn't.
