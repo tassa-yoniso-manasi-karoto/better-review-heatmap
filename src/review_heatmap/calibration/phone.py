@@ -8,6 +8,7 @@ import json
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from pathlib import Path
+from statistics import median
 from typing import NamedTuple
 
 from .dataset import CID, ID, EASE, DURATION, LAST_IVL
@@ -107,6 +108,12 @@ def _is_sheet(event) -> bool:
     return isinstance(version, int) and version >= SHEET_WORDING
 
 
+def _credit(event):
+    """Sheet time the recording tool already took off the clock of the card under it."""
+    value = event.get('timer_credit_ms')
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     """Index is {card: {raw key: iterable of card IDs}}; collisions stay visible.
 
@@ -115,7 +122,8 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     """
     if not phone.events:
         return PhoneData([], rows, None,
-                         {'files': phone.files, 'unresolved': 0, 'ambiguous': 0, 'unshown': 0})
+                         {'files': phone.files, 'unresolved': 0, 'ambiguous': 0, 'unshown': 0,
+                          'credit_gap_ms': None, 'credit_answers': 0})
     # A different card, or reopening after hiding the reviewer, starts a new
     # presentation. Within it keep the first q: order redraws must not reset time.
     presentations = {}
@@ -135,16 +143,19 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     unresolved, ambiguous = set(), set()
     output = []
     earliest = min((e['ts'] for e in phone.events if e['t'] != 'meta'), default=None)
-    # A sheet is answered over the next card, on that card's clock: when it closed, and
-    # how long it had been up.
-    sheets = sorted(
-        (event['at'], event['sheet_ms']) for event in phone.events
+    # A sheet is answered over the next card, on that card's clock: when it closed, how
+    # long it had been up, and how much of that the recording tool took off the clock.
+    sheets = sorted((
+        (event['at'], event['sheet_ms'], _credit(event)) for event in phone.events
         if event['t'] == 'prompt' and _is_sheet(event) and event.get('after') is True
         and all(isinstance(event.get(name), int) and not isinstance(event.get(name), bool)
                 and event[name] > 0 for name in ('at', 'sheet_ms'))
-    )
-    closed = [at for at, _ in sheets]
+    ), key=lambda sheet: sheet[:2])
+    closed = [at for at, _, _ in sheets]
     unshown = 0
+    # Under sheets already off the clock, recorded time should match the time from first
+    # sight to answer without the sheet: that gap shows whether the credit works.
+    credit_gaps = []
     for event in phone.events:
         if 'card' not in event:
             if event['t'] == 'prompt' and event.get('kind') == 'day':
@@ -191,8 +202,10 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
                     if isinstance(e.get('panel_ms', 0), int) and e.get('panel_ms', 0) > 0)
         # Sheets about the card before this one, closed while this one was on screen.
         over = sheets[bisect_left(closed, q['ts']):bisect_left(closed, rev_id)]
-        panel = min(panel + sum(ms for _, ms in over), rev_id - q['ts'])
+        panel = min(panel + sum(ms for _, ms, _ in over), rev_id - q['ts'])
         raw = rev_id - q['ts'] - panel
+        if over and all(credit is not None for _, _, credit in over):
+            credit_gaps.append(row[DURATION] - raw)
         seq += 1
         common = {'v': 1, 'run': 'phone', 'seq': seq, 'cid': cid, 'rev_id': rev_id}
         output.append({**q, **common})
@@ -201,11 +214,12 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
             front_panel = sum(e.get('panel_ms', 0) for e in prompts
                               if e['ts'] <= a['ts'] and isinstance(e.get('panel_ms'), int)
                               and e['panel_ms'] > 0)
-            front_panel += sum(ms for at, ms in over if at <= a['ts'])
+            front_panel += sum(ms for at, ms, _ in over if at <= a['ts'])
             output.append({**a, **common, 'ts': max(q['ts'], a['ts'] - front_panel)})
         output.append({**common, 't': 'ans', 'ts': rev_id - panel,
                        'ease': row[EASE], 'taken_capped_ms': row[DURATION],
                        'taken_raw_ms': raw})
+        # A sheet already off the clock leaves the two equal, so nothing is removed twice.
         if panel:
             revised[DURATION] = min(row[DURATION], raw)
         corrected.append(revised)
@@ -213,6 +227,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
         asks = [e for e in window if e['t'] == 'offer' and isinstance(e.get('ask'), list) and e['ask']]
         if sheet_prompts:
             answers, skipped, rt, sheet_ms = {}, set(), {}, 0
+            credits = [credit for credit in map(_credit, sheet_prompts) if credit is not None]
             for event in sheet_prompts:
                 cleaned = _prompt(event)
                 answers.update(cleaned['answers'])
@@ -231,7 +246,9 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
             output.append({**common, 't': 'prompt', 'kind': 'answer', 'ts': rev_id,
                            'ease': row[EASE], 'wording_v': last['wording_v'], 'answers': answers,
                            'skipped': sorted(skipped), 'rt_ms': rt, 'panel_ms': 0,
-                           'sheet_ms': sheet_ms, 'answer_p': asked.get('p'),
+                           'sheet_ms': sheet_ms,
+                           'timer_credit_ms': sum(credits) if credits else None,
+                           'answer_p': asked.get('p'),
                            'situation': asked.get('situation'), 'know_q': last.get('know_q'),
                            'via': last.get('via'), 'why_p': 0, 'rotation_p': 0.5})
         elif asks:
@@ -276,4 +293,6 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     output.sort(key=lambda e: (e['ts'], {'q': 0, 'a': 1, 'ans': 2}.get(e['t'], 3)))
     return PhoneData(output, corrected, earliest,
                      {'files': phone.files, 'unresolved': len(unresolved),
-                      'ambiguous': len(ambiguous), 'unshown': unshown})
+                      'ambiguous': len(ambiguous), 'unshown': unshown,
+                      'credit_gap_ms': round(median(credit_gaps)) if credit_gaps else None,
+                      'credit_answers': len(credit_gaps)})

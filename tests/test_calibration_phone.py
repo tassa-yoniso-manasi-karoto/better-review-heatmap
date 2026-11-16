@@ -29,7 +29,8 @@ def test_no_files_changes_nothing(tmp_path):
     assert data.events == []
     assert data.rows == [row()]
     assert data.earliest_ms is None
-    assert data.diagnostics == dict(files=0, unresolved=0, ambiguous=0, unshown=0)
+    assert data.diagnostics == dict(files=0, unresolved=0, ambiguous=0, unshown=0,
+                                    credit_gap_ms=None, credit_answers=0)
 
 
 def test_files_are_deduped_and_damaged_lines_ignored(tmp_path):
@@ -51,7 +52,8 @@ def test_exact_raw_keys(key, cid):
 def test_ambiguous_and_unresolved_keys_are_dropped_and_counted():
     data = merge([event('q', 80_000, 'same'), event('a', 90_000, 'same'), event('q', 95_000, 'x&y')])
     assert not data.events
-    assert data.diagnostics == dict(files=1, ambiguous=1, unresolved=1, unshown=0)
+    assert data.diagnostics == dict(files=1, ambiguous=1, unresolved=1, unshown=0,
+                                    credit_gap_ms=None, credit_answers=0)
 
 
 def test_first_question_and_answer_survive_redraws():
@@ -273,6 +275,31 @@ def test_sheet_rates_the_card_before_it_and_takes_its_time_off_the_card_under_it
     assert rows[1][3] == 9500
 
 
+def test_sheet_already_off_the_clock_is_not_removed_twice():
+    # The recording tool gave the sheet's 3 s back: the revlog holds 6.5 s, not 9.5 s.
+    rows = [row(), row(110_000, cid=2, duration=6500)]
+    data = merge(two_cards(
+        sheet(95_001, 103_500, answers={'effort': 3}, sheet_ms=3000, timer_credit_ms=3000),
+    ), rows)
+    rated, covered = read_dataset(data.events, data.rows).logged
+    assert data.rows[1][3] == 6500 and covered.taken_ms == 6500
+    assert covered.front_ms == 2500 and covered.back_ms == 4000
+    prompt, = (e for e in data.events if e['t'] == 'prompt')
+    assert prompt['timer_credit_ms'] == 3000 and prompt['sheet_ms'] == 3000
+    assert data.diagnostics['credit_gap_ms'] == 0 and data.diagnostics['credit_answers'] == 1
+
+
+@pytest.mark.parametrize('credit', [None, -5, True, '3000'])
+def test_sheet_without_a_valid_credit_is_still_taken_off_for_fitting(credit):
+    fields = {} if credit is None else {'timer_credit_ms': credit}
+    data = merge(two_cards(sheet(95_001, 103_500, answers={'effort': 3}, sheet_ms=3000, **fields)),
+                 [row(), row(110_000, cid=2, duration=9500)])
+    assert data.rows[1][3] == 6500
+    prompt, = (e for e in data.events if e['t'] == 'prompt')
+    assert prompt['timer_credit_ms'] is None
+    assert data.diagnostics['credit_gap_ms'] is None and data.diagnostics['credit_answers'] == 0
+
+
 def test_sheet_closed_after_the_flip_leaves_the_front_time_alone():
     data = merge(two_cards(sheet(95_001, 108_000, answers={'effort': 1}, sheet_ms=2000)),
                  [row(), row(110_000, cid=2)])
@@ -378,3 +405,15 @@ def test_check_phone_reports_the_sheets(addon_modules):
         'Cards asked about: 1 shown, 1 rated on effort, 1 never shown', 'Shown by: leave 1',
     ]
     assert _sheet_lines(merge([event('q', 90_000), event('a', 95_000)])) == []
+
+
+def test_check_phone_reports_sheets_already_off_the_clock(addon_modules):
+    from review_heatmap.gui.calibration_tab import _sheet_lines
+    data = merge(two_cards(
+        sheet(95_001, 103_500, answers={'effort': 3}, sheet_ms=3000, timer_credit_ms=3000, via='leave'),
+    ), [row(), row(110_000, cid=2, duration=6800)])
+    assert _sheet_lines(data)[2:] == [
+        'Sheet time already off the clock: 1 of 1 sheets',
+        'Answers under them: recorded time is +0.3 s from first sight to answer without the sheet'
+        ' (median of 1)',
+    ]

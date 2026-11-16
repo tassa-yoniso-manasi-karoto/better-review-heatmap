@@ -343,6 +343,14 @@ def _sheet_lines(data) -> list:
         lines.append("Shown by: " + ", ".join(
             f"{path} {count}" for path, count in paths.most_common()
         ))
+    credited = sum(event.get("timer_credit_ms") is not None for event in sheets)
+    if credited:
+        lines.append(f"Sheet time already off the clock: {credited} of {len(sheets)} sheets")
+    gap, under = data.diagnostics.get("credit_gap_ms"), data.diagnostics.get("credit_answers", 0)
+    if gap is not None:
+        # Near 0 when the credit works; about a sheet's length when it doesn't.
+        lines.append(f"Answers under them: recorded time is {gap / 1000:+.1f} s from first "
+                     f"sight to answer without the sheet (median of {under})")
     return lines
 
 
