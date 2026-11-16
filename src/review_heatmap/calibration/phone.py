@@ -21,7 +21,7 @@ SCALES = {
     'sharpness': (1, 7), 'tiring': (1, 7), 'learned': (1, 7),
     'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 4),
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
-    'work': (1, 5), 'focus': (1, 5),
+    'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5),
 }
 # What went wrong on a failed card: any number of these, kept in this order.
 REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')

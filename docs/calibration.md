@@ -430,8 +430,19 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 | `gained` | 0 to 4: what the review left behind |
 | `wrong` | A list from `blank`, `other`, `form`, `sense`, `misread`, `purpose`, `else` |
 | `work`, `focus` | 1 to 5, about a sitting: how much work it was, and how well you could concentrate |
+| `deep` | 1 to 5: how much of the sitting was spent in unbroken concentration on demanding cards |
 | `amount` | 1 to 7, about the day: how much study was done |
 | `strain`, `rest`, `versus`, `pair` | 1 to 5, about the day: how hard it felt, what the rest of the day took, and two comparisons |
+
+`deep` asks: "During that sitting, how much of the time were you deep in it,
+with no break in your attention?" Count stretches of several minutes on
+demanding cards; quick cards done on autopilot don't count. The choices are
+None of it, A little, About half, Most of it and All of it. `focus` stays
+separate: it describes the person's state, while `deep` describes the sitting.
+It is an addition within wording 5; earlier sittings without it remain valid.
+No fit reads it yet. A later check will compare it with the share of a sitting's
+minutes receiving a sustained concentration coefficient above 1, once about
+40 rated sittings are available.
 
 - An `offer` with no `prompt` for its answer was never shown. It is counted as such, never as a skip.
 - `wrong` is kept only after a real Again.

@@ -321,7 +321,7 @@ def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
     from review_heatmap.calibration.report import _category_use
     from review_heatmap.calibration.sampling import prompt_counts
     extra = [dict(v=1, id='sitting', t='prompt', ts=99_000, kind='session', wording_v=5,
-                  answers={'work': 4, 'focus': 9}, from_ms=80_000, to_ms=99_000),
+                  answers={'work': 4, 'focus': 9, 'deep': 3}, from_ms=80_000, to_ms=99_000),
              dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=5,
                   answers={'amount': 5, 'strain': 2, 'pair': 1, 'tiring': 0}, pair_cards=['a', 'b'])]
     events = [event('q', 90_000), event('a', 95_000),
@@ -331,7 +331,7 @@ def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
     data = merge(events, [row(ease=1)])
     dataset = read_dataset(data.events, data.rows)
     sitting = next(e for e in dataset.prompts if e['kind'] == 'session')
-    assert sitting['answers'] == {'work': 4} and sitting['from_ms'] == 80_000
+    assert sitting['answers'] == {'work': 4, 'deep': 3} and sitting['from_ms'] == 80_000
     day = next(e for e in dataset.prompts if e['kind'] == 'day')
     assert day['answers'] == {'amount': 5, 'strain': 2, 'pair': 1}
     assert day['pair_cards'] == ['a', 'b']
@@ -340,6 +340,31 @@ def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
     counts = prompt_counts(dataset.prompts)
     assert (counts['effort'], counts['work'], counts['amount'], counts['cost']) == (1, 1, 1, 0)
     assert _category_use(dataset.prompts)['wrong'] == {'sense': 1}
+
+
+@pytest.mark.parametrize('value', [1, 5, 0, 6, True, 3.0, '3', None])
+def test_sitting_deep_scale_survives_import(value):
+    raw = dict(v=1, id='sitting', t='prompt', ts=99_000, kind='session', wording_v=5,
+               answers={'work': 4, 'focus': 2, 'deep': value}, skipped=[],
+               from_ms=80_000, to_ms=99_000)
+    data = merge([raw])
+    sitting = read_dataset(data.events, data.rows).prompts[0]
+    expected = {'work': 4, 'focus': 2}
+    if type(value) is int and 1 <= value <= 5:
+        expected['deep'] = value
+    assert sitting['answers'] == expected
+    assert sitting['skipped'] == []
+
+
+@pytest.mark.parametrize('skipped', [[], ['deep']])
+def test_sitting_without_deep_stays_valid_before_or_after_the_question_was_added(skipped):
+    raw = dict(v=1, id='sitting', t='prompt', ts=99_000, kind='session', wording_v=5,
+               answers={'work': 4, 'focus': 2}, skipped=skipped,
+               from_ms=80_000, to_ms=99_000)
+    data = merge([raw])
+    sitting = read_dataset(data.events, data.rows).prompts[0]
+    assert sitting['answers'] == {'work': 4, 'focus': 2}
+    assert sitting['skipped'] == skipped
 
 
 def test_check_phone_reports_the_sheets(addon_modules):
