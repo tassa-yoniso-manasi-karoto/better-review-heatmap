@@ -319,36 +319,45 @@ felt effort, which is why ratings are collected at all.
   fit as a control: public users will never have it.
 - **Learning isn't visible in the log.** Session pace didn't change whether a card
   passed its next review (odds ratio 1.01, n = 1,932), so gain is asked, and kept
-  apart from cost: grinding is high cost and low gain.
-- **The day is the judge.** The heatmap shows days, so day ratings test every formula
-  whatever it becomes. A day of 427 answers in 103 minutes that didn't feel tiring
-  ranked 57th by time but 5th on review-weighted: the count weight overscored it,
-  and hand-tuned effort factors can't fix that.
-- **Ask about a day only after studying it.** The day rating comes on the way back to
-  the deck list after reviewing, from 19:00, once a day, with 20+ answers today. It
-  rates today, and appears before the deck list draws. Asking the next morning meant
-  rating yesterday before any study, and needed the heatmap hidden until then. A day
-  with no evening exit stays unrated. Most study days end between 19:15 and 21:30,
-  so 19:00 leaves up to 79% of days rateable with about 88% of their answers done.
-- **Rate on sliders.** Buttons were too discrete, `gain` most of all with three levels,
-  so ratings take finer steps, each with a description to match a feeling against. A
-  slider is no answer until touched, so its resting place can't become the commonest
-  rating. Keys only set a position: Enter confirms, so a slip can be corrected.
+  apart from effort: grinding is much effort for little gain.
+- **Ask each level what can be felt there.** A first survey asked sampled answers for
+  their cost in routine reviews. The answers followed the button, not the time, so a
+  fit on them could only restate review-weighted. What is felt on a card is how hard
+  it made you think; how much work there was is felt over a sitting or a day. So
+  cards are asked the first, and sittings and days the second, where time is felt.
+- **The day is the judge.** The heatmap shows days, so the evening's rating of how
+  much Anki work a day was tests every formula whatever it becomes. A day of 427
+  answers in 103 minutes that didn't feel like much ranked 57th by time but 5th on
+  review-weighted: the count weight overscored it, and hand-tuned effort factors
+  can't fix that. How hard the day felt and what the rest of it took are asked apart,
+  so that a tiring day isn't rated as a big one.
+- **Ask about a day only after studying it.** The evening rating comes once the day's
+  study is mostly done, once a day, and covers what was answered before it. Asking
+  the next morning meant rating yesterday before any study.
+- **Rate on a row of choices, none preselected.** A slider's resting place was
+  avoided by one question and chosen by another, and its finer steps added nothing a
+  fit could use. Each choice describes what happened, so there is nothing to compare
+  with.
 
 | Answer | Asked | Role |
 | --- | --- | --- |
-| `cost`: effort in routine reviews | Sampled answers | Trains the model |
-| `gain`, `grasp` | Rotating, with `cost` | Recorded, nothing reads them yet |
-| `why`: reason for Again | Sampled lapses | Report only: scoring never has it |
-| `sharpness`: concentration | Start of a study block | Control in the fit, never scores |
-| `tiring` | Evening, on leaving the reviewer | Judges every formula, decides the gate |
-| `learned` | Evening, on leaving the reviewer | Reported beside `tiring`, outside the gate |
+| `effort`: how hard you had to think | Sampled cards, once answered | Stage 1: which answers are harder |
+| `familiar`: known before | New cards | Control in stage 1, never scores |
+| `gained`, `know` | Taking turns, with `effort` | Recorded; the report tests what predicts them |
+| `wrong`: what went wrong | Failed cards | Report only: scoring never has it |
+| `work`: how much work | Sittings | Stage 2: how answers add up |
+| `focus`, `deep` | Sittings | A control in stage 1; a test of sustained concentration |
+| `amount`: how much Anki work | Evenings | Stage 2, and judges every formula |
+| `strain`, `rest` | Evenings | Keep how the day felt out of `amount` |
+| `versus`, `pair` | Evenings, when there is a day or two note types to name | A second judge; stage 2 |
+| `learned` | Evenings | Reported beside `amount`, outside the gate |
 
-Reviews done elsewhere can join the same data through sealed recording files in the
-media folder, which sync like any media. Fit resolves their note keys and matches
-them to the synced revlog, which alone supplies the answer button. Time spent in a
-survey that sits inside a card's timer is removed for fitting only: heatmap scores
-keep it.
+The questions are asked where the reviews happen, by a recording tool whose sealed
+files reach the add-on in the media folder, which syncs like any media. Fit resolves
+their note keys and matches them to the synced revlog, which alone supplies the
+answer button. Time spent on a question that sits inside a card's timer is removed
+for fitting only: heatmap scores keep it. The rating dialogs on desktop asked the
+first survey's questions, and are gone.
 
 ## Calibrated effort
 
@@ -390,60 +399,96 @@ Template inputs read the 60 days before the answer, or all earlier days under 30
 answers, and never the day itself. `rich` is meant to tell rich cards from quick
 ones on any collection, with no note-type names. That rests on one note type so far.
 
-The fit is a regularized ordered logistic regression on the `cost` ratings
-$y_i$, which step through ¼, ⅓, ½, ¾, 1, 1½, 2, 3, 4, 6 and 8+ routine reviews, half
-doublings rounded to plain numbers:
+The weights are fitted in two stages, in pure Python in `calibration/fit.py` and
+`calibration/credit.py`, run from a tab button with no library.
+
+**Stage 1, cards.** An ordered logistic regression of the `effort` ratings $y_i$, how
+hard a card made its owner think, on the inputs:
 
 $$
-P(y_i=k)=F\Big(\frac{c_k-\eta_i}{\sigma}\Big)-F\Big(\frac{c_{k-1}-\eta_i}{\sigma}\Big),
-\qquad c=\ln 2\cdot(-1.75,\,-1.25,\,\dots,\,2.75)
+P(y_i\le j)=F\Big(c_j-\sum_m v_m x_{im}\Big),\qquad
+\delta_i=\sum_{m\notin T} v_m x_{im}
 $$
 
 > [!TIP]
-> This is the machine learning step, in pure Python in `calibration/fit.py`, run
-> from a tab button with no library. `F` is the logistic curve and `sigma` the noise
-> in the ratings. Each rating means the true cost fell in a range of log cost, and
-> the fit finds the weights that make the given ratings most likely. Ranges sit
-> halfway between steps, and they are **fixed**: plain ordered logit learns
-> them freely and so can only order answers, while fixed ranges give the weights an
-> absolute size. The price is trust in the rater's sense of "double": misjudged by
-> ×0.7 or ×1.4, the time exponent moves 30 to 45%, while day ordering mostly
-> survives. An L2 penalty of 2 on standardized inputs keeps few ratings from
-> overfitting.
+> `F` is the logistic curve. The cut points `c_j` between the six levels are fitted
+> too: a rating says which of two answers was harder, not by how much, so the
+> weights `v` only order answers. An L2 penalty of 2 on standardized inputs keeps few
+> ratings from overfitting. The difficulty `δ` leaves out `T`, the two time inputs
+> `log_d` and `log_d·rich`: the fit reads them, so that its other weights compare
+> answers of equal length, and time is then counted once, in stage 2. Controls
+> explain the ratings and never score: the sitting's focus, what was known of a new
+> card, and drift over the months.
 
 Logistic regression beat gradient-boosted trees up to about 800 labels, and trees
 only caught up around 3,000 to 6,000. 15 inputs did as well as 33. Reps and lapses
-correlate at 0.81, so card history stops at reps. Simulated at 800 noisy ratings,
-the fit recovers the time exponent to about ±0.05.
+correlate at 0.81, so card history stops at reps.
 
-There are two fits. The **shared fit** uses these inputs, with sharpness and drift
-as centred controls scored at 0. It is what ships. The **profile fit** adds one
-offset per template with 30+ ratings, kept in that profile's `model.json`: a note
-type can cost more than its timing shows, and only ratings can tell. Offsets never
-ship, because they mean nothing on another collection. Never fit them and then
-drop them: that scored worse than never fitting them. Typical day error in
-simulation, on 145 real days:
+**Stage 2, work.** An answer's credit is $e^{b\ell_i+k\delta_i}$, with $\ell_i$ its
+`log_d`. A sitting or a day $u$ has the summed credit $S_u$, and a pair rating
+compares a day's two named templates through $\ln S_{u,2}-\ln S_{u,1}$. Each kind of
+rating $r$ is an ordered logit on its own log credit, with a slope and cut points of
+its own:
 
-| Note types carry | Shared fit | Profile fit | Fitted, then dropped | Review-weighted |
-| --- | --- | --- | --- | --- |
-| Effort their timing shows | 3.1% | 4.3% | 3.8% | 21.2% |
-| Hidden effort | 7.9% | 4.1% | 12.1% | 15.4% |
-| Both | 5.8% | 4.7% | 8.8% | 23.1% |
-| Nothing | 3.2% | 4.5% | 4.7% | 7.6% |
+$$
+P(r_u\le j)=F\big(c^{r}_j-\alpha_r\ln S_u\big)
+$$
+
+$b$ and $k$ maximize the sum over the three kinds, every slope and cut refitted at
+each $b$ and $k$ tried.
+
+> [!TIP]
+> `b` is the whole time exponent: 0 counts answers, 0.4 is review-weighted and 1 is
+> recorded time. `k` says how much difficulty adds. Credit is clamped as in scoring,
+> and centred so that an average answer counts 1: ratings fix no size. The shipped
+> file keeps its shape: the weight of `log_d` is `b`, that of `log_d·rich` is 0, and
+> every other input weighs `k` times its stage 1 weight. Letting the difficulty keep
+> its time terms would count time twice, and `b` = 0.4 would no longer mean
+> review-weighted.
+
+If the 90% profile likelihood interval of $b$ holds both 0.2 and 0.8, the ratings
+can't tell a count from time: $b$ stays at 0.4, and $k$ alone is fitted. Two fits,
+with $b$ fixed at each end, decide it. A bootstrap of days agreed, except on days of
+one quick note type at 60 days, where its wider ranges would keep 0.4 more often.
+
+Simulated on 60 real days of one person's reviews, drawn with replacement, with
+planted rules of effort and work, and ratings at that person's survey rates:
+
+- $b$ came back without bias. On days mixing a quick and a slow note type it was
+  within about ±0.1 after 30 days and ±0.04 after 120. On days of one quick note
+  type, within ±0.2 after 60 days, and only through the sitting ratings: evening
+  ratings alone left ±0.46.
+- Day scores were typically within 4 to 6% of the planted truth, against 7 to 30%
+  for review-weighted on mixed days. With nothing to gain, the fit cost 1 to 3%.
+- Effects no input could see, a note type harder than its inputs or failures that
+  mean something else on mature cards, left $b$ unbiased and day scores within about
+  5 to 6%.
+
+There are two fits. The **shared fit** uses these inputs, with the controls centred
+and scored at 0. It is what ships. The **profile fit** adds one offset per template
+with 30+ effort ratings to stage 1, kept in that profile's `model.json`: a note type
+can feel harder than its inputs show, and only ratings can tell. Offsets never ship,
+because they mean nothing on another collection. Never fit them and then drop them:
+in earlier research that scored worse than never fitting them.
 
 The shipped `effort_model.json` holds `"status": "none"` until a model passes the
 gate. Until then the measure is hidden, `FSRS_CALIBRATION_DEFAULTS` and the default
 measure stay as they are, and failing is a valid result.
 
-The gate needs 800 cost ratings and 60 rated days. On the later 30% of rated days,
-with the fit trained only on earlier ratings, fitted must be no worse than
-review-weighted on `tiring`, and must explain `tiring` ratings review-weighted leaves
-unexplained: the rank correlation with review-weighted removed from both, one-sided
-$p<0.05$. A fixed Spearman margin can't work: day scores agree so closely that even
-a perfect fit gains only 0.02 to 0.05, so a margin of 0.05 turned away real gains
-more surely with more days. This test gets stronger with data, passing a real gain
-23 to 41% of the time at 60 rated days and 51 to 80% at 180, with about 7% false
-passes. So 60 days is a minimum, not a fair trial.
+The gate needs 300 effort ratings and 60 rated days. The rated days are cut into
+four blocks in time order, and every block but the first is scored by a fit on
+everything rated before it. In each, an ordered logit of the evening's `amount` on
+$\ln$ review-weighted and $\ln$(fitted / review-weighted) gives the $t$ of the second,
+and the blocks' $t$ add up to $z$. Fitted must reach $z\ge1.645$, one-sided $p<0.05$,
+and be no worse than review-weighted in plain rank correlation. A fixed margin can't
+work: day scores agree so closely that even a perfect fit gains only 0.02 to 0.05. A
+rank correlation with review-weighted removed from both sides, used before, passed
+review-weighted plus pure noise in 8 to 14% of simulated cases: ranking bends the
+tails of ratings and candidate alike, and a straight line on ranks leaves that bend
+behind. In simulation a real gain passed 73% of the time at about 68 rated days and
+86% at about 90 on mixed days, far less often on days of one quick note type, where
+every measure ranks days alike, and about 5% of the time with no gain. So 60 days is
+a minimum, not a fair trial.
 
 ## Recorded time
 

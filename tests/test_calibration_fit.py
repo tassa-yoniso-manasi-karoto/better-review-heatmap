@@ -1,268 +1,206 @@
-import importlib.util
 import math
 import random
 import time
-from bisect import bisect_left
-from pathlib import Path
 
 import pytest
 
 from review_heatmap.calibration.fit import (
-    ANCHORS, fit_ordered, mean_log_loss, one_sided_t_5_percent, partial_rank_t,
-    predict_eta, spearman,
+    ONE_SIDED_5_PERCENT, added_t, fit_ordered, mean_log_loss, ordered_logit, ordinal_t,
+    predict_eta, rating_score, spearman,
 )
 
+CUTS = (-1.5, 0.0, 1.0, 2.5)
 
-LOG2 = math.log(2)
+
+def logistic_draw(rng):
+    draw = rng.random()
+    return math.log(draw / (1 - draw))
 
 
-def simulate(weights, intercept, sigma, count, seed, anchors=ANCHORS,
-             means=None, scales=None):
-    """Draw ratings from the fitted model itself: latent log cost, then a cell."""
+def simulate(weights, count, seed, cuts=CUTS, scales=None):
+    """Rows of standard normal inputs times scales, rated through known cut points."""
     rng = random.Random(seed)
-    means = means or [0.0] * len(weights)
     scales = scales or [1.0] * len(weights)
     rows, ratings = [], []
     for _ in range(count):
-        row = [rng.gauss(mean, scale) for mean, scale in zip(means, scales)]
-        eta = intercept + sum(w * x for w, x in zip(weights, row))
-        draw = rng.random()
-        latent = eta + sigma * math.log(draw / (1 - draw))
+        row = [rng.gauss(0, 1) * scale for scale in scales]
+        latent = sum(w * x for w, x in zip(weights, row)) + logistic_draw(rng)
         rows.append(row)
-        ratings.append(bisect_left(anchors, latent))
+        ratings.append(1 + sum(latent > cut for cut in cuts))
     return rows, ratings
 
 
-def test_anchors_are_halfway_between_the_half_doubling_ratings():
-    steps = [math.log(0.25) + k * LOG2 / 2 for k in range(11)]  # up to ln 8
-    assert steps[4] == pytest.approx(0) and steps[10] == pytest.approx(math.log(8))
-    assert ANCHORS == pytest.approx([(low + high) / 2 for low, high in zip(steps, steps[1:])])
+def test_recovers_known_weights_and_cuts_in_raw_units():
+    weights = (0.8, -0.5, 0.3)
+    rows, ratings = simulate(weights, 3000, seed=1, scales=(1.0, 4.0, 0.25))
+    fit = fit_ordered(rows, ratings, ["a", "b", "c"], lam=0.0)
+    assert fit.converged and fit.levels == (1, 2, 3, 4, 5)
+    for name, true in zip("abc", weights):
+        assert fit.weights[name] == pytest.approx(true, abs=4 * fit.se[name])
+    assert fit.cuts == pytest.approx(CUTS, abs=0.15)
 
 
-def test_recovers_known_weights_and_sigma_in_raw_units():
-    names = ["log_d", "new", "minutes"]
-    truth = [0.6, 0.9, -0.05]
-    means = [1.0, 0.3, 40.0]
-    rows, ratings = simulate(truth, 0.2, 0.5, 4000, seed=1, means=means, scales=[1.2, 0.5, 15.0])
-    fit = fit_ordered(rows, ratings, names)
-    assert fit.converged
-    for name, weight in zip(names, truth):
-        assert abs(fit.weights[name] - weight) < 3 * fit.se[name]
-    assert fit.sigma == pytest.approx(0.5, rel=0.05)
-    level = 0.2 + sum(w * mean for w, mean in zip(truth, means))
-    assert predict_eta(fit, means) == pytest.approx(level, abs=0.03)
-
-
-def test_saturated_fit_lands_on_the_closed_form():
-    anchors = (-0.5, 0.75)
-    ratings = [0] * 20 + [1] * 50 + [2] * 30
-    fit = fit_ordered([[]] * 100, ratings, [], anchors=anchors)
-    low, high = math.log(0.2 / 0.8), math.log(0.7 / 0.3)
-    sigma = (anchors[1] - anchors[0]) / (high - low)
-    assert fit.converged
-    assert fit.sigma == pytest.approx(sigma, rel=1e-5)
-    assert fit.intercept == pytest.approx(anchors[0] - sigma * low, rel=1e-5)
-    assert fit.loglik == pytest.approx(
-        20 * math.log(0.2) + 50 * math.log(0.5) + 30 * math.log(0.3)
-    )
-
-
-def test_a_stretched_rating_scale_scales_sigma_and_weights():
-    # A rater who goes a step higher for half the real change in log cost uses
-    # cells half as wide. Free thresholds would absorb that; anchors can't.
-    truth = [0.3, -0.2]
-    narrow = tuple(cut / 2 for cut in ANCHORS)
-    honest = fit_ordered(*simulate(truth, 0.1, 0.3, 4000, seed=2), ["a", "b"])
-    rows, stretched = simulate(truth, 0.1, 0.3, 4000, seed=2, anchors=narrow)
-    inflated = fit_ordered(rows, stretched, ["a", "b"])
-    assert inflated.sigma / honest.sigma == pytest.approx(2, rel=0.1)
-    assert inflated.weights["a"] / honest.weights["a"] == pytest.approx(2, rel=0.1)
-    assert inflated.weights["b"] / honest.weights["b"] == pytest.approx(2, rel=0.1)
-
-
-def test_doubling_the_anchors_doubles_every_estimate_exactly():
-    rows, ratings = simulate([0.5, 0.2], 0.1, 0.6, 500, seed=3)
-    base = fit_ordered(rows, ratings, ["a", "b"], lam=0)
-    doubled = fit_ordered(
-        rows, ratings, ["a", "b"], anchors=[2 * cut for cut in ANCHORS], lam=0,
-    )
-    assert doubled.sigma == pytest.approx(2 * base.sigma, rel=1e-5)
-    assert doubled.intercept == pytest.approx(2 * base.intercept, rel=1e-4)
-    assert doubled.weights["a"] == pytest.approx(2 * base.weights["a"], rel=1e-5)
-    assert doubled.loglik == pytest.approx(base.loglik)
-
-
-def test_input_units_do_not_change_the_fit():
-    rows, ratings = simulate([0.5, 0.2], 0.1, 0.6, 500, seed=4)
-    rescaled = [[100 * a + 7, b] for a, b in rows]
+def test_input_units_and_shifts_do_not_change_what_the_fit_says():
+    rows, ratings = simulate((0.6, -0.4), 800, seed=2)
     base = fit_ordered(rows, ratings, ["a", "b"])
-    fit = fit_ordered(rescaled, ratings, ["a", "b"])
-    assert fit.weights["a"] == pytest.approx(base.weights["a"] / 100, rel=1e-5)
-    assert fit.se["a"] == pytest.approx(base.se["a"] / 100, rel=1e-5)
-    assert fit.loglik == pytest.approx(base.loglik)
-    assert predict_eta(fit, rescaled[0]) == pytest.approx(predict_eta(base, rows[0]))
+    moved = fit_ordered([[10 * a + 3, b] for a, b in rows], ratings, ["a", "b"])
+    assert moved.weights["a"] == pytest.approx(base.weights["a"] / 10)
+    assert moved.weights["b"] == pytest.approx(base.weights["b"])
+    assert moved.loglik == pytest.approx(base.loglik)
+    # The shift lands in the cut points, by the weight it was given.
+    assert moved.cuts == pytest.approx([cut + 3 * moved.weights["a"] for cut in base.cuts])
 
 
-def test_penalty_shrinks_weights_but_not_level_or_sigma():
-    rows, ratings = simulate([0.5, 0.2], 0.1, 0.6, 500, seed=5)
-    alone = fit_ordered([[]] * len(rows), ratings, [])
-    shrunk = fit_ordered(rows, ratings, ["a", "b"], lam=1e7)
-    assert max(map(abs, shrunk.weights.values())) < 1e-3
-    assert shrunk.sigma == pytest.approx(alone.sigma, rel=1e-3)
-    assert shrunk.intercept == pytest.approx(alone.intercept, rel=1e-3)
+def test_penalty_shrinks_weights_and_leaves_the_levels():
+    rows, ratings = simulate((0.6, -0.4), 300, seed=3)
+    loose = fit_ordered(rows, ratings, ["a", "b"], lam=0.0)
+    tight = fit_ordered(rows, ratings, ["a", "b"], lam=500.0)
+    assert abs(tight.weights["a"]) < abs(loose.weights["a"]) / 2
+    assert tight.levels == loose.levels and tight.converged
 
 
-def test_constant_column_gets_weight_zero():
-    rows, ratings = simulate([0.5], 0.1, 0.6, 500, seed=6)
-    fit = fit_ordered([[a, 3.0, 0.0] for a, in rows], ratings, ["a", "flat", "zero"])
-    base = fit_ordered(rows, ratings, ["a"])
-    assert fit.converged
-    assert fit.weights["flat"] == fit.weights["zero"] == 0
-    assert fit.se["flat"] == fit.se["zero"] == 0
-    assert fit.weights["a"] == pytest.approx(base.weights["a"])
-    assert fit.intercept == pytest.approx(base.intercept)
-
-
-@pytest.mark.parametrize("unused", [0, 1, 3, 5, 10])
-def test_unused_rating_category_changes_nothing_structural(unused):
-    rows, ratings = simulate([0.5, 0.2], 0.1, 0.6, 600, seed=7)
-    kept = [i for i, rating in enumerate(ratings) if rating != unused]
-    fit = fit_ordered([rows[i] for i in kept], [ratings[i] for i in kept], ["a", "b"])
-    assert fit.converged
-    assert fit.sigma > 0 and math.isfinite(fit.loglik)
+def test_a_constant_column_gets_weight_and_se_zero():
+    rows, ratings = simulate((0.6,), 200, seed=4)
+    fit = fit_ordered([[x, 7.0] for x, in rows], ratings, ["a", "flat"])
+    assert (fit.weights["flat"], fit.se["flat"]) == (0.0, 0.0)
     assert fit.weights["a"] > 0
 
 
-@pytest.mark.parametrize("rating", [0, 2, 5, 10])
-def test_single_rating_returns_a_finite_flat_fit(rating):
-    fit = fit_ordered([[float(i)] for i in range(50)], [rating] * 50, ["a"])
-    assert fit.weights["a"] == pytest.approx(0, abs=1e-6)
-    assert fit.loglik == pytest.approx(0, abs=1e-5)
-    assert math.isfinite(fit.intercept) and math.isfinite(fit.sigma)
+def test_only_levels_that_occur_get_a_cell():
+    rows, ratings = simulate((0.6,), 400, seed=5)
+    sparse = [{1: 1, 2: 1, 3: 4, 4: 6, 5: 6}[rating] for rating in ratings]
+    fit = ordered_logit(rows, sparse)
+    assert fit.levels == (1, 4, 6) and len(fit.cuts) == 2
+    assert fit.cuts[0] < fit.cuts[1]
 
 
-def test_balanced_ratings_on_two_cells_still_learn_the_weight():
-    # At beta = 0 these give every answer the same log sigma score.
-    rows = [[float(i)] for i in range(40)]
-    fit = fit_ordered(rows, [0] * 20 + [10] * 20, ["a"])
-    assert fit.converged
-    assert fit.weights["a"] > 0.1
-    assert fit.loglik > -20
+def test_a_single_level_gives_a_flat_fit_flagged_unconverged():
+    fit = ordered_logit([[1.0], [2.0]], [3, 3])
+    assert (fit.beta, fit.cuts, fit.levels, fit.converged) == ([0.0], [], (3,), False)
 
 
-def test_rejects_ratings_outside_the_scale():
-    with pytest.raises(ValueError):
-        fit_ordered([[1.0], [2.0]], [0, 11], ["a"])
-    with pytest.raises(ValueError):
-        fit_ordered([[1.0], [math.nan]], [0, 1], ["a"])
+def test_ratings_told_apart_perfectly_come_back_with_a_huge_weight():
+    rows = [[float(x)] for x in range(-10, 10)]
+    fit = ordered_logit(rows, [int(x >= 0) for x in range(-10, 10)])
+    assert fit.beta[0] > 20 and math.isfinite(fit.loglik)
+    # A penalty keeps it finite and modest.
+    assert ordered_logit(rows, [int(x >= 0) for x in range(-10, 10)], lam=1.0).beta[0] < 5
 
 
-def test_predict_eta_sets_controls_to_zero():
-    rows, ratings = simulate([0.5, 0.2], 0.1, 0.6, 500, seed=8)
-    fit = fit_ordered(rows, ratings, ["a", "sharpness"], control_names=["sharpness"])
-    assert fit.weights["sharpness"] != 0
-    assert predict_eta(fit, [2.0, 9.0]) == pytest.approx(
-        fit.intercept + 2.0 * fit.weights["a"]
-    )
-    assert predict_eta(fit, [2.0, 9.0]) == predict_eta(fit, [2.0, -9.0])
+def test_a_warm_start_far_away_is_ignored():
+    rows, ratings = simulate((0.6,), 300, seed=6)
+    cold = ordered_logit(rows, ratings)
+    warm = ordered_logit(rows, ratings, start=([400.0], [-900.0, -800.0, 700.0, 900.0]))
+    assert warm.beta == pytest.approx(cold.beta) and warm.cuts == pytest.approx(cold.cuts)
 
 
-def test_mean_log_loss_matches_loglik_and_beats_intercept_only():
-    rows, ratings = simulate([0.8], 0.1, 0.4, 800, seed=9)
-    train, held_out = rows[:600], rows[600:]
-    fit = fit_ordered(train, ratings[:600], ["a"])
-    alone = fit_ordered([[0.0]] * 600, ratings[:600], ["a"])
-    assert mean_log_loss(fit, train, ratings[:600]) == pytest.approx(-fit.loglik / 600)
-    assert mean_log_loss(fit, held_out, ratings[600:]) < (
-        mean_log_loss(alone, held_out, ratings[600:]) - 0.1
-    )
+def test_predict_eta_leaves_out_controls_and_named_inputs():
+    rows, ratings = simulate((0.6, -0.4, 0.3), 300, seed=7)
+    fit = fit_ordered(rows, ratings, ["a", "time", "focus"], control_names=["focus"])
+    row = [1.0, 2.0, 3.0]
+    assert predict_eta(fit, row) == pytest.approx(fit.weights["a"] + 2 * fit.weights["time"])
+    assert predict_eta(fit, row, without=("time",)) == pytest.approx(fit.weights["a"])
+
+
+def test_mean_log_loss_beats_the_levels_alone_and_takes_unseen_levels():
+    rows, ratings = simulate((1.2,), 600, seed=8)
+    fit = fit_ordered(rows[:400], ratings[:400], ["a"])
+    levels = fit_ordered([[0.0]] * 400, ratings[:400], ["a"])
+    held_rows, held = rows[400:], ratings[400:]
+    assert mean_log_loss(fit, held_rows, held) < mean_log_loss(levels, held_rows, held)
+    # A level the fit never saw counts as the next one it did, or the highest.
+    capped = fit_ordered(rows[:400], [min(rating, 3) for rating in ratings[:400]], ["a"])
+    assert capped.levels == (1, 2, 3)
+    assert mean_log_loss(capped, [[0.0]], [5]) == pytest.approx(mean_log_loss(capped, [[0.0]], [3]))
+
+
+@pytest.mark.parametrize("cell", [0, 1, 4])
+def test_rating_score_is_the_derivative_of_the_rating_log_probability(cell):
+    from review_heatmap.calibration.fit import _probability
+
+    eta, step = 0.37, 1e-6
+    numeric = (
+        math.log(_probability(eta + step, cell, CUTS)[0])
+        - math.log(_probability(eta - step, cell, CUTS)[0])
+    ) / (2 * step)
+    assert rating_score(eta, cell, CUTS) == pytest.approx(numeric, rel=1e-6)
 
 
 def test_spearman_averages_tied_ranks():
-    assert spearman([1, 2, 3, 4], [10, 20, 30, 40]) == pytest.approx(1)
-    assert spearman([1, 2, 3, 4], [4, 3, 2, 1]) == pytest.approx(-1)
-    # Ranks 1, 2.5, 2.5, 4 against 1, 2, 3, 4.
-    assert spearman([1, 5, 5, 9], [1, 2, 3, 4]) == pytest.approx(4.5 / math.sqrt(4.5 * 5))
+    assert spearman([1, 2, 2, 3], [1, 2, 3, 4]) == pytest.approx(0.9486833)
 
 
 def test_spearman_without_spread_is_zero():
-    assert spearman([3, 3, 3], [1, 2, 3]) == 0
+    assert spearman([1, 1, 1], [1, 2, 3]) == 0.0
     with pytest.raises(ValueError):
         spearman([1, 2], [1])
 
 
-def test_partial_rank_sees_what_a_measure_adds_to_its_rival():
-    rng = random.Random(4)
-    rival = [rng.random() for _ in range(60)]
-    extra = [rng.random() for _ in range(60)]
-    target = [a + b for a, b in zip(rival, extra)]
-    r, t = partial_rank_t(target, rival, extra)
-    assert r > 0.8 and t > 5
-    r, t = partial_rank_t(target, rival, [rng.random() for _ in range(60)])
-    assert abs(r) < 0.35
-    r, t = partial_rank_t(target, rival, [-x for x in extra])
-    assert r < -0.8 and t < -5
+def judged_world(rng, days, added):
+    """Days whose rating follows log truth = log rival + added * gap, on 7 levels."""
+    cuts = [math.log(c) for c in (0.25, 0.55, 0.85, 1.2, 1.8, 3.0)]
+    rival, candidate, target = [], [], []
+    for _ in range(days):
+        base, gap = rng.gauss(0, 0.6), rng.gauss(0, 0.15)
+        target.append(sum(base + added * gap + rng.gauss(0, 0.3) > cut for cut in cuts))
+        rival.append(math.exp(base))
+        candidate.append(math.exp(base + 0.8 * gap + rng.gauss(0, 0.05)))
+    return target, rival, candidate
 
 
-def test_a_measure_adds_nothing_to_itself():
-    rival = [1.0, 3.0, 2.0, 5.0, 4.0]
-    assert partial_rank_t([1, 2, 3, 4, 5], rival, rival) == (0.0, 0.0)
+def test_ordinal_t_finds_what_a_candidate_adds_to_its_rival():
+    rng = random.Random(9)
+    assert ordinal_t(*judged_world(rng, 200, 1.0)) > 3
 
 
-def test_partial_rank_survives_a_perfect_match():
-    rival = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
-    candidate = [1.0, 3.0, 2.0, 5.0, 4.0, 6.0]
-    r, t = partial_rank_t(candidate, rival, candidate)
-    assert r == pytest.approx(1.0) and math.isfinite(t)
-
-
-@pytest.mark.parametrize("degrees, table", [
-    (5, 2.015), (10, 1.812), (15, 1.753), (24, 1.711), (51, 1.675), (120, 1.658),
-])
-def test_the_critical_t_matches_the_table(degrees, table):
-    assert one_sided_t_5_percent(degrees) == pytest.approx(table, abs=0.01)
-
-
-def test_two_thousand_ratings_by_twenty_five_inputs_fit_within_a_minute():
+def test_ordinal_t_of_a_rival_plus_noise_stays_standard_normal():
+    """The partial rank test it replaces passed such candidates 8 to 14% of the time."""
     rng = random.Random(10)
-    truth = [rng.uniform(-0.3, 0.3) for _ in range(25)]
-    rows, ratings = simulate(truth, 0.2, 0.6, 2000, seed=10)
-    started = time.perf_counter()
-    fit = fit_ordered(rows, ratings, ["x%d" % i for i in range(25)])
-    assert time.perf_counter() - started < 60
-    assert fit.converged
+    t = [ordinal_t(*judged_world(rng, 40, 0.0)) for _ in range(400)]
+    mean = sum(t) / len(t)
+    assert abs(mean) < 0.15
+    assert sum(value >= ONE_SIDED_5_PERCENT for value in t) / len(t) < 0.09
 
 
-def load_reference():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "research" / "ordlogit.py"
-    if not path.exists():  # gitignored
-        pytest.skip("research scripts are not in this checkout")
-    spec = importlib.util.spec_from_file_location("ordlogit", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.OrderedLogit
+def test_ordinal_t_is_zero_when_it_cannot_be_told():
+    target, rival, _ = judged_world(random.Random(11), 30, 0.0)
+    assert ordinal_t(target, rival, [2 * score for score in rival]) == 0.0  # no spread
+    assert ordinal_t(target, rival, [0.0, *rival[1:]]) == 0.0  # a score at 0
+    assert ordinal_t([3] * 30, rival, rival[::-1]) == 0.0  # one level
+    assert ordinal_t([], [], []) == 0.0
 
 
-def test_matches_the_numpy_reference():
-    numpy = pytest.importorskip("numpy")
-    pytest.importorskip("scipy")
-    rows, ratings = simulate([0.5, -0.3, 0.1], 0.2, 0.7, 2000, seed=11)
-    names = ["a", "b", "c"]
-    matrix = numpy.array(rows)
-    means, scales = matrix.mean(axis=0), matrix.std(axis=0)
-    reference = load_reference()(lam=2.0, anchors=ANCHORS).fit(
-        (matrix - means) / scales, ratings, K=len(ANCHORS) + 1,
-    )
-    fit = fit_ordered(rows, ratings, names)
-    weights = numpy.array([fit.weights[name] for name in names])
-    assert weights * scales == pytest.approx(reference.beta, abs=1e-4)
-    assert fit.sigma == pytest.approx(reference.sigma, abs=1e-4)
-    assert fit.intercept + weights @ means == pytest.approx(reference.intercept, abs=1e-4)
-
-
-def test_spearman_matches_scipy():
-    stats = pytest.importorskip("scipy.stats")
+def test_added_t_reads_the_last_column_once_the_others_are_known():
     rng = random.Random(12)
-    a = [rng.randint(0, 9) for _ in range(200)]
-    b = [x + rng.randint(-4, 4) for x in a]
-    assert spearman(a, b) == pytest.approx(stats.spearmanr(a, b).statistic)
+    first = [rng.gauss(0, 1) for _ in range(300)]
+    second = [rng.gauss(0, 1) for _ in range(300)]
+    target = [int(a + 0.8 * b + logistic_draw(rng) > 0) for a, b in zip(first, second)]
+    assert added_t(target, [first, second]) > 3
+    assert abs(added_t(target, [first, [rng.gauss(0, 1) for _ in range(300)]])) < 3
+
+
+def test_two_thousand_ratings_by_twenty_inputs_fit_in_seconds():
+    rows, ratings = simulate([0.3] * 20, 2000, seed=13)
+    started = time.perf_counter()
+    fit = fit_ordered(rows, ratings, [f"x{i}" for i in range(20)])
+    assert fit.converged
+    assert time.perf_counter() - started < 10
+
+
+def test_matches_a_general_optimizer():
+    optimize = pytest.importorskip("scipy.optimize")
+    rows, ratings = simulate((0.9, -0.6, 0.2), 500, seed=14)
+    fit = ordered_logit(rows, ratings)
+
+    def negative(theta):
+        beta, start, gaps = theta[:3], theta[3], theta[4:]
+        cuts = [start]
+        for gap in gaps:
+            cuts.append(cuts[-1] + math.exp(gap))
+        from review_heatmap.calibration.fit import _objective
+        return -_objective([*beta, *cuts], rows, [r - 1 for r in ratings], 3, 4, 0.0)
+
+    best = optimize.minimize(negative, [0, 0, 0, -1, 0, 0, 0], method="BFGS",
+                             options={"gtol": 1e-8})
+    assert fit.loglik == pytest.approx(-best.fun, abs=1e-6)
+    assert fit.beta == pytest.approx(list(best.x[:3]), abs=1e-4)

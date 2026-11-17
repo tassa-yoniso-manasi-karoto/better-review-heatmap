@@ -81,7 +81,8 @@ def test_why_joins_cost_only_on_review_again(ease, ivl, kept):
                   event('prompt', 98_000, kind='answer', answers={'why': 4}, panel_ms=1000)],
                  [row(ease=ease, ivl=ivl)])
     dataset = read_dataset(data.events, data.rows)
-    assert dataset.rated[0].why == (4 if kept else None)
+    prompt, = (e for e in dataset.prompts if e['kind'] == 'answer')
+    assert prompt['answers'].get('why') == (4 if kept else None)
     assert data.rows[0][3] == 7000
     assert dataset.logged[0].taken_ms == 7000
     assert dataset.logged[0].back_ms == 5000
@@ -111,13 +112,16 @@ def test_why_offer_left_alone_only_counts_on_a_real_lapse():
     assert prompt['skipped'] == ['why'] and prompt['answer_p'] == 0
 
 
-def test_day_and_sharpness_have_dataset_fields():
+def test_day_ratings_reach_the_dataset_and_earlier_wordings_stay_unread():
     data = merge([event('q', 90_000), event('a', 95_000),
                   event('prompt', 91_000, kind='sharpness', answers={'sharpness': 7}),
-                  dict(v=1, id='day', t='prompt', ts=101_000, kind='day', answers={'tiring': 7, 'learned': 1})])
+                  dict(v=1, id='old', t='prompt', ts=100_500, kind='day',
+                       answers={'tiring': 7, 'learned': 1}),
+                  dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=5,
+                       answers={'amount': 6, 'learned': 1})])
     dataset = read_dataset(data.events, data.rows)
-    assert dataset.days[0].tiring == 7
-    assert dataset.days[0].learned == 1
+    assert [day.ratings for day in dataset.days] == [{'amount': 6, 'learned': 1}]
+    assert {e['kind'] for e in dataset.prompts} == {'sharpness', 'day'}
 
 
 def test_front_panel_correction_preserves_split_and_does_not_mutate_rows():
@@ -129,22 +133,26 @@ def test_front_panel_correction_preserves_split_and_does_not_mutate_rows():
     assert original[3] == 10_000
 
 
-def test_run_fit_uses_phone_baseline_and_corrected_rows(tmp_path, monkeypatch):
+def test_run_fit_reads_phone_recordings_on_corrected_rows(tmp_path, monkeypatch):
     from review_heatmap.calibration import report
     from review_heatmap.calibration.store import Store
     media = tmp_path / 'media'
     media.mkdir()
     events = [event('q', 90_000), event('a', 95_000),
-              event('prompt', 98_000, kind='answer', answers={'cost': 6}, panel_ms=2000)]
+              event('prompt', 98_000, kind='answer', answers={'cost': 6}, panel_ms=2000),
+              dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=5,
+                   answers={'amount': 4, 'pair': 2}, pair_cards=[CARD, 'Other/Card'])]
     (media / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, events)))
     store = Store(tmp_path / 'calibration')
-    def build(dataset, state, *args):
-        assert state['recording_since'] == 90_000
-        assert len(dataset.rated) == 1
+    def build(dataset, conf, names, version, progress):
         assert dataset.logged[0].taken_ms == 8000
-        return {'recording_since': state['recording_since']}
+        assert [day.ratings for day in dataset.days] == [{'amount': 4, 'pair': 2}]
+        # The second card was never answered: no pair to fit on.
+        assert dataset.days[0].pair is None
+        return {}
     monkeypatch.setattr(report, 'build_report', build)
-    result = report.run_fit(store, [row()], None, {}, lambda text: None, media, INDEX)
+    result = report.run_fit(store, [row()], None, {}, lambda text: None, media, INDEX,
+                            card_templates={CARD: (10, 0), 'Other/Card': (11, 0)})
     assert result['phone']['unresolved'] == 0
     assert result['phone']['files'] == 1
     store.close()
@@ -165,24 +173,28 @@ def test_collection_index_uses_raw_first_field_and_numeric_note_id(addon_modules
 
 def test_pending_surveys_are_joined_after_revlog_sync():
     events = [event('q', 110_000), event('a', 115_000),
-              event('prompt', 118_000, kind='answer', answers={'cost': 4})]
+              sheet(115_001, 123_000, answers={'effort': 4})]
     before = merge(events)
     assert before.events == []
     after = merge(events, [row(), row(120_000)])
-    assert len(read_dataset(after.events, after.rows).rated) == 1
+    assert [tap.effort for tap in read_dataset(after.events, after.rows).taps] == [4]
 
 
-def test_raw_phone_cost_ratings_enable_fit_before_matching(
+def test_raw_phone_ratings_enable_fit_before_matching(
     tmp_path, addon_modules, monkeypatch,
 ):
     from types import SimpleNamespace
     from aqt.qt import QApplication
     from review_heatmap.gui import calibration_tab
+    from review_heatmap.calibration.report import FIT_EFFORT_RATINGS, FIT_RATED_DAYS
     app = QApplication.instance() or QApplication([])
     media = tmp_path / 'media'
     media.mkdir()
-    events = [event('prompt', index, kind='answer', answers={'cost': 4})
-              for index in range(300)]
+    events = [sheet(index, index + 1000, answers={'effort': 2})
+              for index in range(FIT_EFFORT_RATINGS)]
+    events += [dict(v=1, id=f'day-{index}', t='prompt', ts=10_000 + index, kind='day',
+                    wording_v=5, answers={'amount': 4})
+               for index in range(FIT_RATED_DAYS - 1)]
     (media / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, events)))
     monkeypatch.setattr(calibration_tab, 'active_recorder', lambda: None)
     window = SimpleNamespace(
@@ -190,9 +202,16 @@ def test_raw_phone_cost_ratings_enable_fit_before_matching(
         col=SimpleNamespace(media=SimpleNamespace(dir=lambda: str(media))),
     )
     tab = calibration_tab.CalibrationTab(window)
+    assert not tab.btnFit.isEnabled()  # one rated day short
+    events.append(dict(v=1, id='day-last', t='prompt', ts=20_000, kind='day', wording_v=5,
+                       answers={'amount': 5}))
+    (media / '_brh_cal_b.txt').write_text(json.dumps(events[-1]))
+    tab.deleteLater()
+    tab = calibration_tab.CalibrationTab(window)
     assert tab.btnFit.isEnabled()
-    assert 'Cost ratings: 300/' in tab.labPrompts.text()
-    assert 'Phone: 1 files' in tab.labRecording.text()
+    assert f'Effort ratings: {FIT_EFFORT_RATINGS}, {FIT_EFFORT_RATINGS} to fit' in tab.labRatings.text()
+    assert f'Rated days: {FIT_RATED_DAYS}, {FIT_RATED_DAYS} to fit' in tab.labRatings.text()
+    assert 'Phone: 2 files' in tab.labRecording.text()
     tab.deleteLater()
 
 
@@ -267,7 +286,8 @@ def test_sheet_rates_the_card_before_it_and_takes_its_time_off_the_card_under_it
     assert prompt['answers'] == {'effort': 3, 'gained': 2} and prompt['skipped'] == []
     assert prompt['wording_v'] == 5 and prompt['answer_p'] == .33 and prompt['via'] == 'leave'
     assert prompt['sheet_ms'] == 3000 and prompt['panel_ms'] == 0
-    assert not dataset.rated
+    tap, = dataset.taps
+    assert (tap.answer.rev_id, tap.effort, tap.answers) == (100_000, 3, {'effort': 3, 'gained': 2})
     rated, covered = dataset.logged
     assert data.rows[0][3] == 10_000 and rated.taken_ms == 10_000
     assert data.rows[1][3] == 6500 and covered.taken_ms == 6500
@@ -382,13 +402,15 @@ def test_earlier_wording_keeps_its_own_rules_beside_the_sheet():
     data = merge([event('q', 90_000), event('a', 92_000),
                   event('prompt', 96_000, kind='answer', wording_v=4, answers={'cost': 6}, panel_ms=2000)])
     dataset = read_dataset(data.events, data.rows)
-    assert dataset.rated[0].cost == 6
+    prompt, = dataset.prompts
+    assert (prompt['wording_v'], prompt['answers']) == (4, {'cost': 6})
+    assert dataset.taps == []  # kept as recorded, never fitted
     assert dataset.logged[0].taken_ms == 8000
 
 
 def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
+    from review_heatmap.calibration.dataset import prompt_counts
     from review_heatmap.calibration.report import _category_use
-    from review_heatmap.calibration.sampling import prompt_counts
     extra = [dict(v=1, id='sitting', t='prompt', ts=99_000, kind='session', wording_v=5,
                   answers={'work': 4, 'focus': 9, 'deep': 3}, from_ms=80_000, to_ms=99_000),
              dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=5,
@@ -404,10 +426,13 @@ def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
     day = next(e for e in dataset.prompts if e['kind'] == 'day')
     assert day['answers'] == {'amount': 5, 'strain': 2, 'pair': 1}
     assert day['pair_cards'] == ['a', 'b']
-    # The day is known, but the earlier judge has no rating of it to read.
-    assert dataset.days[0].tiring is None and dataset.days[0].learned is None
+    rated, = dataset.days
+    assert rated.ratings == {'amount': 5, 'strain': 2, 'pair': 1}
+    assert rated.pair is None  # its cards' templates aren't known here
+    assert [s.ratings for s in dataset.sittings] == [{'work': 4, 'deep': 3}]
+    assert [(tap.effort, tap.focus) for tap in dataset.taps] == [(2, None)]
     counts = prompt_counts(dataset.prompts)
-    assert (counts['effort'], counts['work'], counts['amount'], counts['cost']) == (1, 1, 1, 0)
+    assert (counts['effort'], counts['work'], counts['amount'], counts['earlier']) == (1, 1, 1, 0)
     assert _category_use(dataset.prompts)['wrong'] == {'sense': 1}
 
 

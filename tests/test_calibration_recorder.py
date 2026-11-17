@@ -637,7 +637,8 @@ def test_tab_appears_before_about_and_stays_out_of_ok_cancel(
     tab = tabs.widget(labels.index("Calibration"))
     assert isinstance(tab, calibration_tab.CalibrationTab)
     assert "Not recording" in tab.labRecording.text()
-    assert "Baseline days left: 14" in tab.labRecording.text()
+    assert "Effort ratings: 0," in tab.labRatings.text()
+    assert not tab.btnFit.isEnabled()
 
     tab.btnRecording.click()
     assert recorder_module.active_recorder() is not None
@@ -657,7 +658,7 @@ def test_tab_appears_before_about_and_stays_out_of_ok_cancel(
     state = tab._store.load_state()
     assert state["recording"] is False and state["recording_since"] == since
     assert tab.btnRecording.text() == "Start Recording"
-    # A later start keeps the baseline going.
+    # A later start keeps the date of the first.
     tab.btnRecording.click()
     assert tab._store.load_state()["recording_since"] == since
 

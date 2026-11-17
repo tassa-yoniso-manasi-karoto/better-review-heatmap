@@ -6,7 +6,8 @@ from test_activity import TODAY, add_review, setup  # noqa: F401
 from test_activity import add_cards, fitted  # noqa: F401
 
 from review_heatmap.calibration.dataset import (
-    MIN_TEMPLATE_RATINGS, design, read_dataset, revlog_sql,
+    DRIFT_DAYS, MIN_TEMPLATE_RATINGS, PACE_DAYS, SITTING_SLACK_MS, design, prompt_counts,
+    read_dataset, revlog_sql,
 )
 from review_heatmap.calibration.store import DAY_MS, Store
 from review_heatmap.metrics import MODEL_INPUTS, effort_model_credit
@@ -15,6 +16,8 @@ MINUTE = 60_000
 HOUR = 60 * MINUTE
 START = 1_790_000_000_000
 RUN = "run"
+WORD, KANJI = "Vocabulary/Word", "Kanji/Card"
+TEMPLATES = {WORD: (100, 0), KANJI: (200, 0)}
 
 
 def study_day(rev_id):
@@ -41,35 +44,49 @@ def flipped(seq, ts, run=RUN):
     return {"t": "a", "ts": ts, "run": run, "seq": seq}
 
 
-def rating(rev_id, seq=None, run=RUN, **answers):
+def sheet(rev_id, seq=None, run=RUN, wording=5, **answers):
+    """Questions asked once a card was answered; rev_id names that answer."""
     return {
         "t": "prompt", "kind": "answer", "ts": rev_id, "run": run, "seq": seq,
-        "rev_id": rev_id, "answers": answers, "skipped": [],
+        "rev_id": rev_id, "wording_v": wording, "answers": answers, "skipped": [],
     }
 
 
-def sharpness(ts, value, late=False):
+def session(start, end, wording=5, **answers):
     return {
-        "t": "prompt", "kind": "sharpness", "ts": ts, "late": late,
-        "answers": {"sharpness": value}, "skipped": [],
+        "t": "prompt", "kind": "session", "ts": end + 20 * MINUTE, "from_ms": start,
+        "to_ms": end, "wording_v": wording, "answers": answers, "skipped": [],
     }
 
 
-def day_rating(end, **answers):
-    return {
-        "t": "prompt", "kind": "day", "ts": end, "day_end_ms": end, "answers": answers,
-        "skipped": [],
+def day_rating(end, wording=5, pair_cards=None, versus_day=None, **answers):
+    event = {
+        "t": "prompt", "kind": "day", "ts": end, "day_end_ms": end, "wording_v": wording,
+        "answers": answers, "skipped": [],
     }
+    if pair_cards is not None:
+        event["pair_cards"] = pair_cards
+    if versus_day is not None:
+        event["versus_day"] = versus_day
+    return event
+
+
+def answered(dataset, span):
+    return [answer.rev_id for answer in dataset.answers[slice(*span)]]
+
+
+# What happened
+###########################################################################
 
 
 def test_an_undone_answer_goes_with_its_rating():
     kept, undone = START, START + MINUTE
     events = [
-        ans(kept), rating(kept, cost=2),
-        ans(undone), rating(undone, cost=5),
+        ans(kept), sheet(kept, effort=2),
+        ans(undone), sheet(undone, effort=5),
     ]
     dataset = read_dataset(events, [row(kept)])
-    assert [answer.rev_id for answer in dataset.rated] == [kept]
+    assert [tap.answer.rev_id for tap in dataset.taps] == [kept]
     assert [answer.rev_id for answer in dataset.logged] == [kept]
     assert dataset.undone == 1
 
@@ -85,12 +102,12 @@ def test_answers_without_an_ans_event_are_unlogged_once_recording_began():
 def test_a_crash_truncated_last_line_loses_only_that_line(tmp_path):
     store = Store(tmp_path)
     store.append(ans(START))
-    store.append(rating(START, cost=3))
+    store.append(sheet(START, effort=3))
     store.close()
     path = next(tmp_path.glob("events-*.jsonl"))
     path.write_bytes(path.read_bytes() + b'{"t":"prompt","kind":"answer","rev_i')
     dataset = read_dataset(store.read_events(), [row(START)])
-    assert [answer.cost for answer in dataset.rated] == [3]
+    assert [tap.effort for tap in dataset.taps] == [3]
 
 
 def test_a_null_seq_keeps_the_answer_but_not_its_split():
@@ -125,7 +142,7 @@ def test_runs_restart_seq_without_mixing_their_answers():
 def test_only_the_card_right_after_an_answer_prompt_is_marked():
     ids = [START, START + MINUTE, START + 2 * MINUTE]
     events = [
-        ans(ids[0], seq=1), rating(ids[0], seq=1, cost=2),
+        ans(ids[0], seq=1), sheet(ids[0], seq=1, effort=2),
         ans(ids[1], seq=2),
         ans(ids[2], seq=3),
     ]
@@ -133,42 +150,34 @@ def test_only_the_card_right_after_an_answer_prompt_is_marked():
     assert [answer.after_prompt for answer in logged] == [False, True, False]
 
 
-def test_a_prompt_without_a_cost_is_no_rated_answer():
-    events = [ans(START), rating(START, why=2)]
-    assert read_dataset(events, [row(START)]).rated == []
+def test_answers_are_kept_from_a_month_before_the_first_question():
+    old, kept, asked = START, START + 40 * DAY_MS, START + (PACE_DAYS + 40) * DAY_MS
+    rows = [row(old), row(kept), row(asked)]
+    dataset = read_dataset([ans(asked), sheet(asked, effort=2)], rows)
+    assert [answer.rev_id for answer in dataset.answers] == [kept, asked]
+    assert dataset.surveys_began == asked
+    assert read_dataset([], rows).answers == []
 
 
-def worded(event, version):
-    return {**event, "wording_v": version}  # rating() would take it for an answer
+# Cards
+###########################################################################
 
 
-def test_cost_and_why_from_before_the_sliders_double_onto_the_new_scales():
-    event = worded(rating(START, cost=5, why=2, gain=2, grasp=3), 3)
-    dataset = read_dataset([ans(START), event], [row(START)])
-    assert (dataset.rated[0].cost, dataset.rated[0].why) == (10, 4)
-    assert dataset.prompts[0]["answers"] == {"cost": 10, "why": 4, "gain": 2, "grasp": 3}
-    assert event["answers"]["cost"] == 5  # a second read must not double it again
-
-
-def test_sharpness_and_day_ratings_from_before_the_sliders_stay_as_logged():
+def test_only_effort_in_the_fitted_wording_makes_a_tap():
+    first, second, third, fourth = (START + index * MINUTE for index in range(4))
     events = [
-        ans(START), rating(START, cost=2),
-        worded(sharpness(START - 1, 4), 3),
-        worded(day_rating(START + DAY_MS, tiring=2, learned=5), 3),
+        ans(first), sheet(first, effort=4, gained=2),
+        ans(second), sheet(second, gained=3),  # no effort
+        ans(third), sheet(third, wording=4, cost=6),  # a cost in routine reviews
+        ans(fourth), dict(sheet(fourth, effort=2), wording_v=None),
     ]
-    dataset = read_dataset(events, [row(START)])
-    assert dataset.rated[0].sharpness == 4
-    assert (dataset.days[0].tiring, dataset.days[0].learned) == (2, 5)
+    dataset = read_dataset(events, [row(rev_id) for rev_id in (first, second, third, fourth)])
+    tap, = dataset.taps
+    assert (tap.answer.rev_id, tap.effort, tap.answers) == (first, 4, {"effort": 4, "gained": 2})
+    assert len(dataset.prompts) == 4  # kept for the counts, not fitted
 
 
-@pytest.mark.parametrize("version", [{"wording_v": 4}, {}], ids=["sliders", "unversioned"])
-def test_answers_on_the_slider_scales_stay_as_logged(version):
-    event = {**rating(START, cost=3, why=1), **version}
-    answer = read_dataset([ans(START), event], [row(START)]).rated[0]
-    assert (answer.cost, answer.why) == (3, 1)
-
-
-def test_a_rating_reads_the_answers_nobody_rated_and_nothing_logged():
+def test_a_tap_reads_the_answers_nobody_rated_and_nothing_logged():
     rated = START + 40 * DAY_MS
     rows = [
         row(START, ease=3),
@@ -177,28 +186,160 @@ def test_a_rating_reads_the_answers_nobody_rated_and_nothing_logged():
         row(START + 30 * DAY_MS, last_ivl=9),
         row(rated, last_ivl=5, ease=1),
     ]
-    answer = read_dataset([ans(rated), rating(rated, cost=1, why=2)], rows).rated[0]
-    assert answer.inputs["reps"] == pytest.approx(math.log(3))
-    assert answer.inputs["overdue"] == pytest.approx(math.log(2))
-    assert answer.inputs["again"] == 1
-    assert answer.why == 2
+    tap, = read_dataset([sheet(rated, effort=5, wrong=["blank"])], rows).taps
+    inputs = dict(zip(MODEL_INPUTS, tap.answer.inputs))
+    assert inputs["reps"] == pytest.approx(math.log(3))
+    assert inputs["overdue"] == pytest.approx(math.log(2))
+    assert inputs["again"] == 1
+    assert tap.answer.ease == 1 and tap.answers["wrong"] == ["blank"]
 
 
-def test_rated_inputs_read_only_earlier_template_days():
+def test_tap_inputs_read_only_earlier_template_days():
     rated = START + 2 * DAY_MS
     rows = [row(START + index, ms=(index + 1) * 1000) for index in range(40)]
     rows += [row(START + DAY_MS + index, ms=4000, cid=2) for index in range(40)]
     rows.append(row(rated, cid=3, ms=999_000))
     rows.append(row(rated + 1, cid=3, ms=999_000))  # same day: must not count
-    inputs = read_dataset([ans(rated), rating(rated, cost=2)], rows).rated[0].inputs
-    assert inputs["t_med"] == pytest.approx(math.log(0.4))
+    tap, = read_dataset([sheet(rated, effort=2)], rows).taps
+    assert dict(zip(MODEL_INPUTS, tap.answer.inputs))["t_med"] == pytest.approx(math.log(0.4))
+    assert tap.answer.norm_ms == 26_000  # time-weighted: where half the time went
 
 
 def test_a_deleted_card_is_rated_without_a_template():
     rows = [row(START, mid=None, card_ord=None)]
-    answer = read_dataset([ans(START), rating(START, cost=2)], rows).rated[0]
-    assert answer.template is None
-    assert (answer.inputs["rich"], answer.inputs["t_med"]) == (0.0, 0.0)
+    tap, = read_dataset([sheet(START, effort=2)], rows).taps
+    inputs = dict(zip(MODEL_INPUTS, tap.answer.inputs))
+    assert tap.answer.template is None
+    assert (inputs["rich"], inputs["t_med"]) == (0.0, 0.0)
+
+
+def test_drift_counts_periods_from_the_first_tap():
+    ids = [START, START + 45 * DAY_MS, START + 90 * DAY_MS]
+    taps = read_dataset([sheet(rev_id, effort=2) for rev_id in ids], [row(i) for i in ids]).taps
+    assert [tap.drift for tap in taps] == pytest.approx([0, 0.5, 1])
+    assert DRIFT_DAYS == 90
+
+
+# Sittings
+###########################################################################
+
+
+def sitting_world(count=5, gap=2 * MINUTE, first=START + 10 * HOUR):
+    """Cards shown a minute before their answer, and one answered elsewhere."""
+    ids = [first + index * gap for index in range(count)]
+    events = []
+    for seq, rev_id in enumerate(ids, 1):
+        events += [shown(seq, rev_id - MINUTE), ans(rev_id, seq)]
+    elsewhere = ids[2] + 30_000
+    rows = sorted([row(rev_id) for rev_id in ids] + [row(elsewhere, cid=9)], key=lambda r: r[1])
+    return ids, elsewhere, events, rows
+
+
+def test_a_sitting_holds_everything_answered_between_its_cards():
+    ids, elsewhere, events, rows = sitting_world()
+    # Its bounds reach the recording tool a little after the cards were shown.
+    events.append(session(ids[0] + MINUTE, ids[-1], work=3, focus=4))
+    dataset = read_dataset(events, rows)
+    sitting, = dataset.sittings
+    assert answered(dataset, sitting.span) == sorted([*ids, elsewhere])
+    assert sitting.ratings == {"work": 3, "focus": 4} and sitting.day == study_day(ids[-1])
+
+
+def test_a_card_shown_before_the_slack_is_no_part_of_the_sitting():
+    ids, _, events, rows = sitting_world()
+    events.append(session(ids[1] - MINUTE + SITTING_SLACK_MS + 1, ids[-1], work=3))
+    dataset = read_dataset(events, rows)
+    assert answered(dataset, dataset.sittings[0].span)[0] == ids[2]
+
+
+def test_a_sitting_rated_twice_keeps_the_later_rating_and_one_unsynced_waits():
+    ids, _, events, rows = sitting_world()
+    events += [
+        session(ids[0], ids[-1], work=2),
+        dict(session(ids[0], ids[-1], work=4), ts=ids[-1] + HOUR),
+        session(ids[-1] + 2 * HOUR, ids[-1] + 3 * HOUR, work=5),  # its answers haven't synced
+        session(ids[0], ids[-1], wording=4, work=1),
+    ]
+    dataset = read_dataset(events, rows)
+    assert [sitting.ratings for sitting in dataset.sittings] == [{"work": 4}]
+
+
+def test_a_tap_takes_the_focus_of_its_sitting():
+    ids, _, events, rows = sitting_world()
+    events += [sheet(ids[1], 2, effort=3), sheet(ids[-1] + HOUR, effort=1)]
+    events.append(session(ids[0], ids[-1], focus=2))
+    rows.append(row(ids[-1] + HOUR, cid=3))
+    taps = read_dataset(events, rows).taps
+    assert [tap.focus for tap in taps] == [2, None]
+
+
+# Days
+###########################################################################
+
+
+def test_a_day_rating_finds_the_study_day_and_only_what_came_before_it():
+    rows = [
+        row(START + DAY_MS + HOUR),
+        row(START + DAY_MS + 2 * HOUR),
+        row(START + DAY_MS + 3 * HOUR),  # after the rating
+        row(START + 2 * DAY_MS + HOUR),
+    ]
+    events = [
+        ans(rows[0][1]),
+        day_rating(START + DAY_MS + 2 * HOUR + 1, amount=4, learned=2),
+        day_rating(START + 3 * DAY_MS, learned=5),
+    ]
+    dataset = read_dataset(events, rows)
+    first, second = dataset.days
+    assert (first.day, first.ratings) == (1, {"amount": 4, "learned": 2})
+    assert answered(dataset, first.span) == [rows[0][1], rows[1][1]]
+    assert [answer.logged for answer in dataset.answers[slice(*first.span)]] == [True, False]
+    assert (second.day, second.ratings) == (2, {"learned": 5})
+
+
+def test_a_day_rated_twice_keeps_the_later_rating():
+    rows = [row(START + HOUR)]
+    events = [day_rating(START + 2 * HOUR, amount=3), day_rating(START + 3 * HOUR, amount=5)]
+    assert [day.ratings for day in read_dataset(events, rows).days] == [{"amount": 5}]
+
+
+def test_a_skipped_emptied_or_earlier_day_is_no_rated_day():
+    rows = [row(START + HOUR)]
+    events = [
+        day_rating(START + DAY_MS),
+        day_rating(START + 5 * DAY_MS, amount=3),  # its answers are gone
+        day_rating(START + 2 * HOUR, wording=4, tiring=3),
+    ]
+    assert read_dataset(events, rows).days == []
+
+
+def pair_day(*names, mids=(100, 200)):
+    rows = [row(START + HOUR, cid=1, mid=mids[0]), row(START + 2 * HOUR, cid=2, mid=mids[1])]
+    events = [day_rating(START + 3 * HOUR, amount=4, pair=2, pair_cards=list(names))]
+    return read_dataset(events, rows, templates=TEMPLATES).days[0].pair
+
+
+def test_pair_names_two_templates_answered_that_day():
+    assert pair_day(WORD, KANJI) == ((100, 0), (200, 0))
+    assert pair_day(KANJI, WORD) == ((200, 0), (100, 0))  # the rating grows with the second
+    assert pair_day(WORD, "Other/Card") is None
+    assert pair_day(WORD, WORD) is None
+    assert pair_day(WORD, KANJI, mids=(100, 100)) is None  # no Kanji answered
+    assert pair_day(WORD) is None
+
+
+def test_versus_spans_the_whole_day_it_names():
+    rows = [
+        row(START + DAY_MS + HOUR), row(START + DAY_MS + 5 * HOUR),
+        row(START + 3 * DAY_MS + HOUR),
+    ]
+    end = START + 3 * DAY_MS + 2 * HOUR
+    dataset = read_dataset([day_rating(end, amount=5, versus=4, versus_day=START + DAY_MS)], rows)
+    assert answered(dataset, dataset.days[0].versus) == [rows[0][1], rows[1][1]]
+    later = read_dataset([day_rating(end, amount=5, versus=4, versus_day=START + 3 * DAY_MS)], rows)
+    assert later.days[0].versus is None
+    unanswered = read_dataset([day_rating(end, amount=5, versus_day=START + DAY_MS)], rows)
+    assert unanswered.days[0].versus is None
 
 
 def test_inputs_match_what_scoring_computes_from_the_same_collection(setup, fitted):
@@ -220,107 +361,15 @@ def test_inputs_match_what_scoring_computes_from_the_same_collection(setup, fitt
     rows = setup.db.all(revlog_sql(setup.reporter._offset))
     day = rows[-1][7]
     end = max(row[1] for row in rows) + 1
-    dataset = read_dataset([day_rating(end, tiring=3)], rows)
+    dataset = read_dataset([day_rating(end, amount=3)], rows)
     assert dataset.days[0].day == day
-    credits = [effort_model_credit(answer.inputs, model) for answer in dataset.days[0].answers]
+    credits = [
+        effort_model_credit(dict(zip(MODEL_INPUTS, answer.inputs)), model)
+        for answer in dataset.answers[slice(*dataset.days[0].span)]
+    ]
     scored = setup.reporter._cards_done(with_durations=True)[-1]
     assert scored[0] == day
     assert sorted(bucket[2] for bucket in scored[3]) == pytest.approx(sorted(credits))
-
-
-def test_a_day_rating_finds_the_study_day_and_all_of_its_answers():
-    rows = [
-        row(START + DAY_MS + HOUR),
-        row(START + DAY_MS + 2 * HOUR),
-        row(START + 2 * DAY_MS + HOUR),
-    ]
-    events = [
-        ans(rows[0][1]),
-        day_rating(START + 2 * DAY_MS, tiring=4, learned=2),
-        day_rating(START + 3 * DAY_MS, learned=5),
-    ]
-    first, second = read_dataset(events, rows).days
-    assert (first.day, first.tiring, first.learned) == (1, 4, 2)
-    assert [answer.logged for answer in first.answers] == [True, False]
-    assert (second.day, second.tiring, second.learned) == (2, None, 5)
-
-
-def test_a_skipped_or_emptied_day_is_no_rated_day():
-    rows = [row(START + HOUR)]
-    events = [
-        day_rating(START + DAY_MS),
-        day_rating(START + 5 * DAY_MS, tiring=3),  # its answers are gone
-    ]
-    assert read_dataset(events, rows).days == []
-
-
-def test_sharpness_belongs_to_its_study_block():
-    block = [START + 10 * HOUR, START + 10 * HOUR + MINUTE]
-    next_block = START + 14 * HOUR
-    late_block = [START + 20 * HOUR, START + 20 * HOUR + MINUTE]
-    unrated = START + 24 * HOUR
-    rows = [row(rev_id) for rev_id in (*block, next_block, *late_block, unrated)]
-    events = [ans(row_[1]) for row_ in rows]
-    events += [rating(row_[1], cost=2) for row_ in rows]
-    events += [
-        sharpness(block[0] - MINUTE, 4),
-        sharpness(next_block - 3 * HOUR, 1),  # the owner left without answering
-        sharpness(late_block[0] + 1, 2, late=True),
-    ]
-    rated = read_dataset(events, rows, gap_hours=2).rated
-    assert [answer.sharpness for answer in rated] == [4, 4, None, 2, 2, None]
-
-
-def test_a_skipped_sharpness_prompt_is_ignored():
-    event = dict(sharpness(START - 1, 3), answers={}, skipped=["sharpness"])
-    events = [ans(START), rating(START, cost=2), event]
-    assert read_dataset(events, [row(START)]).rated[0].sharpness is None
-
-
-def rated_answers(*groups):
-    """groups are (mid, count, sharpness) with one rating per answer, a day apart."""
-    rows, events, rev_id = [], [], START
-    for mid, count, value in groups:
-        for _ in range(count):
-            rows.append(row(rev_id, cid=rev_id, mid=mid))
-            events += [ans(rev_id), rating(rev_id, cost=2)]
-            if value is not None:
-                events.append(sharpness(rev_id - 1, value))
-            rev_id += DAY_MS
-    return read_dataset(events, rows).rated
-
-
-def test_the_shared_design_has_no_note_type_offsets():
-    rated = rated_answers((100, MIN_TEMPLATE_RATINGS, 4), (300, MIN_TEMPLATE_RATINGS, None))
-    assert design(rated)[3] == ["sharpness", "drift"]
-
-
-def test_design_centres_sharpness_and_offsets_only_well_rated_templates():
-    rated = rated_answers(
-        (100, MIN_TEMPLATE_RATINGS, 4),
-        (200, MIN_TEMPLATE_RATINGS - 1, 2),
-        (300, MIN_TEMPLATE_RATINGS, None),
-    )
-    rows, ratings, names, controls = design(rated, note_type_offsets=True)
-    assert controls == ["sharpness", "drift", "template:100:0", "template:300:0"]
-    assert names == [*MODEL_INPUTS, *controls]
-    assert ratings == [2] * len(rated)
-    values = [row[names.index("sharpness")] for row in rows]
-    given = values[:2 * MIN_TEMPLATE_RATINGS - 1]
-    assert sum(given) == pytest.approx(0)
-    assert values[0] > 0 > values[MIN_TEMPLATE_RATINGS]
-    assert values[-1] == 0
-    drift = names.index("drift")
-    assert sum(row[drift] for row in rows) == pytest.approx(0)  # scored at an average moment
-    assert rows[60][drift] - rows[0][drift] == pytest.approx(60 / 90)
-    offset = names.index("template:100:0")
-    assert [row[offset] for row in (rows[0], rows[MIN_TEMPLATE_RATINGS])] == [1, 0]
-    assert rows[-1][names.index("template:300:0")] == 1
-
-
-def test_design_offsets_ignore_a_deleted_card():
-    rated = rated_answers((None, MIN_TEMPLATE_RATINGS, None))
-    assert design(rated, note_type_offsets=True)[3] == ["sharpness", "drift"]
 
 
 def test_recall_gaps_reach_the_fit_and_the_day_scores_as_the_calendar_reads_them():
@@ -333,18 +382,99 @@ def test_recall_gaps_reach_the_fit_and_the_day_scores_as_the_calendar_reads_them
     index.add(late, 0.8, 0.0)
     index.add(early, 0.0, -0.3)
     rows = [row(START), row(late, cid=2, last_ivl=10), row(early, cid=2, last_ivl=0)]
-    events = [rating(late, cost=4), day_rating(START + DAY_MS - 1, tiring=4)]
+    events = [sheet(late, effort=4), day_rating(START + DAY_MS - 1, amount=4)]
     dataset = read_dataset(events, rows, recall=index)
-    rated, = dataset.rated
-    assert (rated.inputs["recall"], rated.inputs["same_day_recall"]) == (0.8, 0.0)
-    assert rated.inputs["day_load"] == pytest.approx(math.log(2))  # third answer of the day
+    tap, = dataset.taps
+    inputs = dict(zip(MODEL_INPUTS, tap.answer.inputs))
+    assert (inputs["recall"], inputs["same_day_recall"]) == (0.8, 0.0)
+    assert inputs["day_load"] == pytest.approx(math.log(2))  # second answer of the day
     day, = dataset.days
-    assert [answer.recall for answer in day.answers] == [(0.0, 0.0), (0.8, 0.0), (0.0, -0.3)]
+    answers = dataset.answers[slice(*day.span)]
+    assert [answer.recall for answer in answers] == [(0.0, 0.0), (0.8, 0.0), (0.0, -0.3)]
     calibration = fsrs_calibration({})
-    assert _day_scores(day, {}, {})["fsrs"] == pytest.approx(activity_value(3, 30_000, "fsrs", [
+    assert _day_scores(answers, {}, {})["fsrs"] == pytest.approx(activity_value(3, 30_000, "fsrs", [
         (10_000, 1, answer_effort(True, 0, 0.0, 0.0, calibration)),
         (10_000, 1, answer_effort(True, 10, 0.8, 0.0, calibration)),
         (10_000, 1, answer_effort(False, 0, 0.0, -0.3, calibration)),
     ]))
     without = read_dataset(events, rows)
-    assert without.rated[0].inputs["recall"] == 0
+    assert dict(zip(MODEL_INPUTS, without.taps[0].answer.inputs))["recall"] == 0
+
+
+# Design
+###########################################################################
+
+
+def taps_of(*groups):
+    """groups are (mid, count, focus): effort taps a day apart, each in a sitting rated focus."""
+    rows, events, rev_id, seq = [], [], START, 0
+    for mid, count, focus in groups:
+        for _ in range(count):
+            seq += 1
+            rows.append(row(rev_id, cid=rev_id, mid=mid))
+            events += [shown(seq, rev_id - MINUTE), ans(rev_id, seq), sheet(rev_id, seq, effort=2)]
+            if focus is not None:
+                events.append(session(rev_id - MINUTE, rev_id, focus=focus))
+            rev_id += DAY_MS
+    return read_dataset(events, rows).taps
+
+
+def test_the_shared_design_has_no_note_type_offsets():
+    taps = taps_of((100, MIN_TEMPLATE_RATINGS, 4), (300, MIN_TEMPLATE_RATINGS, None))
+    assert design(taps)[3] == ["focus", "familiar", "drift"]
+
+
+def test_design_centres_the_controls_and_offsets_only_well_rated_templates():
+    taps = taps_of(
+        (100, MIN_TEMPLATE_RATINGS, 4),
+        (200, MIN_TEMPLATE_RATINGS - 1, 2),
+        (300, MIN_TEMPLATE_RATINGS, None),
+    )
+    rows, ratings, names, controls = design(taps, note_type_offsets=True)
+    assert controls == ["focus", "familiar", "drift", "template:100:0", "template:300:0"]
+    assert names == [*MODEL_INPUTS, *controls]
+    assert ratings == [2] * len(taps)
+    values = [row[names.index("focus")] for row in rows]
+    given = values[:2 * MIN_TEMPLATE_RATINGS - 1]
+    assert sum(given) == pytest.approx(0)
+    assert values[0] > 0 > values[MIN_TEMPLATE_RATINGS]
+    assert values[-1] == 0  # a tap outside any rated sitting says nothing either way
+    drift = names.index("drift")
+    assert sum(row[drift] for row in rows) == pytest.approx(0)  # scored at an average moment
+    assert rows[60][drift] - rows[0][drift] == pytest.approx(60 / DRIFT_DAYS)
+    offset = names.index("template:100:0")
+    assert [row[offset] for row in (rows[0], rows[MIN_TEMPLATE_RATINGS])] == [1, 0]
+    assert rows[-1][names.index("template:300:0")] == 1
+
+
+def test_design_centres_familiar_on_the_new_cards_that_were_asked():
+    ids = [START + index * MINUTE for index in range(3)]
+    events = [
+        sheet(ids[0], effort=3, familiar=0), sheet(ids[1], effort=2, familiar=2),
+        sheet(ids[2], effort=1),
+    ]
+    rows, _, names, _ = design(read_dataset(events, [row(rev_id) for rev_id in ids]).taps)
+    assert [row[names.index("familiar")] for row in rows] == [-1, 1, 0]
+
+
+def test_design_offsets_ignore_a_deleted_card():
+    taps = taps_of((None, MIN_TEMPLATE_RATINGS, None))
+    assert design(taps, note_type_offsets=True)[3] == ["focus", "familiar", "drift"]
+
+
+# Counts
+###########################################################################
+
+
+def test_prompt_counts_count_the_fitted_wording_and_set_the_rest_apart():
+    events = [
+        sheet(START, effort=2, gained=1),
+        dict(sheet(START + 1, effort=1), skipped=["know"]),
+        sheet(START + 2, wording=4, cost=3),
+        session(START, START + HOUR, work=3, focus=2),
+        day_rating(START + 2 * HOUR, amount=4, pair=2),
+    ]
+    assert prompt_counts(events) == {
+        "effort": 2, "amount": 1, "work": 1, "pair": 1,
+        "prompts": 4, "skipped": 1, "earlier": 1,
+    }

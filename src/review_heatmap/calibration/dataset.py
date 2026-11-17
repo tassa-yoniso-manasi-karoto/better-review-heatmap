@@ -1,4 +1,4 @@
-"""Rated answers, from calibration events and revlog rows. Pure.
+"""Rated answers, sittings and days, from calibration events and revlog rows. Pure.
 
 Inputs only ever come from metrics.answer_inputs, fed every answer of the
 collection the way scoring feeds it, so training and scoring cannot drift
@@ -21,27 +21,61 @@ from .store import DAY_MS
 # which nothing reads since the FSRS-based measure dropped difficulty.
 CID, ID, EASE, DURATION, LAST_IVL, MID, ORD, DAY, FACTOR = range(9)
 
-# From this wording on, cost and why sit on sliders. Earlier prompts offered
-# every other position of those same scales.
-SLIDER_WORDING = 4
+# From this wording on, a card is asked how hard it made its owner think, and
+# sittings and days how much work they were. Earlier wordings asked for a cost
+# in routine reviews: those ratings followed the button, not the time, and no
+# fit reads them.
+MIN_WORDING = 5
 MIN_TEMPLATE_RATINGS = 30
 DRIFT_DAYS = 90
 OFFSET_PREFIX = "template:"
-
-_HOUR_MS = 3_600_000
+# Answers are kept from this long before the first question: the pace check
+# compares with them.
+PACE_DAYS = 30
+# A sitting's bounds say when its events reached the recording tool, a little
+# after they happened.
+SITTING_SLACK_MS = 5 * 60_000
 
 Template = Tuple[int, int]
+# Answers as Dataset.answers[start:stop].
+Span = Tuple[int, int]
 
 
-class RatedAnswer(NamedTuple):
+class Answer(NamedTuple):
     rev_id: int
     day: int
     template: Optional[Template]  # None: the card was deleted since
-    cost: int  # position on the ¼ ⅓ ½ ¾ 1 1½ 2 3 4 6 8+ scale
-    why: Optional[int]
-    inputs: Dict[str, float]
-    sharpness: Optional[int]  # as rated, for the block holding this answer
+    ease: int
+    duration_ms: int
+    last_ivl: int
+    recall: Tuple[float, float]  # (recall, same_day_recall) gaps, unclamped
+    logged: bool  # False: answered elsewhere, or while the recorder was off
+    norm_ms: Optional[int]  # the template's time-weighted median before that day, if any
+    inputs: Tuple[float, ...]  # in the order of MODEL_INPUTS
+
+
+class Tap(NamedTuple):
+    """An answer rated on effort once it was given."""
+    answer: Answer
+    effort: int  # 1 is None, 6 Maximal
+    answers: Dict[str, object]  # all its sheet got: effort, familiar, gained, know, wrong
+    know_q: Optional[str]  # which of its two wordings "know" was asked in
+    focus: Optional[int]  # as rated for the sitting holding this answer
     drift: float  # periods of DRIFT_DAYS since the first rated answer
+
+
+class Sitting(NamedTuple):
+    span: Span
+    day: int  # study day of its last answer
+    ratings: Dict[str, int]  # work, focus and deep, as far as answered
+
+
+class RatedDay(NamedTuple):
+    day: int
+    span: Span  # up to the rating: what was answered after it wasn't rated
+    ratings: Dict[str, int]  # amount, strain, rest, versus, pair and learned, as far as answered
+    pair: Optional[Tuple[Template, Template]]  # what "pair" compares: it grows with the second
+    versus: Optional[Span]  # the whole day "versus" compares this one with
 
 
 class LoggedAnswer(NamedTuple):
@@ -55,27 +89,14 @@ class LoggedAnswer(NamedTuple):
     after_prompt: bool  # the card right after an answer prompt
 
 
-class DayAnswer(NamedTuple):
-    duration_ms: int
-    last_ivl: int
-    recall: Tuple[float, float]  # (recall, same_day_recall) gaps, unclamped
-    logged: bool  # False: answered elsewhere, or while the recorder was off
-    inputs: Dict[str, float]
-    template: Optional[Template]
-
-
-class RatedDay(NamedTuple):
-    day: int
-    tiring: Optional[int]
-    learned: Optional[int]
-    answers: List[DayAnswer]
-
-
 class Dataset(NamedTuple):
-    rated: List[RatedAnswer]
+    answers: List[Answer]  # every answer since PACE_DAYS before the first question, oldest first
+    taps: List[Tap]
+    sittings: List[Sitting]
     days: List[RatedDay]
     logged: List[LoggedAnswer]
     prompts: List[dict]
+    surveys_began: Optional[int]  # ms, when the first question of any wording was asked
     unlogged: int  # revlog answers since recording began without an ans event
     undone: int  # ans events whose revlog row is gone
 
@@ -97,18 +118,17 @@ FROM revlog LEFT JOIN cards ON cards.id = cid LEFT JOIN notes ON notes.id = card
 ORDER BY revlog.id"""
 
 
-def read_dataset(events: Iterable[dict], rows: Sequence[Sequence],
-                 gap_hours: float = 2, recall=None) -> Dataset:
+def read_dataset(events: Iterable[dict], rows: Sequence[Sequence], recall=None,
+                 templates: Optional[Dict[str, Template]] = None) -> Dataset:
     """Join events to rows (see revlog_sql), which must hold the whole revlog:
     reps, elapsed and template norms all read answers nobody rated.
 
     recall is the collection's memory.RecallIndex, which scoring reads too;
-    without one every recall gap is 0."""
+    without one every recall gap is 0. templates gives the (mid, ord) of a
+    recording's card names, "Note type/Template": the "pair" question names two."""
     log = _read_log(events)
     answers = [row for row in rows if row[EASE] >= 1]  # 0 is a reschedule
     ids = [row[ID] for row in answers]
-    day_ratings = _day_ratings(log.prompts, answers, ids)
-    sharpness = _block_sharpness(log.prompts, ids, gap_hours * _HOUR_MS)
     template_rows = Counter(
         (row[MID], row[ORD], row[DAY], row[DURATION] // 1000)
         for row in answers if row[MID] is not None
@@ -116,62 +136,61 @@ def read_dataset(events: Iterable[dict], rows: Sequence[Sequence],
     profiles = template_profiles(
         sorted((*row, count) for row, count in template_rows.items()), MODEL_TEMPLATE_DAYS,
     )
-    ratings = {
-        event["rev_id"]: event["answers"] for event in log.prompts
-        if event["kind"] == "answer" and "cost" in event["answers"]
-    }
     prompted = {
-        (event["run"], event["seq"]) for event in log.prompts if event["kind"] == "answer"
+        (event.get("run"), event.get("seq")) for event in log.prompts
+        if event["kind"] == "answer"
     }
     recording_began = min(log.answers, default=None)
+    surveys_began = min((event["ts"] for event in log.prompts), default=None)
+    keep_from = None if surveys_began is None else surveys_began - (PACE_DAYS + 1) * DAY_MS
 
     history = CardHistory()
-    rated: List[RatedAnswer] = []
+    kept: List[Answer] = []
     logged: List[LoggedAnswer] = []
-    day_answers: Dict[int, List[DayAnswer]] = {day: [] for day in day_ratings}
     unlogged = 0
     for row in answers:
         gaps = recall.get(row[ID]) if recall is not None else (0.0, 0.0)
         inputs = answer_inputs(row[:FACTOR], history, profiles, gaps)
-        rev_id, day = row[ID], row[DAY]
+        rev_id = row[ID]
         template = None if row[MID] is None else (row[MID], row[ORD])
         event = log.answers.get(rev_id)
         if event:
             logged.append(_logged_answer(event, row, template, inputs, log, prompted))
         elif recording_began is not None and rev_id > recording_began:
             unlogged += 1
-        if day in day_answers:
-            day_answers[day].append(DayAnswer(
-                row[DURATION], row[LAST_IVL], gaps, bool(event), inputs, template,
+        if keep_from is not None and rev_id >= keep_from:
+            profile = profiles.get((row[MID], row[ORD], row[DAY]))
+            kept.append(Answer(
+                rev_id, row[DAY], template, row[EASE], row[DURATION], row[LAST_IVL], gaps,
+                bool(event), profile and profile[1],
+                tuple(inputs[name] for name in MODEL_INPUTS),
             ))
-        rating = ratings.get(rev_id)
-        if rating:
-            drift_ms = rev_id - (rated[0].rev_id if rated else rev_id)
-            rated.append(RatedAnswer(
-                rev_id, day, template, rating["cost"], rating.get("why"), inputs,
-                sharpness(rev_id), drift_ms / (DRIFT_DAYS * DAY_MS),
-            ))
+    kept_ids = [answer.rev_id for answer in kept]
+    kept_days = [answer.day for answer in kept]
+    sittings = _sittings(log, kept, kept_ids)
     known = set(ids)
     return Dataset(
-        rated=rated,
-        days=[
-            RatedDay(day, rating.get("tiring"), rating.get("learned"), day_answers[day])
-            for day, rating in sorted(day_ratings.items())
-        ],
+        answers=kept,
+        taps=_taps(log.prompts, kept, sittings),
+        sittings=sittings,
+        days=_rated_days(log.prompts, answers, ids, kept, kept_ids, kept_days, templates or {}),
         logged=logged,
         prompts=log.prompts,
+        surveys_began=surveys_began,
         unlogged=unlogged,
         undone=sum(rev_id not in known for rev_id in log.answers),
     )
 
 
-def design(rated: Sequence[RatedAnswer], note_type_offsets: bool = False) -> tuple:
+def design(taps: Sequence[Tap], note_type_offsets: bool = False) -> tuple:
     """(rows, ratings, names, control_names) for fit_ordered.
 
     Model inputs come first, so a row cut to them still lines up with the
-    names. Sharpness and drift explain the ratings and stay out of scoring.
-    Both are centred, so scoring them at 0 means an average block at an average
-    moment. An unrated block sits at the mean: it says nothing either way.
+    names. Three controls explain the ratings and stay out of scoring: how well
+    the owner could concentrate in that sitting, what they knew of a new card
+    before it, and drift over the months. All are centred, so scoring them at 0
+    means an average sitting, an average new card and an average moment. A tap
+    without such an answer sits at the mean: it says nothing either way.
 
     Offsets are for a fit that stays on its own profile, which scores with them.
     A shared fit must leave them out: they soak up what note types differ by,
@@ -179,27 +198,50 @@ def design(rated: Sequence[RatedAnswer], note_type_offsets: bool = False) -> tup
     """
     offsets: List[Template] = []
     if note_type_offsets:
-        counts = Counter(answer.template for answer in rated if answer.template)
+        counts = Counter(tap.answer.template for tap in taps if tap.answer.template)
         offsets = sorted(
             template for template, count in counts.items() if count >= MIN_TEMPLATE_RATINGS
         )
-    controls = ["sharpness", "drift"]
+    controls = ["focus", "familiar", "drift"]
     controls += [f"{OFFSET_PREFIX}{mid}:{card_ord}" for mid, card_ord in offsets]
-    given = [answer.sharpness for answer in rated if answer.sharpness is not None]
-    center = fmean(given) if given else 0.0
-    drift_center = fmean(answer.drift for answer in rated) if rated else 0.0
+    focus = [tap.focus for tap in taps if tap.focus is not None]
+    familiar = [tap.answers["familiar"] for tap in taps if "familiar" in tap.answers]
+    focus_center = fmean(focus) if focus else 0.0
+    familiar_center = fmean(familiar) if familiar else 0.0
+    drift_center = fmean(tap.drift for tap in taps) if taps else 0.0
     rows = []
-    for answer in rated:
-        sharpness = 0.0 if answer.sharpness is None else answer.sharpness - center
+    for tap in taps:
         rows.append([
-            *model_row(answer), sharpness, answer.drift - drift_center,
-            *(float(answer.template == template) for template in offsets),
+            *tap.answer.inputs,
+            0.0 if tap.focus is None else tap.focus - focus_center,
+            tap.answers["familiar"] - familiar_center if "familiar" in tap.answers else 0.0,
+            tap.drift - drift_center,
+            *(float(tap.answer.template == template) for template in offsets),
         ])
-    return rows, [answer.cost for answer in rated], [*MODEL_INPUTS, *controls], controls
+    return rows, [tap.effort for tap in taps], [*MODEL_INPUTS, *controls], controls
 
 
-def model_row(answer: RatedAnswer) -> List[float]:
-    return [answer.inputs[name] for name in MODEL_INPUTS]
+def prompt_counts(events: Iterable[dict]) -> dict:
+    """Answers per question from "prompt" events in the wording that is fitted,
+    how many of those prompts came up and how many left a question unanswered,
+    and how many prompts of earlier wordings were answered."""
+    counts = dict.fromkeys(("effort", "amount", "work", "pair"), 0)
+    counts.update(prompts=0, skipped=0, earlier=0)
+    for event in events:
+        if not _is_fitted(event):
+            counts["earlier"] += bool(event["answers"])
+            continue
+        counts["prompts"] += 1
+        counts["skipped"] += bool(event["skipped"])
+        for question in event["answers"]:
+            if question in counts:
+                counts[question] += 1
+    return counts
+
+
+def _is_fitted(event: dict) -> bool:
+    version = event.get("wording_v")
+    return isinstance(version, int) and version >= MIN_WORDING
 
 
 def _read_log(events: Iterable[dict]) -> _Log:
@@ -219,18 +261,116 @@ def _read_log(events: Iterable[dict]) -> _Log:
             if event["rev_id"]:
                 answers[event["rev_id"]] = event
         elif kind == "prompt":
-            prompts.append(_on_slider_scales(event))
+            prompts.append(event)
+    prompts.sort(key=lambda event: event["ts"])
     return _Log(shown, answers, prompts)
 
 
-def _on_slider_scales(event: dict) -> dict:
-    if event.get("wording_v", SLIDER_WORDING) >= SLIDER_WORDING:
-        return event
-    answers = {
-        question: value * 2 if question in ("cost", "why") else value
-        for question, value in event["answers"].items()
+def _taps(prompts: Sequence[dict], kept: Sequence[Answer],
+          sittings: Sequence[Sitting]) -> List[Tap]:
+    sheets = {
+        event.get("rev_id"): event for event in prompts
+        if event["kind"] == "answer" and _is_fitted(event) and "effort" in event["answers"]
     }
-    return {**event, "answers": answers}
+    focus: Dict[int, int] = {}
+    for sitting in sittings:
+        if "focus" in sitting.ratings:
+            focus.update(dict.fromkeys(range(*sitting.span), sitting.ratings["focus"]))
+    taps: List[Tap] = []
+    for index, answer in enumerate(kept):
+        event = sheets.get(answer.rev_id)
+        if event:
+            first = taps[0].answer.rev_id if taps else answer.rev_id
+            taps.append(Tap(
+                answer, event["answers"]["effort"], event["answers"], event.get("know_q"),
+                focus.get(index), (answer.rev_id - first) / (DRIFT_DAYS * DAY_MS),
+            ))
+    return taps
+
+
+def _sittings(log: _Log, kept: Sequence[Answer], kept_ids: Sequence[int]) -> List[Sitting]:
+    """Rated sittings, each with the answers it holds.
+
+    A sitting is known by when its first and last card were shown. It runs
+    from the first of its cards' answers to the last, with whatever was
+    answered between: the last answer comes after the sitting's last event, by
+    as long as that card's back was read. A sitting rated twice keeps the
+    later rating, and one whose answers haven't synced yet waits for them.
+    """
+    shown = sorted(
+        (log.shown[event["run"], event["seq"]][0], rev_id)
+        for rev_id, event in log.answers.items()
+        if (event["run"], event["seq"]) in log.shown
+    )
+    moments = [moment for moment, _ in shown]
+    newest: Dict[int, dict] = {}
+    for event in log.prompts:
+        bounds = event.get("from_ms"), event.get("to_ms")
+        if (event["kind"] == "session" and _is_fitted(event) and event["answers"]
+                and all(isinstance(bound, int) for bound in bounds)):
+            newest[bounds[0]] = event
+    sittings = []
+    for start, event in sorted(newest.items()):
+        inside = [rev_id for _, rev_id in shown[
+            bisect_left(moments, start - SITTING_SLACK_MS):bisect_right(moments, event["to_ms"])
+        ]]
+        if not inside:
+            continue
+        span = bisect_left(kept_ids, min(inside)), bisect_right(kept_ids, max(inside))
+        if span[0] < span[1]:
+            sittings.append(Sitting(span, kept[span[1] - 1].day, event["answers"]))
+    return sittings
+
+
+def _rated_days(prompts, answers, ids, kept, kept_ids, kept_days, templates) -> List[RatedDay]:
+    """Rated days by the revlog's study day, so that a day is scored on the
+    same answers as on the calendar. The last answer before the rating names
+    its day, whatever the clocks did. A day rated twice keeps the later rating."""
+    newest: Dict[int, dict] = {}
+    for event in prompts:
+        if event["kind"] != "day" or not _is_fitted(event) or not event["answers"]:
+            continue
+        end = event.get("day_end_ms", event["ts"] + 1)
+        last = bisect_left(ids, end) - 1
+        if last >= 0 and ids[last] >= end - DAY_MS:
+            newest[answers[last][DAY]] = event
+    days = []
+    for day, event in sorted(newest.items()):
+        end = event.get("day_end_ms", event["ts"] + 1)
+        span = (
+            bisect_left(kept_days, day),
+            min(bisect_right(kept_days, day), bisect_left(kept_ids, end)),
+        )
+        if span[0] < span[1]:
+            days.append(RatedDay(
+                day, span, event["answers"], _pair(event, kept[span[0]:span[1]], templates),
+                _versus(event, day, kept, kept_ids, kept_days),
+            ))
+    return days
+
+
+def _pair(event: dict, answers: Sequence[Answer],
+          templates: Dict[str, Template]) -> Optional[Tuple[Template, Template]]:
+    names = event.get("pair_cards")
+    if "pair" not in event["answers"] or not isinstance(names, list) or len(names) != 2:
+        return None
+    first, second = (templates.get(name) for name in names)
+    answered = {answer.template for answer in answers}
+    if first is None or second is None or first == second or not {first, second} <= answered:
+        return None
+    return first, second
+
+
+def _versus(event: dict, day: int, kept, kept_ids, kept_days) -> Optional[Span]:
+    """The day a rating was compared with: versus_day is when that day began."""
+    began = event.get("versus_day")
+    if "versus" not in event["answers"] or not isinstance(began, int):
+        return None
+    first = bisect_left(kept_ids, began)
+    if first == len(kept) or kept_ids[first] >= began + DAY_MS or kept[first].day >= day:
+        return None
+    other = kept[first].day
+    return bisect_left(kept_days, other), bisect_right(kept_days, other)
 
 
 def _logged_answer(event, row, template, inputs, log, prompted) -> LoggedAnswer:
@@ -247,41 +387,3 @@ def _logged_answer(event, row, template, inputs, log, prompted) -> LoggedAnswer:
         event["ts"] - flipped_at if timed else None,
         seq is not None and (run, seq - 1) in prompted,
     )
-
-
-def _day_ratings(prompts, answers, ids) -> Dict[int, dict]:
-    """Ratings by the revlog's study day, so that a day is scored on the same
-    answers as on the calendar. The prompt picked its day from the last answer
-    before day_end_ms, so that answer names it, whatever the clocks did."""
-    ratings = {}
-    for event in prompts:
-        if event["kind"] != "day" or not event["answers"]:
-            continue
-        end = event["day_end_ms"]
-        last = bisect_left(ids, end) - 1
-        if last >= 0 and ids[last] >= end - DAY_MS:
-            ratings[answers[last][DAY]] = event["answers"]
-    return ratings
-
-
-def _block_sharpness(prompts, ids, gap_ms):
-    """A lookup from answer to the sharpness rated for its study block."""
-    starts = [
-        answer for answer, previous in zip(ids, [None, *ids])
-        if previous is None or answer - previous >= gap_ms
-    ]
-    by_block = {}
-    for event in prompts:
-        rating = event["answers"].get("sharpness")
-        if rating is None:
-            continue
-        moment = event["ts"]
-        if not event["late"]:
-            # Asked before the first card: it belongs to the block that follows,
-            # unless the owner left without answering anything.
-            following = bisect_left(ids, moment)
-            if following == len(ids) or ids[following] - moment >= gap_ms:
-                continue
-            moment = ids[following]
-        by_block[bisect_right(starts, moment)] = rating
-    return lambda rev_id: by_block.get(bisect_right(starts, rev_id))

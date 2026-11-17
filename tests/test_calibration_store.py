@@ -5,9 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from review_heatmap.calibration.store import (
-    DEFAULT_STATE, FOLDER_NAME, Store, baseline_days_left,
-)
+from review_heatmap.calibration.store import DEFAULT_STATE, FOLDER_NAME, Store
 
 # 2026-11-05 and 2026-12-01, both 00:00:00 UTC.
 NOVEMBER = 1793836800000
@@ -126,10 +124,10 @@ def test_state_defaults_and_atomic_update(store):
 
 
 def test_defaults_reach_a_state_file_from_an_older_version(store):
-    store.save_state({"recording": True})
+    store.save_state({"recording": True, "answer_rate": 0.06})  # the rating dialogs had it
     state = store.load_state()
     assert state["recording"] is True
-    assert state["baseline_days"] == DEFAULT_STATE["baseline_days"]
+    assert state["recording_since"] is None
 
 
 def test_loaded_state_shares_nothing_with_the_defaults(store):
@@ -159,15 +157,6 @@ def test_log_error_never_raises(tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("")
     Store(blocker / "data").log_error("q", "details")
-
-
-def test_baseline_counts_down_from_the_first_start():
-    state = {"recording_since": NOVEMBER, "baseline_days": 14}
-    assert baseline_days_left(state, NOVEMBER) == 14
-    assert baseline_days_left(state, NOVEMBER + DAY_MS - 1) == 14
-    assert baseline_days_left(state, NOVEMBER + DAY_MS) == 13
-    assert baseline_days_left(state, NOVEMBER + 40 * DAY_MS) == 0
-    assert baseline_days_left({"recording_since": None, "baseline_days": 14}, 0) == 14
 
 
 def test_store_imports_without_anki_or_qt():

@@ -21,15 +21,7 @@ FOLDER_NAME = "better_review_heatmap_calibration"
 # 5 ms: the counts shown in the tab come from the event files instead.
 DEFAULT_STATE = {
     "recording": False,
-    "recording_since": None,  # ms, first start: a Stop keeps the baseline going
-    "baseline_days": 14,
-    "answer_rate": 0.06,
-    "lapse_reason_rate": 0.3,
-    "block_gap_hours": 2,
-    "daily_cap": 30,
-    "stop_after_cost_ratings": 1200,
-    "day_rating_hour": 19,  # local hour from which leaving the reviewer asks
-    "day_rated_through_ms": 0,  # end of the last study day rated or skipped
+    "recording_since": None,  # ms, the first start: a Stop keeps it
 }
 
 DAY_MS = 86_400_000
@@ -175,11 +167,3 @@ class Store:
 
 def _kind_needle(kind: str) -> bytes:
     return b'"t":"%s"' % kind.encode("ascii")
-
-
-def baseline_days_left(state: dict, now: int) -> int:
-    """Silent days left before the prompts may start."""
-    since = state["recording_since"]
-    if since is None:
-        return state["baseline_days"]
-    return max(0, state["baseline_days"] - (now - since) // DAY_MS)

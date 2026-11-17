@@ -3,7 +3,6 @@ import math
 import random
 import subprocess
 import sys
-from bisect import bisect_left
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,10 +18,9 @@ from test_activity import setup  # noqa: F401
 from test_calibration_recorder import col, fake_mw, recorder_module  # noqa: F401
 
 from review_heatmap.calibration.dataset import read_dataset, revlog_sql
-from review_heatmap.calibration.fit import ANCHORS
 from review_heatmap.calibration.report import (
-    COST_LABELS, GATE_COST_RATINGS, GATE_RATED_DAYS, HOLDOUT_SHARE,
-    JUDGED_SHARE, WHY_LABELS, build_report, format_report, gate_text, latest_report,
+    FAIR_TRIAL_RATED_DAYS, FIT_EFFORT_RATINGS, FIT_RATED_DAYS, GATE_EFFORT_RATINGS,
+    GATE_RATED_DAYS, JUDGE_BLOCKS, build_report, format_report, gate_text, latest_report,
     next_model_version, read_model, run_fit, ship_gate, write_model, write_report,
 )
 from review_heatmap.calibration.store import DAY_MS, Store, now_ms
@@ -33,10 +31,13 @@ from review_heatmap.metrics import (
 
 START = 1_790_000_000_000
 MINUTE = 60_000
+HOUR = 60 * MINUTE
 RUN = "run"
-TRUE_TIME_EXPONENT = 0.8
-TRUE_AGAIN = 0.6
-TRUE_SIGMA = 0.3
+TRUE_B = 0.8
+TRUE_K = 0.6
+BASIC, KANJI = "Basic/Card 1", "Kanji/Card"
+CARDS = {BASIC: (100, 0), KANJI: (200, 0)}
+EFFORT_CUTS = (-0.5, 0.4, 1.2, 2.0, 2.8)
 
 
 def logistic_draw(rng):
@@ -44,68 +45,103 @@ def logistic_draw(rng):
     return math.log(draw / (1 - draw))
 
 
-def day_of(rev_id):
-    return (rev_id - START) // DAY_MS
+def levels(values, shares):
+    order = sorted(values)
+    cuts = [order[min(len(order) - 1, int(len(order) * share))] for share in shares]
+    return [1 + sum(value > cut for cut in cuts) for value in values]
 
 
-def world(days=75, seed=7, baseline_days=0):
-    """Days of a simulated owner whose felt cost follows a known model.
+def world(days=70, seed=7, kanji_effort=0.0):
+    """Days of a simulated owner whose work follows a known rule.
 
-    Answers per day and pace vary apart, so count and time disagree, and the
-    day ratings follow the true total cost.
+    Credit is exp(TRUE_B * log_d + TRUE_K * intensity): an Again, a Hard or a new
+    card asks for more thought. Answers per day and pace vary apart, so count and
+    time disagree. A third of the answers are rated on effort; each day's two
+    sittings, the day and its two templates against each other are rated on how
+    much work they were. kanji_effort is thought Kanji cards take that no input shows.
     """
     rng = random.Random(seed)
-    rows, events = [], []
-    day_costs = []
+    rows, events, seen = [], [], set()
+    sittings, days_info = [], []
     for day in range(days):
-        moment = START + day * DAY_MS + 3_600_000
-        answers = rng.randint(25, 90)
-        pace = math.exp(rng.gauss(0, 0.7))
-        total = 0.0
-        for index in range(answers):
-            seconds = 10 * pace * math.exp(rng.gauss(0, 0.6))
+        moment = START + day * DAY_MS + 3 * HOUR
+        pace = math.exp(rng.gauss(0, 0.5))
+        count = rng.randint(30, 80)
+        by_template = {100: 0.0, 200: 0.0}
+        bounds = [[None, None, 0.0], [None, None, 0.0]]
+        for index in range(count):
+            half = int(index >= count // 2)
+            rev_id = moment + index * 2 * MINUTE + half * 5 * HOUR
+            mid = 100 if rng.random() < 0.7 else 200
+            seconds = (6 if mid == 100 else 30) * pace * math.exp(rng.gauss(0, 0.6))
             ms = int(seconds * 1000)
             ease = rng.choices((1, 2, 3, 4), (2, 1, 6, 1))[0]
-            mid = rng.choice((100, 200))
-            cid = rng.randrange(1, 400)
-            last_ivl = rng.choice((0, 1, 3, 9, 30))
-            eta = TRUE_TIME_EXPONENT * math.log(seconds / 10) + TRUE_AGAIN * (ease == 1)
-            total += math.exp(eta)
+            cid = rng.randrange(1, 600) + (0 if mid == 100 else 10_000)
+            new = cid not in seen
+            seen.add(cid)
+            last_ivl = 0 if new else rng.choice((0, 1, 3, 9, 30))
+            intensity = (1.0 * (ease == 1) + 0.8 * (ease == 2) - 0.4 * (ease == 4)
+                         + 0.5 * new + kanji_effort * (mid == 200) + rng.gauss(0, 0.5))
+            credit = math.exp(TRUE_B * math.log(seconds / 10) + TRUE_K * intensity)
+            by_template[mid] += credit
             seq = day * 1000 + index + 1
-            rev_id = moment + index * 3 * MINUTE
+            shown = rev_id - ms
             rows.append((cid, rev_id, ease, ms, last_ivl, mid, 0, day, 500))
             events += [
-                {"t": "q", "ts": rev_id - ms, "run": RUN, "seq": seq},
+                {"t": "q", "ts": shown, "run": RUN, "seq": seq},
                 {"t": "a", "ts": rev_id - ms // 4, "run": RUN, "seq": seq},
                 {"t": "ans", "ts": rev_id, "run": RUN, "seq": seq, "rev_id": rev_id,
                  "taken_raw_ms": ms},
             ]
-            if index % 4 == 0:
-                cost = bisect_left(ANCHORS, eta + TRUE_SIGMA * logistic_draw(rng))
-                answers_given = {"cost": cost}
+            if index % 3 == 0:
+                effort = 1 + sum(
+                    intensity + 0.3 * logistic_draw(rng) > cut for cut in EFFORT_CUTS
+                )
+                answers = {"effort": effort}
+                if new:
+                    answers["familiar"] = rng.randrange(4)
                 if ease == 1:
-                    answers_given["why"] = rng.randrange(5)
+                    answers["wrong"] = ["blank"] if effort > 3 else ["form"]
                 events.append({
                     "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": seq,
-                    "rev_id": rev_id, "answers": answers_given, "skipped": [],
+                    "rev_id": rev_id, "wording_v": 5, "answers": answers, "skipped": [],
                 })
-        day_costs.append(total)
-    ranks = sorted(range(days), key=lambda day: day_costs[day] * math.exp(rng.gauss(0, 0.1)))
-    for rank, day in enumerate(ranks):
-        tiring = 1 + rank * 5 // days
-        end = START + (day + 1) * DAY_MS
+            sitting = bounds[half]
+            sitting[0] = shown if sitting[0] is None else sitting[0]
+            sitting[1] = shown
+            sitting[2] += credit
+        for first, last, credit in bounds:
+            sittings.append((first, last, math.log(credit) + rng.gauss(0, 0.25)))
+        total = sum(by_template.values())
+        days_info.append((day, rows[-1][1], math.log(total) + rng.gauss(0, 0.25),
+                          math.log(by_template[200] / by_template[100]) + rng.gauss(0, 0.25)))
+    work = levels([value for _, _, value in sittings], (0.15, 0.4, 0.7, 0.9))
+    for (first, last, _), rating in zip(sittings, work):
         events.append({
-            "t": "prompt", "kind": "day", "ts": end, "day_end_ms": end,
-            "answers": {"tiring": tiring, "learned": 6 - tiring}, "skipped": [],
+            "t": "prompt", "kind": "session", "ts": last + 25 * MINUTE, "from_ms": first,
+            "to_ms": last, "wording_v": 5, "answers": {"work": rating, "deep": 2},
+            "skipped": [],
         })
+    amount = levels([info[2] for info in days_info], (0.05, 0.15, 0.35, 0.65, 0.85, 0.95))
+    pair = levels([info[3] for info in days_info], (0.15, 0.35, 0.65, 0.85))
+    for (day, last, _, _), rated, compared in zip(days_info, amount, pair):
+        end = last + 10 * MINUTE
+        event = {
+            "t": "prompt", "kind": "day", "ts": end, "day_end_ms": end, "wording_v": 5,
+            "answers": {"amount": rated, "pair": compared, "learned": 8 - rated},
+            "skipped": [], "pair_cards": [BASIC, KANJI],
+        }
+        if day:
+            event["answers"]["versus"] = 3
+            event["versus_day"] = START + (day - 1) * DAY_MS
+        events.append(event)
     events.sort(key=lambda event: event["ts"])
-    state = {"recording_since": START, "baseline_days": baseline_days, "block_gap_hours": 2}
-    return events, rows, state
+    return events, rows
 
 
-def report_of(events, rows, state, names=None, version=1):
-    dataset = read_dataset(events, rows, state["block_gap_hours"])
-    return build_report(dataset, state, None, names or {}, version, lambda label: None)
+def report_of(events, rows, names=None, version=1):
+    dataset = read_dataset(events, rows, templates=CARDS)
+    return build_report(dataset, None, names or {}, version, lambda label: None)
 
 
 @pytest.fixture(scope="module")
@@ -119,31 +155,32 @@ def report(simulated):
 
 
 def weight(report, name):
-    return next(row for row in report["fit"]["weights"] if row["name"] == name)
+    return next(row for row in report["cards"]["weights"] if row["name"] == name)
 
 
-def test_the_fit_recovers_the_model_behind_the_ratings(report):
-    fit = report["fit"]
-    assert fit["converged"]
-    assert fit["sigma"] == pytest.approx(TRUE_SIGMA, abs=0.05)
-    row = weight(report, "log_d")
-    assert abs(row["weight"] - TRUE_TIME_EXPONENT) < 3 * row["se"] + 0.05
-    assert weight(report, "again")["weight"] == pytest.approx(TRUE_AGAIN, abs=0.15)
-    assert weight(report, "sharpness")["control"] is True
-    assert weight(report, "log_d")["control"] is False
-
-
-def test_the_time_exponent_reads_the_interaction_at_each_richness(report):
-    exponents = report["fit"]["time_exponent"]
-    base, interaction = (weight(report, name)["weight"] for name in ("log_d", "log_d·rich"))
-    assert exponents == {"0.0": pytest.approx(base), "1.5": pytest.approx(base + 1.5 * interaction)}
+def test_the_two_stages_find_the_owner_behind_the_ratings(report):
+    work = report["work"]
+    assert work["converged"] and not work["fell_back"]
+    assert work["b"] == pytest.approx(TRUE_B, abs=0.15)
+    low, high = work["interval"]
+    assert low < TRUE_B < high
+    assert work["k_used"] > 0 and work["without_difficulty"] > 3.84
+    assert work["units"] == {"amount": 70, "pair": 70, "work": 140}
+    # Harder answers, as the ratings tell them apart: Again over Hard over Good over Easy.
+    again, hard, easy, new = (weight(report, name)["weight"] for name in ("again", "hard", "easy", "new"))
+    assert again > hard > 0 > easy and new > 0
+    assert weight(report, "focus")["control"] and not weight(report, "again")["control"]
 
 
 def test_the_model_body_is_ready_for_effort_model_json(report):
-    model = report["model"]
+    model, work = report["model"], report["work"]
     assert set(model) == {"status", "version", "intercept", "weights"}
     assert model["status"] == "local"  # shipping it takes a person
     assert list(model["weights"]) == list(MODEL_INPUTS)
+    # Time counts once, in b: the difficulty keeps none of it.
+    assert model["weights"]["log_d"] == work["b_used"]
+    assert model["weights"]["log_d·rich"] == 0
+    assert model["weights"]["again"] == pytest.approx(work["k_used"] * weight(report, "again")["weight"])
     inputs = dict.fromkeys(MODEL_INPUTS, 0.0)
     inputs["log_d"] = 1.0
     credit = effort_model_credit(inputs, model)
@@ -151,67 +188,90 @@ def test_the_model_body_is_ready_for_effort_model_json(report):
 
 
 def test_counts_and_category_use(report, simulated):
-    events, rows, _ = simulated
-    prompts = [event for event in events if event["t"] == "prompt" and event["kind"] == "answer"]
+    events, rows = simulated
+    taps = [event for event in events if event.get("kind") == "answer"]
     counts = report["counts"]
-    assert counts["cost"] == counts["rated_answers"] == len(prompts)
-    assert counts["tiring"] == counts["rated_days"] == 75
+    assert counts["effort"] == counts["effort_ratings"] == len(taps)
+    assert (counts["amount"], counts["rated_days"]) == (70, 70)
+    assert (counts["work"], counts["rated_sittings"]) == (140, 140)
+    assert (counts["pair"], counts["pair_days"]) == (70, 70)
     assert counts["logged"] == len(rows)
-    assert (counts["unlogged"], counts["undone"]) == (0, 0)
+    assert (counts["unlogged"], counts["undone"], counts["earlier"]) == (0, 0, 0)
     assert report["skip_rate"] == 0
-    assert sum(report["category_use"]["cost"].values()) == len(prompts)
+    assert sum(report["category_use"]["effort"].values()) == len(taps)
 
 
-def test_holdout_scores_the_later_days_against_the_intercept(report, simulated):
-    holdout = report["holdout"]
-    assert holdout["days"] == round(75 * HOLDOUT_SHARE)
-    assert holdout["ratings"] + holdout["train_ratings"] == report["counts"]["rated_answers"]
-    assert holdout["log_loss"] < holdout["intercept_only_log_loss"]
-    assert holdout["spearman"] > 0.5
-
-
-def test_the_judge_ranks_every_measure_on_the_later_days(report):
+def test_the_judge_scores_each_block_by_a_fit_on_the_days_before(report):
     judge = report["judge"]
-    assert judge["tiring"]["days"] == round(75 * JUDGED_SHARE)
-    assert judge["learned"]["days"] == judge["tiring"]["days"]
+    blocks = judge["blocks"]
+    assert len(blocks) == JUDGE_BLOCKS - 1 and judge["rated_days"] == 70
+    assert judge["amount"]["days"] == sum(block["days"] for block in blocks) == 70 - 18
+    trained = [block["train_ratings"] for block in blocks]
+    assert trained == sorted(trained) and trained[0] > 0
+    assert judge["z"] == pytest.approx(sum(block["t"] for block in blocks) / math.sqrt(len(blocks)))
     for measure in ("count", "recorded_time", "review_weighted", "fsrs", "fitted"):
-        assert judge["tiring"][measure] == pytest.approx(-judge["learned"][measure])
-    assert judge["tiring"]["fitted"] > judge["tiring"]["review_weighted"]
+        assert judge["learned"][measure] == pytest.approx(-judge["amount"][measure])
+    assert judge["amount"]["fitted"] > judge["amount"]["review_weighted"]
 
 
-def test_the_judge_never_sees_a_rating_from_the_judged_days(simulated):
-    events, rows, state = simulated
-    first_judged = 75 - round(75 * JUDGED_SHARE)
+def test_the_judge_never_sees_a_rating_from_the_days_it_scores(simulated):
+    events, rows = simulated
+    last_block = round(70 * (JUDGE_BLOCKS - 1) / JUDGE_BLOCKS)
 
-    def with_costs(changed):
+    def with_amounts(changed):
         return [
-            dict(event, answers={"cost": 10 - event["answers"]["cost"]})
-            if event["t"] == "prompt" and event["kind"] == "answer" and changed(event)
+            dict(event, answers={**event["answers"], "amount": 8 - event["answers"]["amount"]})
+            if event.get("kind") == "day" and changed(rows_day(event["day_end_ms"]))
             else event
             for event in events
         ]
 
-    plain = report_of(events, rows, state)
-    judged_changed = report_of(
-        with_costs(lambda event: day_of(event["rev_id"]) >= first_judged), rows, state,
+    def rows_day(end):
+        return max(row[7] for row in rows if row[1] < end)
+
+    plain = report_of(events, rows)["judge"]["blocks"]
+    judged = report_of(with_amounts(lambda day: day >= last_block), rows)["judge"]["blocks"]
+    trained = report_of(with_amounts(lambda day: day < last_block), rows)["judge"]["blocks"]
+    assert [(b["b"], b["k"]) for b in judged] == [(b["b"], b["k"]) for b in plain]
+    assert judged[-1]["t"] != plain[-1]["t"]  # the scored days' own ratings judge them
+    assert trained[-1]["b"] != plain[-1]["b"]
+
+
+def test_a_real_gain_passes_the_gate(report):
+    gate = report["gate"]
+    assert gate["passed"], gate
+    assert gate["z"] == report["judge"]["z"] >= gate["needed"]
+    assert gate["margin"] == pytest.approx(
+        report["judge"]["amount"]["fitted"] - report["judge"]["amount"]["review_weighted"],
     )
-    trained_changed = report_of(
-        with_costs(lambda event: day_of(event["rev_id"]) < first_judged), rows, state,
-    )
-    assert judged_changed["judge"] == plain["judge"]
-    assert judged_changed["model"] != plain["model"]  # the shipped fit reads them all
-    assert trained_changed["judge"] != plain["judge"]
 
 
 def test_a_report_survives_json_and_reads_as_text(report, tmp_path):
     path = write_report(tmp_path, report)
     assert path.name.startswith("report-") and path.suffix == ".json"
     assert json.loads(path.read_text(encoding="utf-8")) == json.loads(json.dumps(report))
-    text = format_report(report)
-    for line in ("Fit on", "Time exponent", "log_d·rich", "Holdout", "Judge", "tiring (",
-                 "learned (", "Front share", "Basic / Card 1: 75%", "Cost by Again reason",
-                 "Pace"):
-        assert line in text
+    assert latest_report(tmp_path) == json.loads(json.dumps(report))
+    text = format_report(json.loads(json.dumps(report)))
+    for line in ("Effort ratings: ", "Cards, which answers are harder", "(time, scored through b)",
+                 "Work, how answers add up", "Time exponent b:", "Difficulty weight k:",
+                 "Judge, 52 of 70 rated days in 3 blocks", "amount (52 days)",
+                 "Beyond review-weighted on amount: z", "Questions:", "b from evenings alone",
+                 "Front share", "Basic / Card 1: 75%", "Pace"):
+        assert line in text, line
+
+
+def test_the_questions_say_what_each_one_shows(report):
+    questions = report["questions"]
+    effort = questions["effort"]["log_loss"]
+    assert effort["inputs"] < effort["buttons"] < effort["levels"]
+    assert questions["familiar"]["ratings"] > 0 and questions["focus"]["ratings"] == 0
+    reasons = {row["reason"]: row for row in questions["wrong"]["reasons"]}
+    assert reasons["blank"]["effort"] > reasons["form"]["effort"]
+    assert [row["label"] for row in questions["sources"]] == [
+        "from evenings alone", "with pairs", "with sittings too",
+    ]
+    widths = [row["interval"][1] - row["interval"][0] for row in questions["sources"]]
+    assert widths[-1] < widths[0]  # sittings and pairs narrow it down
 
 
 def test_front_and_back_share_per_template(report):
@@ -220,26 +280,13 @@ def test_front_and_back_share_per_template(report):
     assert {row["template"] for row in report["templates"]} == {"Basic / Card 1", "200:0"}
 
 
-def test_cost_by_again_reason_uses_the_prompt_labels(report):
-    reasons = report["cost_by_reason"]
-    assert [row["reason"] for row in reasons] == list(WHY_LABELS)
-    assert sum(row["ratings"] for row in reasons) == sum(report["category_use"]["why"].values())
-    assert {row["median_cost"] for row in reasons} <= set(COST_LABELS)
-
-
-def test_labels_stay_in_step_with_the_prompts(addon_modules):
-    from review_heatmap.calibration.prompts import COST, WHY
-
-    assert COST_LABELS == COST.labels
-    assert WHY_LABELS == WHY.labels
-
-
-def paced_events(slow_after_prompt=1.0, slow_after_baseline=1.0):
-    """Ten answers a day on two days a fortnight apart, an answer prompt on every
-    other card. The answer after a prompt, and later days, take longer."""
+def paced_events(slow_after_prompt=1.0, slow_since=1.0):
+    """Twenty answers a day on two days a fortnight apart, effort asked on every
+    other card of the second. Answers after a question, or since questions began,
+    take longer."""
     rows, events = [], []
     for day in (0, 14):
-        pace = slow_after_baseline if day else 1.0
+        pace = slow_since if day else 1.0
         previous_prompted = False
         for index in range(20):
             rev_id = START + day * DAY_MS + index * MINUTE
@@ -254,68 +301,64 @@ def paced_events(slow_after_prompt=1.0, slow_after_baseline=1.0):
             if previous_prompted:
                 events.append({
                     "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": seq,
-                    "rev_id": rev_id, "answers": {"cost": 2}, "skipped": [],
+                    "rev_id": rev_id, "wording_v": 5, "answers": {"effort": 2}, "skipped": [],
                 })
-    return events, rows, {"recording_since": START, "baseline_days": 14, "block_gap_hours": 2}
+    return events, rows
 
 
 def test_reactivity_compares_pace_on_comparable_answers():
-    reactivity = report_of(*paced_events(slow_after_baseline=1.5))["reactivity"]
-    assert reactivity["afterwards_vs_baseline"]["ratio"] == pytest.approx(1.5, abs=0.01)
+    reactivity = report_of(*paced_events(slow_since=1.5))["reactivity"]
+    assert reactivity["since_vs_before"]["ratio"] == pytest.approx(1.5, abs=0.01)
     assert reactivity["after_prompt_vs_others"]["ratio"] == pytest.approx(1, abs=0.01)
     reactivity = report_of(*paced_events(slow_after_prompt=2))["reactivity"]
     assert reactivity["after_prompt_vs_others"]["ratio"] == pytest.approx(2, abs=0.01)
 
 
 def test_reactivity_says_so_when_nothing_is_comparable():
-    events, rows, state = paced_events()
-    state["baseline_days"] = 0
-    reactivity = report_of(events, rows, state)["reactivity"]
-    assert reactivity["afterwards_vs_baseline"] is None
-    assert "too few comparable answers" in format_report(report_of(events, rows, state))
+    events, rows = paced_events()
+    later = [event for event in events if event["ts"] >= START + 14 * DAY_MS]
+    report = report_of(later, rows[20:])
+    assert report["reactivity"]["since_vs_before"] is None
+    assert "too few comparable answers" in format_report(report)
 
 
 def test_too_little_data_still_reports_and_fails_the_gate():
-    rev_id = START
-    rows = [(1, rev_id, 3, 10_000, 0, 100, 0, 0, 0)]
+    rows = [(1, START, 3, 10_000, 0, 100, 0, 0, 0)]
     events = [{
-        "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": 1,
-        "rev_id": rev_id, "answers": {"cost": 2}, "skipped": [],
+        "t": "prompt", "kind": "answer", "ts": START, "run": RUN, "seq": 1,
+        "rev_id": START, "wording_v": 5, "answers": {"effort": 2}, "skipped": [],
     }]
-    report = report_of(events, rows, {
-        "recording_since": None, "baseline_days": 14, "block_gap_hours": 2,
-    })
-    assert (report["holdout"], report["judge"]) == (None, None)
+    report = report_of(events, rows)
+    assert (report["cards"], report["work"], report["model"], report["judge"]) == (None,) * 4
     assert report["gate"]["passed"] is False
-    assert "too few" in format_report(report)
+    assert not any("converge" in reason for reason in report["gate"]["reasons"])
+    text = format_report(report)
+    for line in ("Cards: no difficulty yet", "Work: no fit yet", "Judge: it takes",
+                 "effort ratings", "rated days"):
+        assert line in text + gate_text(report["gate"]), line
     json.dumps(report)
 
 
-def judged(fitted, weighted, converged=True, t=2.0):
-    return {
-        "converged": converged,
-        "tiring": {"fitted": fitted, "review_weighted": weighted},
-        "beyond": None if fitted is None else {"days": 18, "r": 0.5, "t": t, "needed": 1.75},
-    }
+def judged(margin=0.02, z=2.0, converged=True, blocks=3):
+    return {"blocks": [{}] * blocks, "margin": margin, "z": z, "converged": converged}
 
 
 def test_the_gate_passes_only_with_enough_data_and_a_real_gain():
     # A small plain margin is all a real gain can show: measures agree closely.
-    passed = ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, judged(0.60, 0.58), True)
+    passed = ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(), True)
     assert passed["passed"] is True and passed["reasons"] == []
-    assert passed["margin"] == pytest.approx(0.02)
     assert "PASSED" in gate_text(passed) and "NOT" not in gate_text(passed)
 
 
 @pytest.mark.parametrize("gate,reason", [
-    (ship_gate(GATE_COST_RATINGS - 1, GATE_RATED_DAYS, judged(0.9, 0.1), True), "cost ratings"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS - 1, judged(0.9, 0.1), True), "rated days"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, judged(0.6, 0.56, t=1.0), True), "needs 1.75"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, judged(0.5, 0.6), True), "by -0.100"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, judged(0.9, 0.1), False), "converge"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, judged(0.9, 0.1, False), True), "converge"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, judged(None, 0.5, None), True), "judged"),
-    (ship_gate(GATE_COST_RATINGS, GATE_RATED_DAYS, None, True), "judged"),
+    (ship_gate(GATE_EFFORT_RATINGS - 1, GATE_RATED_DAYS, judged(), True), "effort ratings"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS - 1, judged(), True), "rated days"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(z=1.0), True), "needs 1.64"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(margin=-0.1), True), "by -0.100"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(), False), "converge"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(converged=False), True), "converge"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(blocks=0), True), "judged"),
+    (ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, None, True), "judged"),
 ])
 def test_the_gate_says_why_it_failed(gate, reason):
     assert gate["passed"] is False
@@ -323,57 +366,39 @@ def test_the_gate_says_why_it_failed(gate, reason):
     assert "NOT PASSED" in gate_text(gate)
 
 
-def test_the_gate_runs_on_real_measures(report):
-    assert report["gate"]["passed"], report["gate"]
-    assert report["gate"]["margin"] == pytest.approx(
-        report["judge"]["tiring"]["fitted"] - report["judge"]["tiring"]["review_weighted"],
-    )
-    beyond = report["gate"]["beyond"]
-    assert beyond == report["judge"]["beyond"]
-    assert beyond["t"] >= beyond["needed"] and beyond["days"] >= 8
+def test_a_failed_gate_before_a_fair_trial_asks_for_more_days():
+    early = ship_gate(GATE_EFFORT_RATINGS, GATE_RATED_DAYS, judged(z=1.0), True)
+    assert "keep rating days" in gate_text(early)
+    fair = ship_gate(GATE_EFFORT_RATINGS, FAIR_TRIAL_RATED_DAYS, judged(z=1.0), True)
+    assert "keep rating days" not in gate_text(fair)
 
 
-def test_too_few_judged_days_cannot_pass_the_gate(simulated):
-    events, rows, state = simulated
-    last = rows[-1][1]
-    few = [
-        event for event in events
-        if event.get("kind") != "day" or event["day_end_ms"] > last - 12 * DAY_MS
-    ]
-    report = report_of(few, rows, state)
-    assert report["judge"]["beyond"] is None
-    assert report["gate"]["passed"] is False
+def test_the_thresholds_go_up_from_fitting_to_shipping():
+    assert FIT_EFFORT_RATINGS < GATE_EFFORT_RATINGS
+    assert FIT_RATED_DAYS < GATE_RATED_DAYS < FAIR_TRIAL_RATED_DAYS
 
 
-def world_with_note_type_level(level=1.0, seed=3):
-    """Template 200 costs more than its answer times show, and only ratings can tell."""
-    events, rows, state = world(seed=seed)
-    template = {row[1]: row[5] for row in rows}
-    rng = random.Random(seed)
-    shifted = []
-    for event in events:
-        if event.get("kind") == "answer" and template[event["rev_id"]] == 200:
-            cost = min(10, event["answers"]["cost"] + (rng.random() < level) * 4)
-            event = {**event, "answers": {**event["answers"], "cost": cost}}
-        shifted.append(event)
-    return shifted, rows, state
+@pytest.fixture(scope="module")
+def heavy_kanji():
+    """Kanji cards take thought no input shows, and only the effort ratings can tell."""
+    return report_of(*world(kanji_effort=1.0), names={(200, 0): "Kanji / Card"})
 
 
-def test_only_the_profile_model_holds_note_type_offsets():
-    report = report_of(*world_with_note_type_level(), names={(200, 0): "Heavy / Card 1"})
+def test_only_the_profile_model_holds_note_type_offsets(heavy_kanji):
+    report = heavy_kanji
     assert "offsets" not in report["model"]  # what Copy Weights gives
     offsets = report["local_model"]["offsets"]
-    assert offsets["200:0"] - offsets["100:0"] == pytest.approx(math.log(4), abs=0.35)
-    assert not any(row["name"].startswith("template:") for row in report["fit"]["weights"])
+    # Only their difference counts: the cut points take any common level.
+    assert offsets["200:0"] > offsets["100:0"]
+    assert not any(row["name"].startswith("template:") for row in report["cards"]["weights"])
     assert [row["label"] for row in report["note_type_offsets"]] == [
-        "template:100:0", "Heavy / Card 1",
+        "template:100:0", "Kanji / Card",
     ]
-    assert "Heavy / Card 1: +" in format_report(report)
+    assert "Kanji / Card: +" in format_report(report)
 
 
-def test_a_profile_model_scores_with_its_offsets():
-    report = report_of(*world_with_note_type_level())
-    model = report["local_model"]
+def test_a_profile_model_scores_with_its_offsets(heavy_kanji):
+    model = heavy_kanji["local_model"]
     inputs = dict.fromkeys(MODEL_INPUTS, 0.0)
     gap = math.exp(model["offsets"]["200:0"] - model["offsets"]["100:0"])
     assert effort_model_credit(inputs, model, (200, 0)) == pytest.approx(
@@ -381,18 +406,11 @@ def test_a_profile_model_scores_with_its_offsets():
     )
 
 
-def test_the_judge_shows_offsets_beside_the_shared_fit():
-    report = report_of(*world_with_note_type_level())
-    tiring = report["judge"]["tiring"]
-    assert tiring["fitted_offsets"] is not None and tiring["fitted"] is not None
-    assert tiring["fitted_offsets"] != tiring["fitted"]
-    assert "Fitted with note-type offsets" in format_report(report)
-
-
-def test_a_missing_offset_level_does_not_inflate_the_holdout():
-    report = report_of(*world_with_note_type_level(level=0.5))
-    holdout = report["holdout"]
-    assert holdout["log_loss"] < holdout["intercept_only_log_loss"]
+def test_the_judge_shows_offsets_beside_the_shared_fit(heavy_kanji):
+    amount = heavy_kanji["judge"]["amount"]
+    assert amount["fitted_offsets"] is not None and amount["fitted"] is not None
+    assert amount["fitted_offsets"] != amount["fitted"]
+    assert "Fitted with note-type offsets" in format_report(heavy_kanji)
 
 
 # Files
@@ -401,23 +419,25 @@ def test_a_missing_offset_level_does_not_inflate_the_holdout():
 
 def filled_store(folder, simulated):
     store = Store(folder)
-    events, rows, state = simulated
+    events, rows = simulated
     for event in events:
         store.append(event)
     store.close()
-    store.update_state(recording_since=state["recording_since"], baseline_days=0)
     return store, rows
 
 
 def test_each_fit_takes_a_new_version_and_saves_a_report(tmp_path, simulated):
     store, rows = filled_store(tmp_path, simulated)
     labels = []
-    first = run_fit(store, rows, None, {}, labels.append)
+    first = run_fit(store, rows, None, {}, labels.append, card_templates=CARDS)
     assert labels[0] == "Reading the calibration events" and len(labels) > 3
-    second = run_fit(store, rows, None, {}, labels.append)
+    second = run_fit(store, rows, None, {}, labels.append, card_templates=CARDS)
     assert (first["model"]["version"], second["model"]["version"]) == (1, 2)
+    assert first["counts"]["pair_days"] == 70
     assert len(list(tmp_path.glob("report-*.json"))) == 1  # one per day
     assert latest_report(tmp_path) == json.loads(json.dumps(second))
+    # Without knowing which template a recording's card is, no pair can be fitted.
+    assert run_fit(store, rows, None, {}, labels.append)["counts"]["pair_days"] == 0
 
 
 def test_the_version_stays_above_a_local_and_a_shipped_model(tmp_path, monkeypatch):
@@ -432,12 +452,14 @@ def test_the_version_stays_above_a_local_and_a_shipped_model(tmp_path, monkeypat
     assert next_model_version(tmp_path) == 10
 
 
-def test_the_latest_report_is_the_newest_and_a_damaged_one_is_no_report(tmp_path):
+def test_the_latest_report_is_the_newest_of_this_design(tmp_path):
     assert latest_report(tmp_path) is None
-    (tmp_path / "report-20261101.json").write_text('{"a": 1}')
-    (tmp_path / "report-20261103.json").write_text('{"a": 2}')
-    assert latest_report(tmp_path) == {"a": 2}
-    (tmp_path / "report-20261104.json").write_text('{"a"')
+    (tmp_path / "report-20261101.json").write_text('{"format": 2, "a": 1}')
+    (tmp_path / "report-20261103.json").write_text('{"format": 2, "a": 2}')
+    assert latest_report(tmp_path) == {"format": 2, "a": 2}
+    (tmp_path / "report-20261104.json").write_text('{"a": 3}')  # fitted to cost ratings
+    assert latest_report(tmp_path) is None
+    (tmp_path / "report-20261105.json").write_text('{"a"')
     assert latest_report(tmp_path) is None
 
 
@@ -523,21 +545,31 @@ def tab_module(addon_modules, recorder_module, setup, monkeypatch):
     return calibration_tab
 
 
-def seed_cost_ratings(store, count):
-    for index in range(count):
+def seed_ratings(store, days, taps_per_day=8, setup=None):
+    """Days of ten answers each, effort asked on the first ones, each day rated.
+
+    With setup, the answers reach the revlog too; without, ratings wait for a sync."""
+    for day in range(days):
+        base = START + day * DAY_MS
+        for index in range(10):
+            rev_id = base + index * MINUTE
+            if setup:
+                setup.db.connection.execute(
+                    "INSERT INTO revlog (id, cid, ease, time) VALUES (?, ?, ?, ?)",
+                    (rev_id, day * 100 + index + 1, 1 + index % 4, 3000 + 4000 * index),
+                )
+            if index < taps_per_day:
+                store.append({
+                    "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": index,
+                    "rev_id": rev_id, "wording_v": 5, "answers": {"effort": 1 + index % 4},
+                    "skipped": [],
+                })
+        end = base + 11 * MINUTE
         store.append({
-            "t": "prompt", "kind": "answer", "ts": now_ms(), "run": RUN, "seq": index,
-            "rev_id": START + index, "answers": {"cost": index % 6}, "skipped": [],
+            "t": "prompt", "kind": "day", "ts": end, "day_end_ms": end, "wording_v": 5,
+            "answers": {"amount": 1 + day % 7}, "skipped": [],
         })
     store.close()
-
-
-def seed_revlog(setup, count):
-    for index in range(count):
-        setup.db.connection.execute(
-            "INSERT INTO revlog (id, cid, ease, time) VALUES (?, ?, 3, ?)",
-            (START + index, index + 1, 5000 + 1000 * index),
-        )
 
 
 def test_the_revlog_query_and_template_names_work_on_a_real_collection(
@@ -559,21 +591,37 @@ def test_the_revlog_query_and_template_names_work_on_a_real_collection(
     assert dataset.logged == []
     names = tab_module._template_names(col)
     assert names[(note.mid, 1)] == "Basic (and reversed card) / Card 2"
+    # Recordings name a card "Note type/Template".
+    cards = tab_module._card_templates(col)
+    assert cards["Basic (and reversed card)/Card 2"] == (note.mid, 1)
     assert col.undo_status().undo == can_undo and can_undo
 
 
-def test_fit_waits_for_300_cost_ratings(app, window, tab_module):
+def test_fit_waits_for_the_effort_ratings_and_the_rated_days(app, window, tab_module):
+    days = FIT_RATED_DAYS - 1
+    taps = FIT_EFFORT_RATINGS // days + 1
     store = Store.for_profile(window.pm.profileFolder())
-    seed_cost_ratings(store, 299)
-    assert not tab_module.CalibrationTab(window).btnFit.isEnabled()
-    seed_cost_ratings(store, 1)
+    seed_ratings(store, days, taps)
+    tab = tab_module.CalibrationTab(window)
+    assert not tab.btnFit.isEnabled()
+    assert f"Rated days: {days}, {FIT_RATED_DAYS} to fit" in tab.labRatings.text()
+    assert f"{FIT_RATED_DAYS} rated days" in tab.labFit.text()
+    store.append({
+        "t": "prompt", "kind": "day", "ts": now_ms(), "day_end_ms": now_ms(), "wording_v": 5,
+        "answers": {"amount": 3}, "skipped": [],
+    })
+    store.close()
     assert tab_module.CalibrationTab(window).btnFit.isEnabled()
+
+
+# Just enough to fit: every seeded day is rated, a few answers of each on effort.
+TAPS_PER_DAY = -(-FIT_EFFORT_RATINGS // FIT_RATED_DAYS)
+SEEDED_TAPS = TAPS_PER_DAY * FIT_RATED_DAYS
 
 
 def fitted_tab(tab_module, window, setup):
     store = Store.for_profile(window.pm.profileFolder())
-    seed_cost_ratings(store, 300)
-    seed_revlog(setup, 300)
+    seed_ratings(store, FIT_RATED_DAYS, TAPS_PER_DAY, setup)
     tab = tab_module.CalibrationTab(window)
     assert not tab.btnUseFit.isEnabled() and not tab.btnCopyWeights.isEnabled()
     assert "No fit yet" in tab.labFit.text()
@@ -584,11 +632,14 @@ def fitted_tab(tab_module, window, setup):
 def test_fit_runs_with_visible_progress_and_shows_the_gate(app, window, tab_module, setup):
     tab = fitted_tab(tab_module, window, setup)
     assert window.taskman.labels[:2] == ["Reading the revlog", "Reading the calibration events"]
-    assert "Judging against the day ratings" in window.taskman.labels
+    assert "Judging on days no fit has seen" in window.taskman.labels
     assert "Ship gate: NOT PASSED" in tab.labFit.text()
-    assert "300 of 800 cost ratings" in tab.labFit.text()
+    assert f"{SEEDED_TAPS} of {GATE_EFFORT_RATINGS} effort ratings" in tab.labFit.text()
+    assert f"{FIT_RATED_DAYS} of {GATE_RATED_DAYS} rated days" in tab.labFit.text()
     assert "shipped weights" in tab.labFit.text()
-    assert "Fit on 300 ratings" in tab.txtReport.toPlainText()
+    text = tab.txtReport.toPlainText()
+    assert f"Cards, which answers are harder, on {SEEDED_TAPS} effort ratings" in text
+    assert f"Work, how answers add up, on {FIT_RATED_DAYS} days" in text
     assert tab.btnUseFit.isEnabled() and tab.btnCopyWeights.isEnabled()
     # A reopened dialog finds it again.
     reopened = tab_module.CalibrationTab(window)
@@ -597,15 +648,28 @@ def test_fit_runs_with_visible_progress_and_shows_the_gate(app, window, tab_modu
 
 
 def test_a_failed_fit_is_logged_and_told(app, window, tab_module, setup, monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("no")
+
     shown = []
     store = Store.for_profile(window.pm.profileFolder())
-    seed_cost_ratings(store, 300)
-    tab = tab_module.CalibrationTab(window)  # the revlog has none of these answers
+    seed_ratings(store, FIT_RATED_DAYS, TAPS_PER_DAY)
+    tab = tab_module.CalibrationTab(window)
     monkeypatch.setattr(tab_module, "showWarning", lambda text, parent: shown.append(text))
+    monkeypatch.setattr(tab_module, "run_fit", fail)
     tab.btnFit.click()
     assert len(shown) == 1 and "fit failed" in shown[0]
     assert store.error_count() == 1
     assert "Errors: 1" in tab.labRecording.text()
+
+
+def test_a_report_with_nothing_to_score_with_offers_no_weights(app, window, tab_module):
+    store = Store.for_profile(window.pm.profileFolder())
+    write_report(store.folder, {**report_of([], [(1, START, 3, 10_000, 0, 100, 0, 0, 0)]),
+                                "phone": {}})
+    tab = tab_module.CalibrationTab(window)
+    assert "Ship gate: NOT PASSED" in tab.labFit.text()
+    assert not tab.btnUseFit.isEnabled() and not tab.btnCopyWeights.isEnabled()
 
 
 def test_use_this_fit_writes_activates_and_redraws(app, window, tab_module, setup, monkeypatch):

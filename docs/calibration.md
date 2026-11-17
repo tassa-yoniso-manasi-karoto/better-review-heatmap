@@ -1,6 +1,6 @@
 # Effort calibration: operator guide
 
-Everything here runs from Anki, with no coding assistant and no external library. It records every answer on this device, asks for a few ratings, fits a model of felt effort, and tests that model against your own day ratings. Normal users see none of it.
+Everything here runs from Anki, with no coding assistant and no external library. Ratings come from recordings made where you review, which reach this device through media sync. Fit learns from them how hard answers are and how answers add up to a day's work, and tests the result against your own evening ratings. Normal users see none of it.
 
 The reasoning and research findings are in `DESIGN.md`, under Calibration.
 
@@ -24,147 +24,62 @@ mw.pm.profile["heatmap_devmode"] = False
 mw.pm.save()
 ```
 
-Without Stop Recording, the recorder and its prompts keep running until the profile closes, and recording resumes by itself if devmode ever comes back on. A local fit also stays active until the profile closes.
+Without Stop Recording, the recorder keeps running until the profile closes, and recording resumes by itself if devmode ever comes back on. A local fit also stays active until the profile closes.
 
 With devmode off there is no tab, no recorder and no hidden heatmap. Calibrated effort leaves the measures unless a validated model has shipped. If it was selected, scoring falls back to the default measure and the saved choice stays. The data folder is left alone.
 
 ## Runbook
 
-1. Turn devmode on. Open settings, Calibration tab, Start Recording. Recording then restarts by itself at every profile open.
-2. For 14 days, just review. Rate the day when asked, in the evening as you leave reviewing: day ratings start at once, with no baseline.
-3. Answer and sharpness prompts then start by themselves, about a minute a day. See What each question means.
+1. Turn devmode on. Ratings come from recording files made where you review: see Recordings from other devices. To time the answers given here as well, open settings, Calibration tab, Start Recording. Recording then restarts by itself at every profile open.
+2. Review as usual, and answer the questions as they come: about cards once they are answered, about sittings, and about the day in the evening. Rate every evening you can: those ratings are the judge, and the scarcest.
+3. Press Check Phone now and then. It shows how many recorded answers matched the review log, and whether any key failed to resolve.
 4. Copy the data folder monthly.
-5. Press Fit at about 300 cost ratings to check that it works, and again at 800 or more.
-6. Check the ship gate. If it passes, follow Shipping. If it does not, nothing ships, and that is a valid result. At 60 rated days the test is weak, though, so NOT PASSED there isn't final: keep rating days and press Fit again. See Ship gate.
+5. Fit unlocks at 150 effort ratings and 20 rated days. Press it to see how answers add up for you. Use This Fit on This Profile colours your own calendar with the result.
+6. From 300 effort ratings and 60 rated days, the report tries the ship gate. If it passes, follow Shipping. If it does not, nothing ships, and that is a valid result. Before about 90 rated days the test is weak, so NOT PASSED there isn't final: keep rating days and press Fit again. See Ship gate.
 
 Run the smoke test on a scratch profile before step 1.
 
-Stop Recording does not pause the baseline: it counts days from the very first start. The error count in the tab should stay at 0. A failing handler never interrupts a review: it writes to `errors.log` instead, so a rising count means data may be missing.
+The error count in the tab should stay at 0. A failing handler never interrupts a review: it writes to `errors.log` instead, so a rising count means data may be missing.
 
-## Prompts
+## Questions
 
-Every rating is a slider. Set each one, then press Enter or Done: a key only moves its slider, so no dialog closes by itself. Esc skips whatever isn't set yet, keeps what is, and logs the skip. Nothing is dismissed by a timer.
+The recording tool asks; this add-on only reads the answers. Every answer is one tap on a row of choices, none preselected, and every question can be skipped.
 
-| Prompt | When | Keys |
-| --- | --- | --- |
-| Effort of that review, `cost` | Sampled answers | `Z X C V B N`, for ¼, ½, One, Two, Four and Eight or more |
-| One of two rotating questions, `gain` or `grasp` | With every cost question | `gain`: `Q W E R T Y U`. `grasp`: `Q W E R T`, for 20 to 100% |
-| Why you pressed Again, `why` | Sampled Again on a card in review state | `A S D F G` |
-| Your concentration, `sharpness` | Start of a study block, or after an answer if the gap passed inside the reviewer | `1` to `7` |
-| Day rating, `tiring` and `learned`, optional note | Leaving the reviewer in the evening, once a day, if today has 20+ answers | `1` to `7`, `Q W E R T Y U`; click the note field to type |
+| Asked | Questions |
+| --- | --- |
+| About a sampled card once it is answered, on a sheet over whatever follows | `effort`, then `familiar` on a new card, or `gained` or `know` on another. `wrong` after a failure |
+| About a sitting of 15+ cards, once it has ended | `work`, `focus`, `deep` |
+| In the evening, once a day | `amount`, `strain`, `rest`, `versus` and `pair` when there is something to name, `learned`, a note |
 
-Cost uses letters on purpose. With digits, pressing 2 for "2" would set ½, a fourfold error nothing can detect once confirmed, and 1 to 4 also answer cards, so a habit would move a slider unnoticed.
-
-Answer prompts appear before the next card's timer starts, so they never add to any recorded time.
-
-The day rating is only ever asked on the way back to the deck list after reviewing: press D, click Decks, or finish the queue and then go back. It rates today, once, from 19:00 by default, and needs 20+ answers today, so you're never asked about study you haven't done. Opening Anki, regaining focus and rollover never ask. It appears before the deck list draws, so the day's final score isn't on screen. Esc settles the day. If you study more afterwards, that's fine.
-
-A day with no evening exit stays unrated, on purpose: a question asked later would blur into the next day. On your 2026 study pattern, a 19:00 start leaves up to 79% of study days rateable, with about 88% of the day's answers done at the first prompt. An earlier hour rates more days less completely: 18:00 gives 85% and 74%, 20:00 gives 61% and 99%.
+A card is asked about after its answer, never on it: a control on the card went unseen on quick answers, and a question during the card would land on its clock.
 
 ## What each question means
 
-Each question asks about one thing, so that "effort" doesn't have to carry everything. A slider shows its value beside it and a short description under it, so you can match a step to how it felt.
+**`effort`, 1 to 6.** How hard did you have to think on this card? Front and back together: None, Slight, Some, Solid, Hard, Maximal. Leave out how long it took and which button you pressed: both are recorded. Each step describes what happened in your head, so it needs no comparison with another review. *Used for:* stage 1 of the fit, which answers are harder.
 
-A key sets a slider to the tick above its letter. The letter or digit is only a shortcut, not part of the answer. The arrows then fine-tune that slider, and Enter confirms. Clicking and dragging work too. An untouched slider is no answer: it shows a dash and Not set yet, wherever its handle rests, and Done waits until all are set. To choose the step where a handle rests, click it.
+**`familiar`, 0 to 3.** Before this new card, did you know this word or idea? *Used for:* a control in stage 1. It never scores.
 
-### Effort of that review (`cost`)
+**`gained`, 0 to 4, or `know`, 0 to 100,** taking turns. What the review left behind, from Nothing to Something new; and how much of the card you know, asked about its main point on a young card and about its details on a mature one, on one scale. *Used for:* nothing scores them. The report tests whether the inputs predict them.
 
-> That review took as much effort as how many routine ones?
->
-> ¼ of one, ⅓ of one, ½ of one, ¾ of one, One, One and a half, Two, Three, Four, Six, Eight or more
+**`wrong`, any number of reasons.** After a failure: blank, another word or meaning, a wrong form, a missed sense, misheard or misread, on purpose, something else. *Used for:* the report's effort by reason. It can't feed the model: public scoring never has it.
 
-A routine review is a familiar card answered without much thought. Picture a few of those in a row: "Two" means doing two of them would take as much effort as the review you just did. "¼ of one" means it took a quarter of a routine one.
+**`work`, 1 to 5.** How much Anki work was that sitting, all in all? Tiny to Huge. *Used for:* stage 2, how answers add up.
 
-Count the whole review: recalling, reading, understanding, looking things up, and how long it lasted.
+**`focus`, 1 to 5.** How well could you concentrate during it? *Used for:* a control in stage 1. It never scores.
 
-- ¼ of one: obvious at a glance, you barely read it.
-- ½ of one: quick and sure, easier than routine.
-- One: a familiar card, little thought, about ten seconds.
-- Two: real thought, or a second look.
-- Four: a minute or two of reading and thinking.
-- Eight or more: several minutes working through a dense card.
+**`deep`, 1 to 5.** How much of the sitting were you deep in it, with no break in your attention? Count stretches of several minutes on demanding cards. *Used for:* a check of sustained concentration, in the report.
 
-The scale moves in half doublings, rounded to plain numbers, so every second step doubles. That's because the model works on ratios: One to Two counts the same as Four to Eight. The keys hold these doublings, and the arrows reach the steps between.
+**`amount`, 1 to 7.** How much Anki work did you do today, all in all? From Almost none to About the most I ever do. Only Anki: a short day is a small day, even when it was all you could manage. *Used for:* stage 2, and the judge of every formula.
 
-**Used for:** the only rating the model learns from.
+**`strain` and `rest`, 1 to 5.** How hard it was to get the day's study done, and how much the rest of the day took out of you. A tired or busy day shows here, not in `amount`. *Used for:* the report checks that they stay out of `amount`.
 
-### What you got from it (`gain`)
+**`versus`, 1 to 5.** Next to a named earlier study day, today's work was much less, about the same, or much more. It needs no steady sense of a usual day. *Used for:* a second judge.
 
-> What did you get out of that review?
->
-> Nothing, Very little, Kept it fresh, Reinforced it, A small insight, Learned something, Learned a lot
+**`pair`, 1 to 5.** Which was more work today, of the two note types with the most time, each with ten minutes or more? It compares two piles of work done by the same person on the same day, so tiredness and chores cancel out. *Used for:* stage 2. It says most directly how a long answer weighs against a quick one.
 
-This asks what the review gave you, whatever it took. Nothing means autopilot: your hands answered and you'd have lost nothing by skipping it. Kept it fresh means you recalled or reread what you already knew. Learned something means you now understand something you didn't before, such as a nuance. A hard review can teach nothing and an easy one can teach something, so answer this apart from effort.
-
-**Used for:** nothing yet. It's recorded so that grinding can be measured later.
-
-### How well you know the card (`grasp`)
-
-> How much of this card do you really know now?
->
-> 0% to 100%, in steps of 10%
-
-Of everything on the card worth knowing, how much could you produce or explain right now without looking: the meaning, the pitch, the nuances. Answer for the card, not for this review. Pressing Good doesn't mean 100%.
-
-**Used for:** nothing yet. It's recorded to test how far maturity reflects real knowledge.
-
-### Why you failed (`why`)
-
-> Why did you press Again?
->
-> I blanked, A hint, Partly, Nearly, On purpose
-
-Read this slider as how close you were to passing. I blanked means nothing came. A hint means something came, but not enough to pass. Partly means you got some of it and missed the rest. Nearly means you knew most of it and missed a detail. On purpose means you knew it well enough to pass, but want the card back soon, for instance to clear up a nuance. The review log can't tell these apart.
-
-**Used for:** the report's Cost by Again reason. It can't feed the model, because public scoring never has this answer.
-
-### Your concentration (`sharpness`)
-
-> How well can you concentrate right now?
->
-> Barely, Poorly, Below usual, As usual, Well, Very well, Fully
-
-This is about you, not the cards, and As usual means your normal study state. It's asked before you start, so the session can't colour it.
-
-**Used for:** a control during the fit, which separates "this card is hard" from "I was tired". It never scores.
-
-### How tiring the day was (`tiring`)
-
-> How mentally tiring was today's study?
->
-> Not at all, Barely, A little, As usual, Fairly, Very, Exhausting
-
-This is about today's study so far, compared with your usual day. Rate how drained it left you, not how many cards you did or how useful it was. A long, easy day can be A little.
-
-**Used for:** judging every formula, and deciding the ship gate.
-
-### What the day taught you (`learned`)
-
-> How much did you learn or improve today?
->
-> Almost nothing, Very little, A little, As usual, Quite a bit, A lot, Far more than usual
-
-This is progress, not effort. A day of grinding vocabulary can be Very tiring and Almost nothing, and a short session on rich cards can be the reverse.
-
-**Used for:** shown beside tiring in the judge, outside the gate. It's recorded so that the heatmap could one day credit what you gained instead of what it cost.
+**`learned`, 1 to 7.** How much did you learn or improve today? *Used for:* shown beside `amount` in the judge, outside the gate.
 
 The optional note is for anything unusual, such as being ill or changing how you study. Nothing reads it automatically.
-
-## Settings
-
-All of these are in the tab, take effect at once and are saved in `state.json`.
-
-| Setting | Key | Default | Meaning |
-| --- | --- | --- | --- |
-| Silent baseline (days) | `baseline_days` | 14 | No answer or sharpness prompts before this |
-| Answer rate | `answer_rate` | 0.06 | Weighted `1 + 6·(over 60 s) + 2·new`, about 13 prompts a day |
-| Again reason rate | `lapse_reason_rate` | 0.3 | About 3 prompts a day |
-| Study block gap (hours) | `block_gap_hours` | 2 | Idle time that starts a new block |
-| Day rating from (hour) | `day_rating_hour` | 19 | Local hour from which leaving the reviewer asks. A study day runs past midnight, so 1 a.m. still counts as that evening |
-| Daily prompt cap | `daily_cap` | 30 | Skipped prompts count, day ratings do not |
-| Stop after cost ratings | `stop_after_cost_ratings` | 1200 | Prompts stop, the silent log and day ratings continue |
-
-If prompts get tiresome, set Again reason rate to 0 first, and raise the study block gap to make sharpness rarer. Lower the answer rate only as a last resort. Keep cost and the day rating. The rotating question has no switch of its own.
 
 ## Data folder
 
@@ -177,17 +92,17 @@ On Linux the base is usually `~/.local/share/Anki2`. Open Data Folder in the tab
 | File | Content |
 | --- | --- |
 | `events-YYYY-MM.jsonl` | All events, one JSON object per line, one file per UTC month |
-| `state.json` | Settings and progress, replaced atomically |
+| `state.json` | Whether recording is on, and since when, replaced atomically |
 | `errors.log` | One JSON object per failure: `ts`, `where`, `details` |
 | `report-YYYYMMDD.json` | Full report of a fit. A second fit on the same day replaces it |
 | `model.json` | The local fit in use, with its note-type offsets, written by Use This Fit on This Profile |
 | `state.json.corrupt` | A damaged `state.json`, set aside if that ever happens |
 
-Besides the settings, `state.json` holds `recording`, `recording_since` (ms, first start) and `day_rated_through_ms`, the end of the last study day rated or skipped.
+`state.json` holds `recording` and `recording_since` (ms, the first start). One written before the rating dialogs were retired holds their settings too: they are kept and unused.
 
 **Copy the whole folder once a month.** Anki backups don't cover it and sync doesn't touch it. A reinstall or an add-on update leaves it in place, but losing the disk loses it, and these events can't be recovered from the revlog. A copy is safe while Anki runs: at worst the last line is truncated, and truncated lines are skipped on reading. To restore, close Anki and put the folder back.
 
-The folder holds no card text, only sizes. The one exception is what you type in a day rating's note.
+The folder holds no card text, only sizes.
 
 ## Event schema
 
@@ -231,52 +146,31 @@ Version 1. Every line has `v` (1), `t` (the kind), `ts` (ms) and `run` (a random
 
 **`undo`**: `op`, `reverted_to`. Nothing reads these to pair undos: an undone answer has no revlog row any more, so `dataset.py` drops it by `rev_id`.
 
-**`prompt`**: one per dialog, skipped or not.
-
-| Field | Meaning |
-| --- | --- |
-| `kind` | `answer`, `sharpness` or `day` |
-| `wording_v` | Version of the question wording, 4. Earlier versions offered every other position of `cost` and `why`, and `dataset.py` doubles those on reading. Their other answers stay as logged, on the shorter scales of the time |
-| `answers` | Question id to value |
-| `rt_ms` | Question id to reaction time in ms, up to the last change of that slider |
-| `skipped` | Ids of the questions left unanswered |
-| `cid`, `rev_id`, `seq`, `ease`, `answer_p`, `why_p` | `answer` only. The two probabilities the answer was sampled with |
-| `rotation_p` | `answer` with a cost question only |
-| `p`, `late` | `sharpness`. `p` is 1, `late` is true if asked after an answer |
-| `p`, `day_end_ms`, `day_answers`, `note` | `day`. `note` only if you wrote one |
-
-Values in `answers`:
-
-| Question id | Values |
-| --- | --- |
-| `cost` | 0 to 10, in the order the slider shows, so 4 is One and 10 is Eight or more |
-| `gain` | 0 to 6, in the order the slider shows |
-| `grasp` | 0 to 10, in tens of percent |
-| `why` | 0 to 4, in the order the slider shows |
-| `sharpness`, `tiring`, `learned` | 1 to 7, in the order the slider shows |
+**`prompt`**: one per rating dialog, in folders from before the dialogs were retired. They are read for the counts and never fitted. Fields: `kind` (`answer`, `sharpness` or `day`), `wording_v`, `answers`, `rt_ms` and `skipped`; an answer adds `cid`, `rev_id`, `seq`, `ease` and the chances it was sampled with, a day `day_end_ms`, `day_answers` and its `note`. Their answers: `cost` 0 to 10 on ¼ to 8+ routine reviews, `gain` 0 to 6, `grasp` 0 to 10 in tens of percent, `why` 0 to 4, and `sharpness`, `tiring` and `learned` 1 to 7. Wordings before 4 offered every other position of `cost` and `why`.
 
 ## Fit and report
 
-Fit is the machine learning step. It runs a regularized ordered logistic regression, in pure Python in `calibration/fit.py`, with no library. From your cost ratings it learns one weight for each input, then those weights give every answer a credit, rated or not. Only cost ratings train it: `gain`, `grasp` and `why` are not read by it, and `tiring` and `learned` only test it. DESIGN.md has the formulas. Nothing is learned until you press Fit, and nothing changes your heatmap until you press Use This Fit on This Profile.
+Fit is the machine learning step, in pure Python with no library. It runs in the background, and is enabled from 150 effort ratings and 20 rated days. Nothing is learned until you press Fit, and nothing changes your heatmap until you press Use This Fit on This Profile. DESIGN.md has the formulas. There are two stages:
 
-It runs in the background and is enabled from 300 cost ratings. It fits twice:
+1. **Cards.** An ordered logistic regression of the effort ratings on the inputs below. Its cut points are fitted too, so it learns which answers are harder, not by how much: every answer gets a difficulty. The two time inputs inform it and stay out of the difficulty. Three controls explain the ratings and never score: the sitting's `focus`, a new card's `familiar`, and drift over the months.
+2. **Work.** An answer's credit is its duration to the power b, times exp(k × difficulty). b and k are found so that summed credit explains how sittings, days and pairs were rated. b is the whole time exponent: 0 counts answers, 0.4 is review-weighted, 1 is recorded time.
 
-- The **shared fit** has no note-type offsets. It is what the report's weights, the holdout and the gate describe, and what Copy Weights as JSON gives you, as it's the only one that can work on someone else's collection.
-- The **profile fit** adds one offset for each template with 30+ ratings. It's what Use This Fit on This Profile uses, because your own heatmap can know your own note types.
+If the ratings can't place b, its 90% range holds both 0.2 and 0.8. b then stays at 0.4, review-weighted's exponent, and only k is fitted. The report says so.
+
+There are two fits:
+
+- The **shared fit** has no note-type offsets. It is what the report's weights, the judge and the gate describe, and what Copy Weights as JSON gives you, as it's the only one that can work on someone else's collection.
+- The **profile fit** adds, in stage 1, one offset for each template with 30+ effort ratings. It's what Use This Fit on This Profile uses, because your own heatmap can know your own note types.
 
 Use This Fit on This Profile writes `model.json` and scores with it at once, and at each profile open while devmode is on. Calibrated effort then appears under Color by the next time settings open. Each fit gets a new version, so saved references recompute. To go back to the shipped weights, delete `model.json` and reopen the profile.
 
-Copy Weights as JSON copies the model body for shipping. It says `"status": "local"`, so pasting it alone releases nothing. It never holds offsets.
+Copy Weights as JSON copies the model body for shipping. It says `"status": "local"`, so pasting it alone releases nothing. It never holds offsets. Both buttons wait for a report with a fit in it.
 
 The report appears in the tab, top to bottom:
 
-**Counts.** Cost ratings here exclude undone answers, so this can read lower than the tab's live count. `unlogged` counts revlog answers since recording began with no `ans` event: phone reviews without recording files, or answers while recording was off. `undone` counts `ans` events whose revlog row is gone. Check Cost use: if nearly everything is on one or two labels, the scale isn't being used.
+**Counts.** Effort ratings, rated days, rated sittings, days with a pair, and the skip rate. `unlogged` counts revlog answers since recording began with no recorded answer: reviews of templates nothing records, or while recording was off. `undone` counts recorded answers whose revlog row is gone. Then how often each choice of each question was taken: if nearly everything sits on one or two choices, the scale isn't being used.
 
-**Fit.** `sigma` is the noise in your ratings, in log units: smaller means steadier. `DID NOT CONVERGE` means the rest of the report can't be trusted, and the gate fails.
-
-**Time exponent.** How credit grows with an answer's duration, on plain templates (`rich` 0) and rich ones (`rich` 1.5). Review-weighted uses 0.4. This number depends on how well you judge "double": anchors misjudged by ×0.7 or ×1.4 move it by 30 to 45%, while day ordering mostly survives. So trust the judge over this line.
-
-**Weights.** Each line is `name: weight ± standard error`, per raw input unit. A weight within about two standard errors of 0 hasn't earned its place. Lines marked `(control)` explain the ratings and never score: sharpness and drift, both centred, so scoring at 0 means an average block at an average moment.
+**Cards.** Each line is `name: weight ± standard error`, per raw input unit, on the effort ratings' own scale. A weight within about two standard errors of 0 hasn't earned its place. `(time, scored through b)` marks the time inputs, `(control)` the controls.
 
 | Input | Meaning |
 | --- | --- |
@@ -292,41 +186,39 @@ The report appears in the tab, top to bottom:
 | `same_day_recall` | The same on the same study day, from FSRS-7 with its default parameters |
 | `day_load` | ln(1 + answers given earlier that study day) |
 
-**Note-type offsets.** From the profile fit: how much each template costs beyond what its timing explains, in log units, against templates with too few ratings to have an offset. An offset of +0.69 means about double. Only this profile scores with them.
+**Note-type offsets.** From the profile fit: how much harder each template's answers felt than their inputs show. Only their differences mean anything, since the cut points take any common level. Only this profile scores with them.
 
-**Holdout.** Trained on earlier rating days, tested on the later 20%. Log loss must be below intercept-only, or the inputs add nothing. Spearman is the rank match between predicted credit and your ratings of single answers.
+**Work.** b and its 90% range, and whether the rule kept 0.4. Then k, as what an answer one standard deviation harder counts for, and what the fit loses without difficulty, in deviance: 3.8 is p 0.05. Last, the share of answers at a limit of credit.
 
-**Judge.** The result that matters. For the later 30% of rated days, using a fit trained only on ratings from before them, it gives the Spearman of tiring and of learned against count, recorded time, review-weighted, FSRS-based, fitted, and fitted with note-type offsets. Higher is better. `n/a` means no fit could be trained. If the version with offsets clearly beats fitted, your note types carry effort the inputs can't see: your own heatmap gets that gain, and public users can't. The last line is the gate's test, explained below.
+**Judge.** The result that matters, explained under Ship gate. For each measure, its rank correlation with `amount` and with `learned` on the judged days, then what fitted adds to review-weighted, block by block, and the same on `versus`.
 
-**Front share.** Median front and back time per template, from logged answers.
+**Questions.** What each question shows so far, so that one showing nothing can stop being asked: how well every input, or the button alone, predicts `effort`, `gained` and `know` on later days; the weights of `familiar` and `focus`; effort by `wrong` reason; whether `rest` goes with `strain` and stays out of `amount`; how often `versus` agrees with its two days' `amount`; b from evenings alone, with pairs, and with sittings too; and `deep` against the share of a sitting that sustained concentration rewards.
 
-**Cost by Again reason.** The median cost of each reason. It shows whether deliberate fails feel different from blanks.
+**Front share.** Median front and back time per template, from recorded answers.
 
-**Pace.** Reactivity checks on comparable answers (same template, button and phase). ×1.00 means no change, above 1 means slower. The first line compares after the baseline with during it, the second compares answers right after a prompt with the others. A ratio far from 1 means prompts are changing how you review.
+**Pace.** Reactivity checks on comparable answers (same template, button and phase): answers since the first question against the 30 days before it, on the revlog's own times, and the answer right after a question against the others. ×1.00 means no change, above 1 means slower. A ratio far from 1 means questions change how you review.
 
 ## Ship gate
 
 The label above the report says PASSED or NOT PASSED with every reason. All of these must hold:
 
-- At least 800 cost ratings, counted without undone answers.
-- At least 60 rated days, each with a tiring rating.
-- The fit on every rating and the fit used by the judge both converged.
-- On the later 30% of rated days, fitted is no worse than review-weighted on tiring, and it explains tiring ratings that review-weighted leaves unexplained. That is the report's `Beyond review-weighted` line: `t` must reach the value printed there, which is one-sided p < 0.05 on the partial rank correlation.
+- At least 300 effort ratings and 60 rated days.
+- Every fit converged.
+- On days no fit of it had seen, fitted explains `amount` beyond review-weighted: the judge's z reaches 1.645, one-sided p < 0.05. And it is no worse than review-weighted in plain rank correlation with `amount`.
 
-Failing is a valid result, and nothing ships.
+The judge cuts the rated days into four blocks in time order. Every block but the first is scored by a fit on everything rated before it, so no day is scored by a fit that saw it, and three quarters of the days are judged. In each block, an ordered logistic regression of `amount` on log review-weighted and log(fitted / review-weighted) gives the t of the second, and the blocks' t add up to z.
 
-There is no fixed margin on purpose. Day scores agree so closely that even a perfect fit gains only about 0.02 to 0.05 in plain Spearman, so a margin of 0.05 would turn away real gains, more surely with more days. The partial test compares the measures on the part where they differ, so it gets stronger with data.
+There is no fixed margin: day scores agree so closely that even a perfect fit gains only about 0.02 to 0.05 in plain rank correlation. Nor is the test a rank correlation with review-weighted removed from both sides, as it was before. Ranking bends the tails of the ratings and of the candidate alike, and a straight line on ranks leaves that bend behind, so review-weighted plus pure noise passed in 8 to 14% of simulated cases. The ordered logit works on the scale the fit itself assumes, and passes such candidates about 5% of the time.
 
-Simulated odds of passing, with ratings that correlate about 0.7 with true effort, for a true time exponent of 0.8 and for a score that is mostly recorded time:
+Simulated odds of passing, on one person's real days, with a fitted measure that really is better (a time exponent of 0.7 and a difficulty effect), and with none:
 
-| Rated days | Judged days | Exponent 0.8 | Mostly recorded time | No real gain |
-| --- | --- | --- | --- | --- |
-| 60 | 18 | 23% | 41% | 7% |
-| 90 | 27 | 30% | 53% | 8% |
-| 120 | 36 | 38% | 66% | 8% |
-| 180 | 54 | 51% | 80% | 6% |
+| Rated days (study days) | Mixing a quick and a slow note type | One quick note type only | No real gain |
+| --- | --- | --- | --- |
+| about 68 (90) | 73% | 25% | 5% |
+| about 90 (120) | 86% | 32% | 5% |
+| about 135 (180) | 95% | 53% | 4% |
 
-So 60 days is the minimum, not a fair trial. NOT PASSED at 60 days may only mean too little data, and about 1 fit in 14 passes with no real gain. Day ratings keep coming after cost ratings stop, so keep rating and press Fit again.
+So 60 rated days is a minimum, not a fair trial: from about 90, a real gain passes most of the time. On days of one quick note type every measure ranks days almost alike, so NOT PASSED there says little. Day ratings keep coming: keep rating, and press Fit again.
 
 ## Shipping
 
@@ -367,27 +259,25 @@ ANKI_SINGLE_INSTANCE_KEY=rh-smoke anki -b <empty folder>
 Without that key a second Anki only raises the running window and exits.
 
 1. In the scratch Anki, install `build/better-review-heatmap-<version>.ankiaddon` through Tools > Add-ons > Install from file, restart it the same way, and add some cards.
-2. Turn devmode on, Start Recording, then set Silent baseline to 0. Set Answer rate to 1 so that a prompt comes at once.
-3. Review at least 21 cards, as the undo below must leave 20. In the data folder, confirm `q`, `a` and `ans` lines, each `ans` with a `rev_id`.
-4. Check that a prompt appears before the next card. In the file, the next `q` comes after the `prompt`, and that card's `taken_raw_ms` matches its own `ans` `ts` minus `q` `ts`, without the time the prompt stayed open.
-5. Undo an answer: an `undo` line appears.
-6. Close Anki mid-session and reopen it: recording resumes under a new `run`.
-7. Leave Anki open past rollover: a new `meta` line appears at the next card, and no prompt appears.
-8. Set Day rating from to the current hour. With 20+ answers today, press D in the reviewer: the day rating appears before the deck list, and doing it again doesn't ask twice.
-9. Confirm the Errors count in the tab is still 0, and that reviewing feels no slower.
+2. Turn devmode on and Start Recording.
+3. Review a few cards. In the data folder, confirm `q`, `a` and `ans` lines, each `ans` with a `rev_id`, and that a card's `taken_raw_ms` matches its own `ans` `ts` minus `q` `ts`.
+4. Undo an answer: an `undo` line appears.
+5. Close Anki mid-session and reopen it: recording resumes under a new `run`.
+6. Leave Anki open past rollover: a new `meta` line appears at the next card.
+7. Confirm the Errors count in the tab is still 0, and that reviewing feels no slower.
 
 Then turn devmode on in the real profile and follow the Runbook.
 
 ## Known limits
 
-- The recorder sees this desktop only. Reviews from elsewhere join through recording files, see below. Without them they count as unlogged, though they still score through the revlog.
-- Split timing and sharpness can't score historic days or public users. They explain the fit; only revlog-derived inputs score.
+- The recorder sees this desktop only, and asks nothing. Reviews from elsewhere join through recording files, see below. Without them they count as unlogged, though they still score through the revlog.
+- Split timing and the ratings themselves can't score historic days or public users. They explain the fit; only revlog-derived inputs score.
 - The weights describe one person. Ordering transferred to an unseen note type in the research, level did not.
-- Ratings measure felt cost, not truth.
+- Ratings measure felt effort and felt work, not truth.
 
 ## Recordings from other devices
 
-The recorder only runs on desktop. Reviews done elsewhere can reach Fit as recording files, which a separate tool has to write: none ships with the add-on. Fit reads every file named `_brh_cal_*` in the media folder, so media sync carries them. Check Phone in the tab shows matched answers, front and back medians, and key failures, without waiting for 300 cost ratings. Their raw cost ratings count towards that threshold.
+The recorder only runs on desktop. Reviews done elsewhere can reach Fit as recording files, which a separate tool has to write: none ships with the add-on. Fit reads every file named `_brh_cal_*` in the media folder, so media sync carries them. Check Phone in the tab shows matched answers, front and back medians, how many cards were asked about and how, and key failures, without waiting for a fit. Their effort ratings and rated days count towards Fit's thresholds before they are matched.
 
 Write each file once and never touch it again. Media sync doesn't notice a file growing in place, and re-uploads a whole file on any change.
 
@@ -409,13 +299,12 @@ Files never hold the answer button. Fit matches each interval ending in a real r
 - An offer with no matching answer counts as skipped, once it could have been seen: a delayed offer needs the answer to have run that long.
 - `why` is kept only for a real Again on a review card, since the survey comes before the button.
 - `panel_ms` is removed from that answer's duration for fitting only. Heatmap scores keep it.
-- The earliest recorded event starts the baseline if it predates desktop's.
 
-Split timing and sharpness remain diagnostics, never scoring inputs. Files are never deleted or rewritten here.
+Wordings before 5 asked on the card itself, with the `offer`, `due` and `prompt` events above: their answers are counted and never fitted. Split timing remains a diagnostic, never a scoring input. Files are never deleted or rewritten here.
 
 ### Wording 5
 
-A recording tool may ask other questions than the dialogs above. From `wording_v` 5 on, files are read as follows. No fit reads these answers yet: they are counted in the tab, and Check Phone reports them.
+From `wording_v` 5 on, files are read as follows. These are the answers Fit reads.
 
 A card is asked about once it is answered, on a sheet shown over whatever follows it. That keeps the question off the card being rated, and off its clock.
 
@@ -424,7 +313,7 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 | `offer` | `ask`, the question ids planned for this answer, and `p`, the chance it had of being asked about |
 | `prompt`, `kind` `answer` | `wording_v` 5, `answers`, `rt_ms`, `skipped`, `after` true, `at` (ms, when the sheet closed) and `sheet_ms`. Its `ts` lies inside its own card's review, after the answer side was shown. `timer_credit_ms` when the recording tool already took the sheet's time off the clock of the card under it |
 | `prompt`, `kind` `session` | A sitting: `answers`, `from_ms`, `to_ms`. No `card` |
-| `prompt`, `kind` `day` | As before, with the answers below |
+| `prompt`, `kind` `day` | As before, with the answers below, and `versus_day` and `pair_cards` naming what `versus` and `pair` compare |
 | `revision` | A later change to a card's answers: `of`, the prompt's id, then `answers`, `skipped` and `withdrawn`. No `card` |
 
 | Answer | Values |
@@ -439,19 +328,13 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 | `amount` | 1 to 7, about the day: how much study was done |
 | `strain`, `rest`, `versus`, `pair` | 1 to 5, about the day: how hard it felt, what the rest of the day took, and two comparisons |
 
-`deep` asks: "During that sitting, how much of the time were you deep in it,
-with no break in your attention?" Count stretches of several minutes on
-demanding cards; quick cards done on autopilot don't count. The choices are
-None of it, A little, About half, Most of it and All of it. `focus` stays
-separate: it describes the person's state, while `deep` describes the sitting.
-It is an addition within wording 5; earlier sittings without it remain valid.
-No fit reads it yet. A later check will compare it with the share of a sitting's
-minutes receiving a sustained concentration coefficient above 1, once about
-40 rated sittings are available.
+`deep` was added within wording 5: sittings rated before it remain valid without it.
 
 - An `offer` with no `prompt` for its answer was never shown. It is counted as such, never as a skip.
 - A prompt with revisions is read with the answers and skips of its newest one, and the revisions themselves are dropped. The file keeps the original. A withdrawn revision answers nothing: the sheet still counts as shown, its questions as skipped. Check Phone counts changed and withdrawn answers. A revision whose prompt isn't read yet waits for it.
 - `wrong` is kept only after a real Again.
 - `sheet_ms` is removed from the duration of the card that was on screen while the sheet was up, for fitting only.
 - `timer_credit_ms` says how much of that time the recording tool already gave back to that card's clock, so the revlog never held it. The revlog time then matches the time without the sheet, and nothing is removed twice. Check Phone shows how far recorded times sit from it under such sheets: near 0 when the credit works, about a sheet's length when it doesn't.
-- A day rated on these questions has no `tiring` rating, so the judge above doesn't count it.
+- A rated day holds the answers of its study day given before the rating: what came later that day wasn't rated. The last answer before the rating names the day.
+- A sitting holds every answer from its first card's to its last's, found by when its cards were shown, with five minutes before `from_ms` allowed for: its bounds say when the tool received them. A day or a sitting rated twice keeps the later rating.
+- `pair_cards` names the two templates `pair` compares, as `Note type/Template`, and the rating grows with the second. A day on which either wasn't answered has no pair.

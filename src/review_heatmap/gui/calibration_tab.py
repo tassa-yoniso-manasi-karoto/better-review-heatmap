@@ -13,8 +13,6 @@ from statistics import median
 from aqt.operations import QueryOp
 from aqt.qt import (
     QApplication,
-    QDoubleSpinBox,
-    QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -22,7 +20,6 @@ from aqt.qt import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
     sip,
@@ -31,10 +28,14 @@ from aqt.utils import openFolder, showWarning, tooltip
 
 from ..activity import ActivityReporter
 from ..calibration import activate_model
-from ..calibration.dataset import read_dataset, revlog_sql
+from ..calibration.dataset import prompt_counts, read_dataset, revlog_sql
 from ..calibration.phone import SHEET_WORDING, merge_phone, read_files
 from ..calibration.recorder import active_recorder, start_recording, stop_recording
 from ..calibration.report import (
+    FIT_EFFORT_RATINGS,
+    FIT_RATED_DAYS,
+    GATE_EFFORT_RATINGS,
+    GATE_RATED_DAYS,
     format_report,
     gate_text,
     latest_report,
@@ -43,24 +44,8 @@ from ..calibration.report import (
     run_fit,
     write_model,
 )
-from ..calibration.sampling import prompt_counts
-from ..calibration.store import Store, baseline_days_left, now_ms
+from ..calibration.store import Store, now_ms
 from ..config import config
-
-# The fit is worth reading from here on.
-_COST_RATINGS_GOAL = 800
-_FIT_MIN_COST_RATINGS = 300
-
-# key -> (label, decimals, step, maximum)
-_SETTINGS = {
-    "baseline_days": ("Silent baseline (days)", 0, 1, 365),
-    "answer_rate": ("Answer rate", 3, 0.01, 1),
-    "lapse_reason_rate": ("Again reason rate", 2, 0.05, 1),
-    "block_gap_hours": ("Study block gap (hours)", 1, 0.5, 24),
-    "day_rating_hour": ("Day rating from (hour)", 0, 1, 23),
-    "daily_cap": ("Daily prompt cap", 0, 1, 500),
-    "stop_after_cost_ratings": ("Stop after cost ratings", 0, 50, 100000),
-}
 
 
 class CalibrationTab(QWidget):
@@ -80,7 +65,7 @@ class CalibrationTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
         self._setupRecordingSection()
-        self._setupPromptSection()
+        self._setupRatingsSection()
         self._setupFitSection()
         self._layout.addStretch(1)
         self._refreshRecordingSection()
@@ -109,28 +94,13 @@ class CalibrationTab(QWidget):
         layout.addWidget(self.labPhoneDetails)
         self._layout.addWidget(group)
 
-    def _setupPromptSection(self):
-        group = QGroupBox("Prompts", self)
+    def _setupRatingsSection(self):
+        # Asked on other devices: this one only counts them.
+        group = QGroupBox("Ratings", self)
         layout = QVBoxLayout(group)
-        form = QFormLayout()
-        state = self._store.load_state()
-        self.settingBoxes = {}
-        for key, (label, decimals, step, maximum) in _SETTINGS.items():
-            box = QDoubleSpinBox(group) if decimals else QSpinBox(group)
-            if decimals:
-                box.setDecimals(decimals)
-            box.setRange(0, maximum)
-            box.setSingleStep(step)
-            box.setValue(state[key])
-            box.setKeyboardTracking(False)
-            box.valueChanged.connect(
-                lambda value, setting=key: self._onSettingChanged(setting, value)
-            )
-            form.addRow(label, box)
-            self.settingBoxes[key] = box
-        layout.addLayout(form)
-        self.labPrompts = QLabel(group)
-        layout.addWidget(self.labPrompts)
+        self.labRatings = QLabel(group)
+        self.labRatings.setWordWrap(True)
+        layout.addWidget(self.labRatings)
         self._layout.addWidget(group)
 
     def _setupFitSection(self):
@@ -160,13 +130,10 @@ class CalibrationTab(QWidget):
 
     def _refreshRecordingSection(self):
         recording = active_recorder() is not None
-        state = self._store.load_state()
-        since = state["recording_since"]
-        now = now_ms()
+        since = self._store.load_state()["recording_since"]
         lines = [
             "Recording since " + _date(since) if recording else "Not recording",
             f"Answers logged: {self._store.count_events('ans')}",
-            f"Baseline days left: {baseline_days_left(state, now)}",
             f"Errors: {self._store.error_count()}",
         ]
         phone = read_files(_media_dir(self._mw.col))
@@ -183,32 +150,35 @@ class CalibrationTab(QWidget):
               if event["t"] == "prompt" and isinstance(event.get("answers"), dict)),
         ])
         skip_rate = counts["skipped"] / counts["prompts"] if counts["prompts"] else 0
-        self.labPrompts.setText("\n".join((
-            f"Cost ratings: {counts['cost']}/{_COST_RATINGS_GOAL}",
-            f"Gain: {counts['gain']}",
-            f"Grasp: {counts['grasp']}",
-            f"Again reasons: {counts['why']}",
-            f"Sharpness: {counts['sharpness']}",
-            f"Day ratings: {counts['tiring']}",
+        lines = [
+            f"Effort ratings: {counts['effort']}, {FIT_EFFORT_RATINGS} to fit, "
+            f"{GATE_EFFORT_RATINGS} for the gate",
+            f"Rated days: {counts['amount']}, {FIT_RATED_DAYS} to fit, "
+            f"{GATE_RATED_DAYS} for the gate",
+            f"Rated sittings: {counts['work']}",
+            f"Days with a pair: {counts['pair']}",
             f"Skip rate: {skip_rate:.0%}",
-            # Asked by recordings from other devices, which no fit reads yet.
-            f"Effort after a card: {counts['effort']}",
-            f"Sittings rated: {counts['work']}",
-            f"Days rated on amount: {counts['amount']}",
-        )))
-        self.btnFit.setEnabled(counts["cost"] >= _FIT_MIN_COST_RATINGS)
+        ]
+        if counts["earlier"]:
+            lines.append(f"Ratings in earlier wordings, kept and not fitted: {counts['earlier']}")
+        self.labRatings.setText("\n".join(lines))
+        self.btnFit.setEnabled(
+            counts["effort"] >= FIT_EFFORT_RATINGS and counts["amount"] >= FIT_RATED_DAYS
+        )
 
     def _refreshFitSection(self):
         report = self._report
         local = read_model(self._store.folder)
         gate = gate_text(report["gate"]) if report else (
-            f"No fit yet: it needs {_FIT_MIN_COST_RATINGS} cost ratings."
+            f"No fit yet: it needs {FIT_EFFORT_RATINGS} effort ratings "
+            f"and {FIT_RATED_DAYS} rated days."
         )
         weights = f"fit version {local['version']}" if local else "the shipped weights"
         self.labFit.setText(f"{gate}\nIn use on this profile: {weights}")
         self.txtReport.setPlainText(format_report(report) if report else "")
-        self.btnUseFit.setEnabled(bool(report))
-        self.btnCopyWeights.setEnabled(bool(report))
+        # A report can come before there is anything to score with.
+        self.btnUseFit.setEnabled(bool(report and report["local_model"]))
+        self.btnCopyWeights.setEnabled(bool(report and report["model"]))
 
     def _onCheckPhone(self):
         offset = ActivityReporter(self._mw.col, config)._offset
@@ -240,13 +210,6 @@ class CalibrationTab(QWidget):
         QueryOp(parent=self, op=check, success=done).failure(
             self._onFitFailed
         ).with_progress("Checking phone recordings").run_in_background()
-
-    def _onSettingChanged(self, key, value):
-        self._store.update_state(**{key: value})
-        recorder = active_recorder()
-        if recorder:
-            recorder.prompter.reload()
-        self._refreshRecordingSection()
 
     def _onToggleRecording(self):
         if active_recorder():
@@ -280,7 +243,7 @@ class CalibrationTab(QWidget):
             phone = read_files(_media_dir(col))
             index = _phone_index(col, {event["card"] for event in phone.events if "card" in event})
             return run_fit(self._store, rows, conf, _template_names(col), progress,
-                           _media_dir(col), index, recall)
+                           _media_dir(col), index, recall, _card_templates(col))
 
         QueryOp(parent=self, op=fit, success=self._onFitDone).failure(
             self._onFitFailed
@@ -317,6 +280,15 @@ class CalibrationTab(QWidget):
 def _template_names(col) -> dict:
     return {
         (notetype["id"], card_ord): f"{notetype['name']} / {template['name']}"
+        for notetype in col.models.all()
+        for card_ord, template in enumerate(notetype["tmpls"])
+    }
+
+
+def _card_templates(col) -> dict:
+    """(mid, ord) of each card as recordings name it, "Note type/Template"."""
+    return {
+        f"{notetype['name']}/{template['name']}": (notetype["id"], card_ord)
         for notetype in col.models.all()
         for card_ord, template in enumerate(notetype["tmpls"])
     }

@@ -1,56 +1,123 @@
-"""Ordered logit with fixed anchors, in pure Python.
+"""Ordered logit with free cut points, in pure Python.
 
-Ratings sit on half doublings, so the cut points between them are known log
-costs instead of free thresholds. Fixing them is what identifies the size of
-the effect: intercept, weights and sigma all come out in log units, and
-exp(eta) is directly an answer's credit.
+A rating only says which of two things was more: nothing fixes how far apart
+two of its levels are. So the cut points between levels are fitted along with
+the weights, and what comes out orders answers, sittings or days without a
+size of its own. credit.py gives it one.
 """
 
 import math
+from bisect import bisect_left
 from operator import mul
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 
-# Halfway between the steps ¼ ⅓ ½ ¾ 1 1½ 2 3 4 6 8+, which round 2 ** (k / 2).
-ANCHORS = tuple(math.log(2) * (cut / 2 - 1.75) for cut in range(10))
-
-MAX_ITERATIONS = 200
+MAX_ITERATIONS = 100
 MAX_HALVINGS = 40
-MAX_STEP = 2.0
-DAMPING_START = 1e-6
-ARMIJO_SLOPE = 1e-4
-DECREMENT_TOLERANCE = 1e-8
-GRADIENT_TOLERANCE = 1e-7
+DECREMENT_TOLERANCE = 1e-9
 MIN_PROBABILITY = 1e-300
-MIN_START_SIGMA = 0.1
+# A level nobody chose yet would start its cut point at infinity.
+MIN_START_SHARE = 1e-4
+ONE_SIDED_5_PERCENT = 1.6449
 
-Cell = Tuple[float, float]
+
+class Ordered(NamedTuple):
+    """What ordered_logit found, in the units of the columns it was given."""
+    beta: List[float]
+    cuts: List[float]
+    levels: tuple  # the ratings that occur: cuts[j] lies between levels j and j + 1
+    loglik: float  # without the penalty
+    iterations: int
+    converged: bool
+    covariance: Optional[List[List[float]]]  # of beta, then of the cuts
 
 
 class OrderedFit(NamedTuple):
-    intercept: float
     weights: Dict[str, float]  # per raw input unit
     se: Dict[str, float]
-    sigma: float
+    cuts: Tuple[float, ...]  # for raw inputs too
+    levels: tuple
     loglik: float
     iterations: int
     converged: bool
     names: Tuple[str, ...]
     control_names: Tuple[str, ...]
-    anchors: Tuple[float, ...]
+
+
+def ordered_logit(rows: Sequence[Sequence[float]], ratings: Sequence,
+                  lam: float = 0.0, start: Optional[Tuple[Sequence[float], Sequence[float]]] = None,
+                  want_covariance: bool = False) -> Ordered:
+    """Fit P(rating <= level j) = F(cuts[j] - row . beta) by Newton's method.
+
+    The log likelihood is concave in beta and the cuts, so a step with halving
+    gets there. Ratings the rows tell apart perfectly have no finite best:
+    beta then grows until the likelihood stops moving, and comes back very
+    large. A penalty prevents that. Only levels that occur get a cell, since an
+    unused one has no finite cut. lam penalizes beta alone. start is the
+    (beta, cuts) of a similar fit.
+    """
+    levels = tuple(sorted(set(ratings)))
+    cell_of = {level: index for index, level in enumerate(levels)}
+    cells = [cell_of[rating] for rating in ratings]
+    size = len(rows[0]) if rows else 0
+    last = len(levels) - 1
+    if last < 1:
+        return Ordered([0.0] * size, [], levels, 0.0, 0, False, None)
+    theta = _start_from_shares(cells, size, last)
+    value = _objective(theta, rows, cells, size, last, lam)
+    if start is not None and len(start[0]) == size and len(start[1]) == last:
+        # A start far from here can sit where every probability underflows.
+        warm = [*start[0], *start[1]]
+        warm_value = _objective(warm, rows, cells, size, last, lam)
+        if warm_value > value:
+            theta, value = warm, warm_value
+
+    converged = False
+    iterations = 0
+    while True:
+        gradient, curvature = _newton_terms(theta, rows, cells, size, last, lam)
+        factor = _factor(curvature)
+        step = _solve(factor, gradient)
+        if math.fsum(map(mul, gradient, step)) < DECREMENT_TOLERANCE:
+            converged = True
+            break
+        if iterations == MAX_ITERATIONS:
+            break
+        shrink = 1.0
+        for _ in range(MAX_HALVINGS):
+            moved = [t + shrink * s for t, s in zip(theta, step)]
+            moved_value = _objective(moved, rows, cells, size, last, lam)
+            if moved_value >= value - 1e-12:
+                break
+            shrink /= 2
+        else:
+            break
+        theta, value = moved, moved_value
+        iterations += 1
+
+    covariance = None
+    if want_covariance:
+        total = size + last
+        covariance = [
+            _solve(factor, [float(k == j) for k in range(total)]) for j in range(total)
+        ]
+    beta, cuts = theta[:size], theta[size:]
+    return Ordered(
+        beta, cuts, levels, value + _penalty(beta, lam), iterations, converged, covariance,
+    )
 
 
 def fit_ordered(rows: Sequence[Sequence[float]], ratings: Sequence[int],
-                names: Sequence[str], anchors: Sequence[float] = ANCHORS,
-                lam: float = 2.0, control_names: Sequence[str] = ()) -> OrderedFit:
-    """Fit cost ratings by BHHH-Newton.
+                names: Sequence[str], lam: float = 2.0,
+                control_names: Sequence[str] = ()) -> OrderedFit:
+    """Fit ratings on named inputs.
 
     Standardizing makes lam mean the same for every input, whatever its unit.
-    The intercept and sigma go unpenalized: they set the level and the noise,
-    not an effect to shrink. Control columns are fitted like any other and only
-    differ at prediction. A constant column gets weight and se 0.
+    The cut points go unpenalized: they set where the levels sit, not an effect
+    to shrink. Control columns are fitted like any other and only differ at
+    prediction. A constant column gets weight and se 0.
     """
-    _check_inputs(rows, ratings, names, anchors, control_names)
+    _check_inputs(rows, ratings, names, control_names)
     columns = list(zip(*rows))
     active = [i for i, column in enumerate(columns) if min(column) != max(column)]
     means = {i: math.fsum(columns[i]) / len(rows) for i in active}
@@ -61,67 +128,61 @@ def fit_ordered(rows: Sequence[Sequence[float]], ratings: Sequence[int],
     standardized = [
         [(row[i] - means[i]) / scales[i] for i in active] for row in rows
     ]
-    cells = _cells(anchors)
-    answer_cells = [cells[rating] for rating in ratings]
+    fit = ordered_logit(standardized, ratings, lam, want_covariance=True)
 
-    theta = _starting_point(standardized, ratings, anchors, lam)
-    iterations = 0
-    while True:
-        value, gradient, hessian = _newton_terms(theta, standardized, answer_cells, lam)
-        factor = _factor(hessian)
-        step = _solve(factor, gradient)
-        converged = (
-            math.fsum(map(mul, gradient, step)) < DECREMENT_TOLERANCE
-            or max(map(abs, gradient)) < GRADIENT_TOLERANCE
-        )
-        if converged or iterations == MAX_ITERATIONS:
-            break
-        step = _damped_step(hessian, gradient, step)
-        moved = _backtrack(theta, step, gradient, value, standardized, answer_cells, lam)
-        if moved is None:
-            break
-        theta = moved
-        iterations += 1
-
-    beta = theta[:len(active)]
     weights = dict.fromkeys(names, 0.0)
     se = dict.fromkeys(names, 0.0)
     for j, i in enumerate(active):
-        weights[names[i]] = beta[j] / scales[i]
-        unit = [float(k == j) for k in range(len(theta))]
-        se[names[i]] = math.sqrt(_solve(factor, unit)[j]) / scales[i]
+        weights[names[i]] = fit.beta[j] / scales[i]
+        if fit.covariance:
+            se[names[i]] = math.sqrt(max(fit.covariance[j][j], 0.0)) / scales[i]
+    # Cuts for raw inputs: what the means added to every standardized row.
+    shift = math.fsum(fit.beta[j] * means[i] / scales[i] for j, i in enumerate(active))
     return OrderedFit(
-        intercept=theta[-2] - math.fsum(
-            beta[j] * means[i] / scales[i] for j, i in enumerate(active)
-        ),
         weights=weights,
         se=se,
-        sigma=math.exp(theta[-1]),
-        loglik=_penalty(beta, lam) - value,
-        iterations=iterations,
-        converged=converged,
+        cuts=tuple(cut + shift for cut in fit.cuts),
+        levels=fit.levels,
+        loglik=fit.loglik,
+        iterations=fit.iterations,
+        converged=fit.converged,
         names=tuple(names),
         control_names=tuple(control_names),
-        anchors=tuple(anchors),
     )
 
 
-def predict_eta(result: OrderedFit, row: Sequence[float]) -> float:
-    """Log credit of a row aligned with result.names, controls at zero."""
-    return result.intercept + math.fsum(
+def predict_eta(result: OrderedFit, row: Sequence[float],
+                without: Sequence[str] = ()) -> float:
+    """Index of a row aligned with result.names, controls at zero.
+
+    It only orders rows: where the levels sit is in the cuts. without names
+    inputs to leave out as well."""
+    return math.fsum(
         result.weights[name] * value for name, value in zip(result.names, row)
-        if name not in result.control_names
+        if name not in result.control_names and name not in without
     )
 
 
 def mean_log_loss(result: OrderedFit, rows: Sequence[Sequence[float]],
                   ratings: Sequence[int]) -> float:
-    """Mean -ln P(rating), controls at zero: the model as scoring would use it."""
-    cells = _cells(result.anchors)
+    """Mean -ln P(rating), controls at zero: the model as scoring would use it.
+
+    A rating the fit never saw counts as the next level it did see, or the
+    highest: every fit compared on the same ratings is treated alike."""
+    last = len(result.levels) - 1
     return -math.fsum(
-        math.log(_probability(*_bounds(predict_eta(result, row), result.sigma, cells[rating])))
+        math.log(_probability(
+            predict_eta(result, row), min(bisect_left(result.levels, rating), last),
+            result.cuts,
+        )[0])
         for row, rating in zip(rows, ratings)
     ) / len(ratings)
+
+
+def rating_score(eta: float, cell: int, cuts: Sequence[float]) -> float:
+    """d ln P(level cell) / d eta: how a higher index would change that rating's odds."""
+    probability, upper_density, lower_density = _probability(eta, cell, cuts)[:3]
+    return (lower_density - upper_density) / probability
 
 
 def spearman(a: Sequence[float], b: Sequence[float]) -> float:
@@ -138,43 +199,47 @@ def spearman(a: Sequence[float], b: Sequence[float]) -> float:
     return math.fsum(map(mul, deviations_a, deviations_b)) / spread if spread else 0.0
 
 
-def partial_rank_t(target: Sequence[float], rival: Sequence[float],
-                   candidate: Sequence[float]) -> Tuple[float, float]:
-    """(r, t) for what candidate explains of target that rival leaves unexplained.
+def ordinal_t(target: Sequence[int], rival: Sequence[float],
+              candidate: Sequence[float]) -> float:
+    """What candidate explains of target ratings that rival leaves unexplained.
 
-    r is the rank correlation of the two after removing rival from each, so
-    measures that mostly agree are compared on the part where they differ.
-    t has len(target) - 3 degrees of freedom.
+    An ordered logit of target on log rival and log(candidate / rival): the t
+    of the second, about standard normal when candidate adds nothing. 0 when
+    it can't be told: no spread, a score at 0, or ratings told apart perfectly.
+
+    A rank correlation with rival removed from both sides is not used: ranking
+    bends the tails of target and candidate alike, a straight line on ranks
+    leaves that bend behind, and rival plus pure noise then passes at p 0.05
+    in 8 to 14% of simulated cases.
     """
-    target_ranks, rival_ranks = _average_ranks(target), _average_ranks(rival)
-    left = _residuals(target_ranks, rival_ranks)
-    right = _residuals(_average_ranks(candidate), rival_ranks)
-    spread = math.sqrt(math.fsum(x * x for x in left) * math.fsum(x * x for x in right))
-    r = math.fsum(map(mul, left, right)) / spread if spread else 0.0
-    return r, r * math.sqrt((len(target) - 3) / max(1 - r * r, 1e-12))
+    if not target or min(*rival, *candidate) <= 0:
+        return 0.0
+    log_rival = [math.log(score) for score in rival]
+    return added_t(target, [
+        log_rival, [math.log(score) - base for score, base in zip(candidate, log_rival)],
+    ])
 
 
-def one_sided_t_5_percent(degrees: int) -> float:
-    """Student t for p = 0.05, one-sided, by the Cornish-Fisher expansion.
+def added_t(target: Sequence[int], columns: Sequence[Sequence[float]]) -> float:
+    """The t of the last column in an ordered logit of target on all of them:
+    what it explains of the ratings once the others are known. 0 when it can't be told."""
+    standardized = [_standardized(column) for column in columns]
+    if len(set(target)) < 2 or None in standardized:
+        return 0.0
+    fit = ordered_logit(list(zip(*standardized)), target, want_covariance=True)
+    last = len(columns) - 1
+    variance = fit.covariance[last][last] if fit.covariance else 0.0
+    if not (variance > 0 and math.isfinite(variance)):
+        return 0.0
+    return fit.beta[last] / math.sqrt(variance)
 
-    The stdlib has no t distribution. This is within 0.01 from 5 degrees up.
-    """
-    z = 1.6449
-    return (
-        z
-        + (z ** 3 + z) / (4 * degrees)
-        + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * degrees ** 2)
-    )
 
-
-def _residuals(values: Sequence[float], on: Sequence[float]) -> List[float]:
-    """values minus their least-squares line on on."""
-    mean_x, mean_y = math.fsum(on) / len(on), math.fsum(values) / len(values)
-    across = [x - mean_x for x in on]
-    centered = [y - mean_y for y in values]
-    spread = math.fsum(x * x for x in across)
-    slope = math.fsum(map(mul, across, centered)) / spread if spread else 0.0
-    return [y - slope * x for x, y in zip(across, centered)]
+def _standardized(values: Sequence[float]) -> Optional[List[float]]:
+    mean = math.fsum(values) / len(values)
+    scale = math.sqrt(math.fsum((value - mean) ** 2 for value in values) / len(values))
+    if scale < 1e-12:
+        return None
+    return [(value - mean) / scale for value in values]
 
 
 def _average_ranks(values: Sequence[float]) -> List[float]:
@@ -191,7 +256,7 @@ def _average_ranks(values: Sequence[float]) -> List[float]:
     return ranks
 
 
-def _check_inputs(rows, ratings, names, anchors, control_names) -> None:
+def _check_inputs(rows, ratings, names, control_names) -> None:
     if not rows or len(rows) != len(ratings):
         raise ValueError("fit_ordered needs one rating per row, and at least one row")
     if any(len(row) != len(names) for row in rows):
@@ -200,44 +265,20 @@ def _check_inputs(rows, ratings, names, anchors, control_names) -> None:
         raise ValueError("rows must be finite")
     if len(set(names)) != len(names) or not set(control_names) <= set(names):
         raise ValueError("names must be unique and include every control")
-    if any(not 0 <= rating <= len(anchors) for rating in ratings):
-        raise ValueError("ratings must be between 0 and len(anchors)")
 
 
-def _cells(anchors: Sequence[float]) -> List[Cell]:
-    return list(zip((-math.inf, *anchors), (*anchors, math.inf)))
-
-
-def _starting_point(standardized, ratings, anchors, lam) -> List[float]:
-    """Ridge regression of each rating's cell center.
-
-    Starting from beta = 0 would be a trap: ratings balanced across two cells
-    then give every answer the same log sigma score, the outer product explains
-    the whole gradient through sigma alone, and beta never moves.
-    """
-    centers = [anchors[0]]
-    centers.extend((lower + upper) / 2 for lower, upper in zip(anchors, anchors[1:]))
-    centers.append(anchors[-1])
-    values = [centers[rating] for rating in ratings]
-    mean = math.fsum(values) / len(values)
-    size = len(standardized[0])
-    normal = [[0.0] * (j + 1) for j in range(size)]
-    target = [0.0] * size
-    for row, value in zip(standardized, values):
-        for j, line in enumerate(normal):
-            target[j] += row[j] * (value - mean)
-            head = row[j]
-            line[:] = [total + head * x for total, x in zip(line, row)]
-    for j in range(size):
-        normal[j][j] += lam
-    beta = _solve(_factor(normal), target)
-    squares = math.fsum(
-        (value - mean - sum(map(mul, beta, row))) ** 2
-        for row, value in zip(standardized, values)
-    )
-    # A logistic of scale s has standard deviation s * pi / sqrt(3).
-    scale = math.sqrt(squares / len(values)) * math.sqrt(3) / math.pi
-    return beta + [mean, math.log(max(scale, MIN_START_SIGMA))]
+def _start_from_shares(cells: Sequence[int], size: int, last: int) -> List[float]:
+    """No effect of any column, and cuts that give each level its share of the ratings."""
+    counts = [0] * (last + 1)
+    for cell in cells:
+        counts[cell] += 1
+    theta = [0.0] * size
+    below = 0
+    for count in counts[:last]:
+        below += count
+        share = min(1 - MIN_START_SHARE, max(MIN_START_SHARE, below / len(cells)))
+        theta.append(math.log(share / (1 - share)))
+    return theta
 
 
 def _logistic(u: float) -> float:
@@ -247,89 +288,87 @@ def _logistic(u: float) -> float:
     return 1 / (1 + math.exp(-u))
 
 
-def _density(u: float) -> float:
-    tail = math.exp(-abs(u))
-    return tail / (1 + tail) ** 2
+def _probability(eta: float, cell: int, cuts: Sequence[float]) -> tuple:
+    """P(level cell), then the density and distribution at its upper and lower cut.
 
-
-def _moment(u: float) -> float:
-    """u * density(u), which tends to 0 at the unbounded ends of the scale."""
-    return u * _density(u) if math.isfinite(u) else 0.0
-
-
-def _bounds(eta: float, sigma: float, cell: Cell) -> Cell:
-    return (cell[0] - eta) / sigma, (cell[1] - eta) / sigma
-
-
-def _probability(lower: float, upper: float) -> float:
+    The lowest level has no lower cut and the highest no upper one."""
+    upper_cdf, upper_density, lower_cdf, lower_density = 1.0, 0.0, 0.0, 0.0
+    lower = -math.inf
+    if cell < len(cuts):
+        upper_cdf = _logistic(cuts[cell] - eta)
+        upper_density = upper_cdf * (1 - upper_cdf)
+    if cell > 0:
+        lower = cuts[cell - 1] - eta
+        lower_cdf = _logistic(lower)
+        lower_density = lower_cdf * (1 - lower_cdf)
     if lower > 0:  # Subtract upper tails, or both ends round to 1.
-        probability = _logistic(-lower) - _logistic(-upper)
+        upper_tail = _logistic(eta - cuts[cell]) if cell < len(cuts) else 0.0
+        probability = _logistic(-lower) - upper_tail
     else:
-        probability = _logistic(upper) - _logistic(lower)
-    return max(probability, MIN_PROBABILITY)
+        probability = upper_cdf - lower_cdf
+    return (
+        max(probability, MIN_PROBABILITY), upper_density, lower_density, upper_cdf, lower_cdf,
+    )
 
 
 def _penalty(beta: Sequence[float], lam: float) -> float:
     return lam / 2 * math.fsum(b * b for b in beta)
 
 
-def _objective(theta, standardized, cells, lam) -> float:
-    beta, intercept, sigma = theta[:-2], theta[-2], math.exp(theta[-1])
-    return _penalty(beta, lam) - math.fsum(
-        math.log(_probability(*_bounds(intercept + sum(map(mul, beta, row)), sigma, cell)))
-        for row, cell in zip(standardized, cells)
-    )
+def _objective(theta, rows, cells, size, last, lam) -> float:
+    """Penalized log likelihood, or -inf where the cuts are out of order."""
+    beta, cuts = theta[:size], theta[size:]
+    if any(upper <= lower for lower, upper in zip(cuts, cuts[1:])):
+        return -math.inf
+    return math.fsum(
+        math.log(_probability(sum(map(mul, beta, row)), cell, cuts)[0])
+        for row, cell in zip(rows, cells)
+    ) - _penalty(beta, lam)
 
 
-def _newton_terms(theta, standardized, cells, lam):
-    """Objective, gradient and BHHH curvature (lower triangle only)."""
-    size = len(theta)
-    beta, intercept, sigma = theta[:-2], theta[-2], math.exp(theta[-1])
-    log_probabilities = []
-    gradient = [lam * b for b in beta] + [0.0, 0.0]
-    hessian = [[0.0] * (j + 1) for j in range(size)]
-    for j in range(len(beta)):
-        hessian[j][j] = lam
-    for row, cell in zip(standardized, cells):
-        lower, upper = _bounds(intercept + sum(map(mul, beta, row)), sigma, cell)
-        probability = _probability(lower, upper)
-        log_probabilities.append(math.log(probability))
-        d_eta = (_density(lower) - _density(upper)) / (sigma * probability)
-        d_s = (_moment(lower) - _moment(upper)) / probability
-        score = [d_eta * x for x in row]
-        score += (d_eta, d_s)
-        for j, line in enumerate(hessian):
-            gradient[j] -= score[j]
-            head = score[j]
-            line[:] = [total + head * x for total, x in zip(line, score)]
-    return _penalty(beta, lam) - math.fsum(log_probabilities), gradient, hessian
-
-
-def _damped_step(hessian, gradient, step) -> List[float]:
-    """Levenberg damping until the step is short.
-
-    Where an answer's score nears 0 its outer product vanishes faster than the
-    gradient, so the raw BHHH step blows up along one axis. Scaling it down
-    would freeze the other axes: damping turns it toward the gradient instead.
-    """
-    damping = max(line[-1] for line in hessian) * DAMPING_START
-    while max(map(abs, step)) > MAX_STEP:
-        damped = [line[:-1] + [line[-1] + damping] for line in hessian]
-        step = _solve(_factor(damped), gradient)
-        damping *= 10
-    return step
-
-
-def _backtrack(theta, step, gradient, value, standardized, cells, lam) -> Optional[List[float]]:
-    slope = math.fsum(map(mul, gradient, step))
-    shrink = 1.0
-    for _ in range(MAX_HALVINGS):
-        moved = [t - shrink * s for t, s in zip(theta, step)]
-        target = value - ARMIJO_SLOPE * shrink * slope
-        if _objective(moved, standardized, cells, lam) <= target:
-            return moved
-        shrink /= 2
-    return None
+def _newton_terms(theta, rows, cells, size, last, lam):
+    """Gradient of the penalized log likelihood, and minus its Hessian (lower triangle)."""
+    beta, cuts = theta[:size], theta[size:]
+    gradient = [-lam * b for b in beta] + [0.0] * last
+    curvature = [[0.0] * (j + 1) for j in range(size + last)]
+    for j in range(size):
+        curvature[j][j] = lam
+    for row, cell in zip(rows, cells):
+        probability, upper_density, lower_density, upper_cdf, lower_cdf = _probability(
+            sum(map(mul, beta, row)), cell, cuts,
+        )
+        # First and second derivatives of ln P in its upper and lower cut.
+        d_upper = upper_density / probability
+        d_lower = -lower_density / probability
+        d_upper_upper = upper_density * (1 - 2 * upper_cdf) / probability - d_upper * d_upper
+        d_lower_lower = -lower_density * (1 - 2 * lower_cdf) / probability - d_lower * d_lower
+        d_upper_lower = -d_upper * d_lower
+        # The index moves both cuts the other way.
+        d_eta = -(d_upper + d_lower)
+        d_eta_eta = d_upper_upper + 2 * d_upper_lower + d_lower_lower
+        for j in range(size):
+            head = row[j]
+            gradient[j] += d_eta * head
+            head *= -d_eta_eta
+            line = curvature[j]
+            line[:] = [total + head * x for total, x in zip(line, row)]
+        if cell < last:
+            upper = size + cell
+            gradient[upper] += d_upper
+            line = curvature[upper]
+            head = d_upper_upper + d_upper_lower
+            line[:size] = [total + head * x for total, x in zip(line, row)]
+            line[upper] -= d_upper_upper
+            if cell > 0:
+                line[upper - 1] -= d_upper_lower
+        if cell > 0:
+            lower = size + cell - 1
+            gradient[lower] += d_lower
+            line = curvature[lower]
+            head = d_upper_lower + d_lower_lower
+            line[:size] = [total + head * x for total, x in zip(line, row)]
+            line[lower] -= d_lower_lower
+    return gradient, curvature
 
 
 def _cholesky(matrix: Sequence[Sequence[float]]) -> Optional[List[List[float]]]:

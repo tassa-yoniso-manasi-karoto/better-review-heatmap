@@ -3,7 +3,8 @@
 Devmode only. Events are raw on purpose, never computed features, so that any
 later formula can re-derive what it needs. No card text is stored, only sizes.
 
-See docs/calibration.md for the event schema, and prompts.py for the Anki timing.
+See docs/calibration.md for the event schema. Nothing here asks anything:
+questions come from recordings made on other devices.
 """
 
 import platform
@@ -19,7 +20,6 @@ from aqt import gui_hooks
 from aqt.qt import QApplication
 
 from ..consts import ADDON
-from .prompts import Prompter
 from .store import Store, now_ms
 
 EVENT_VERSION = 1
@@ -108,19 +108,17 @@ class Recorder:
         # (cid, timer start) of the card on screen: a redraw of the same card
         # fires the show hooks again, and must not look like a new presentation.
         self._shown: Optional[Tuple[int, Optional[float]]] = None
-        # (cid, capped ms, raw ms, card type) from the moment of the answer.
-        self._taken: Optional[Tuple[int, int, int, int]] = None
+        # (cid, capped ms, raw ms) from the moment of the answer.
+        self._taken: Optional[Tuple[int, int, int]] = None
         self._day_cutoff = 0
         self._installed: List[Tuple[object, Callable]] = []
         self._focus_slot: Optional[Callable] = None
-        self.prompter = Prompter(mw, store, self.emit)
 
     # Lifecycle
     #########################################################################
 
     def start(self) -> None:
         self._guarded(self._emit_meta)()
-        self._guarded(self.prompter.start)()
         self._installed = [
             (hook, self._guarded(handler)) for hook, handler in self._hook_table()
         ]
@@ -205,14 +203,12 @@ class Recorder:
         self.emit("a", seq=self._seq_of(card))
 
     def _on_will_answer(self, ease_tuple, reviewer, card) -> None:
-        self._taken = (
-            card.id, card.time_taken(), card.time_taken(capped=False), card.type,
-        )
+        self._taken = (card.id, card.time_taken(), card.time_taken(capped=False))
 
     def _on_did_answer(self, reviewer, card, ease) -> None:
         self._check_rollover()
         known = self._taken and self._taken[0] == card.id
-        capped, raw, ctype = self._taken[1:] if known else (None, None, None)
+        capped, raw = self._taken[1:] if known else (None, None)
         seq = self._seq_of(card)
         fields = answer_fields(card)
         self.emit(
@@ -223,8 +219,6 @@ class Recorder:
             taken_raw_ms=raw,
             **fields,
         )
-        if known:
-            self.prompter.after_answer(card.id, fields["rev_id"], seq, ease, raw, ctype)
 
     def _seq_of(self, card) -> Optional[int]:
         """None if recording started while this card was already on screen."""
@@ -240,7 +234,6 @@ class Recorder:
         # that reads today's counts comes through here first.
         if time.time() >= self._day_cutoff:
             self._emit_meta()
-            self.prompter.on_new_day()
 
     def _emit_meta(self) -> None:
         col = self._mw.col
@@ -279,7 +272,6 @@ class Recorder:
     def _on_state_will_change(self, new: str, old: str) -> None:
         if self._mw.col:
             self._check_rollover()
-        self.prompter.on_state_will_change(new, old)
 
 
 _active: Optional[Recorder] = None
