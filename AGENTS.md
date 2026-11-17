@@ -13,7 +13,8 @@ Do not run git status.
 
 - Tool: `scripts/metrics_cli.py`
 - Formulas: `src/review_heatmap/metrics.py`
-- Tests: `tests/test_metrics_cli.py`, `tests/test_metrics.py`
+- Chance of recall, replayed from the revlog: `src/review_heatmap/memory.py`
+- Tests: `tests/test_metrics_cli.py`, `tests/test_metrics.py`, `tests/test_memory.py`
 
 Stdlib only. Works with `python -S`.
 
@@ -21,9 +22,9 @@ Exact workload scores require individual answer durations. Totals-only inputs
 assume every answer took the same time and are labeled accordingly. Collection
 callers must pass actual duration buckets to `activity_value`; never use the
 totals-only approximation to migrate a saved reference. Experimental scores
-also need each answer's card state, and sustained concentration its timestamp
-and card template; durations alone score every answer at effort 1 and
-concentration 1.
+also need each answer's card state and chance of recall, and sustained
+concentration its timestamp and card template; durations alone score every
+answer at effort 1 and concentration 1.
 
 ## Commands
 
@@ -42,7 +43,8 @@ python scripts/metrics_cli.py --durations-ms 15000 240000 \
 # Synthetic equal-duration scenario (100 answers of 6 seconds each)
 python scripts/metrics_cli.py --reviews 100 --minutes 10 --json
 
-# FSRS-based: answers as [duration_ms, lastIvl, factor, first], with overrides
+# FSRS-based: answers as [duration_ms, lastIvl, factor, first], the chance of
+# recall from the eleventh field on (factor is no longer read), with overrides
 python scripts/metrics_cli.py --answers-json answers.json --metric fsrs \
   --fsrs-calibration new_card_weight=2 --json
 
@@ -64,13 +66,17 @@ python scripts/metrics_cli.py --answers-json answers.json --metric effort_model 
   milliseconds are integers. With individual durations or answers, count is
   inferred; an explicit count must match their number.
 - `--answers-json FILE`: JSON array of `[duration_ms, last_interval, factor,
-  first, end_ms, typical_ms, ease, elapsed_days, interday_answers, median_ms]`
-  rows (revlog `lastIvl` and `factor`; `first` marks the card's earliest answer;
-  `end_ms` the answer's timestamp; `typical_ms` the card template's
+  first, end_ms, typical_ms, ease, elapsed_days, interday_answers, median_ms,
+  recall, same_day, desired_retention, day_answers]` rows (revlog `lastIvl`;
+  `factor` is accepted and no longer read; `first` marks the card's earliest
+  answer; `end_ms` the answer's timestamp; `typical_ms` the card template's
   time-weighted median duration, `median_ms` its plain one; `ease` the button;
   `elapsed_days` the time since the card's previous answer; `interday_answers`
-  its earlier interday answers). Trailing fields default to 0/false/null, with
-  `ease` 3; give `end_ms` for every answer or for none.
+  its earlier interday answers; `recall` the card's chance of recall just before
+  the answer, or null; `same_day` true when it comes from the same-day model;
+  `desired_retention` the card's deck's; `day_answers` the answers given earlier
+  that study day). Trailing fields default to 0/false/null, with `ease` 3 and
+  `desired_retention` 0.9; give `end_ms` for every answer or for none.
 - `--metric KEY`: defaults to `all`; keys are `reviews`, `time`, `workload`,
   `custom`, `recorded_time`, `fsrs`, `concentration`, `effort_model`. Legacy key
   `time` means **Workload (linear)**; `recorded_time` means time alone; `fsrs`
@@ -127,7 +133,9 @@ bundled default gradient; the CLI does not load a profile's custom palette.
    FSRS-based effort lives in `answer_effort` and sustained concentration in
    `concentration_coefficients`; their per-answer inputs come from
    `ActivityReporter._cards_done(with_effort=True)` and
-   `_cards_done(with_concentration=True)` with `_template_norms`.
+   `_cards_done(with_concentration=True)` with `_template_norms`, and each
+   answer's recall gaps from `memory.Replay` through `_recall_index`. Keep the
+   replay's formulas equal to py-fsrs (FSRS-6) and ts-fsrs (FSRS-7).
 2. Compare mixed and uniform durations through the CLI. Use totals only for
    explicitly synthetic equal-duration scenarios.
 3. Run focused tests; include activity/options tests when those paths change:

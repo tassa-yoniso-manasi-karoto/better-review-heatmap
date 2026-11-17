@@ -288,6 +288,9 @@ The report appears in the tab, top to bottom:
 | `again`, `hard`, `easy` | The button pressed |
 | `overdue` | ln(elapsed / last interval), 0 unless interday |
 | `reps` | ln(1 + interday answers so far on the card) |
+| `recall` | Recall gap a day or more after the card's previous answer: logit(desired retention) − logit(R), FSRS-6 with the preset's parameters, −4 to 4 |
+| `same_day_recall` | The same on the same study day, from FSRS-7 with its default parameters |
+| `day_load` | ln(1 + answers given earlier that study day) |
 
 **Note-type offsets.** From the profile fit: how much each template costs beyond what its timing explains, in log units, against templates with too few ratings to have an offset. An offset of +0.69 means about double. Only this profile scores with them.
 
@@ -349,7 +352,8 @@ Note-type offsets never ship: public users have no ratings to fit them, and othe
 
 Known items:
 
-- A cold read of the measure takes about 680 ms on 117k answers, against FSRS-based 348 ms and sustained concentration 712 ms; cached, about 10 ms. Appending only new revlog rows would be faster but risks stale scores after card deletions or note type changes, so it was left out on purpose.
+- A cold read of the measure takes about 680 ms on 117k answers, against sustained concentration 712 ms; cached, about 10 ms. Appending only new revlog rows would be faster but risks stale scores after card deletions or note type changes, so it was left out on purpose.
+- The chance of recall behind `recall` and `same_day_recall` is replayed once per session, about 0.3 s on 133k answers, then extended answer by answer; DESIGN.md, Chance of recall, has the rules. Without FSRS both inputs are 0.
 - `scripts/research/` matches the `research` rule in `.gitignore`, so those scripts stay local unless you re-include them.
 
 ## Smoke test

@@ -141,13 +141,16 @@ class CalibrationDialog(QDialog):
             ("maturity_exponent", "Maturity exponent", 2, 0.05,
              "Strength of the interval effect. 0 ignores it; 0.25 makes a 1-day "
              "card count about twice a 21-day card."),
-            ("difficulty_pivot", "Difficulty pivot (%)", 0, 5,
-             "FSRS difficulty, as shown in Anki's card info, at which an answer "
-             "counts once. Harder cards count more. Answers recorded without FSRS "
-             "count once."),
-            ("difficulty_exponent", "Difficulty exponent", 2, 0.05,
-             "Strength of the difficulty effect. 0 ignores it; 0.25 spans roughly "
-             "0.65 to 1.15 times."),
+            ("recall_exponent", "Recall exponent", 2, 0.05,
+             "How much it counts that a card was closer to forgotten than its deck's "
+             "desired retention, a day or more after its last answer. Its chance of "
+             "recall comes from FSRS with the deck preset's parameters. 0 ignores "
+             "it; 0.25 makes a card at 80% count about 1.2 times one at 90%, and an "
+             "early review count less. Without FSRS, answers count once."),
+            ("same_day_recall_exponent", "Same-day recall exponent", 2, 0.05,
+             "The same for a card answered again on the same day. FSRS counts "
+             "whole days and can't tell minutes from hours, so this chance of "
+             "recall comes from FSRS-7 with its default parameters. 0 ignores it."),
             ("weight_limit", "Weight limit", 1, 0.5,
              "Caps each answer's combined effort between 1/limit and limit."),
         )),

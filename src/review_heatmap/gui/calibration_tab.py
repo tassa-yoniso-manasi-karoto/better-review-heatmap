@@ -274,11 +274,13 @@ class CalibrationTab(QWidget):
             mw.taskman.run_on_main(lambda: mw.progress.update(label=label))
 
         def fit(col):
+            # The recall gaps the calendar scores with, so the fit trains on them too.
+            recall = ActivityReporter(col, config)._recall_index()
             rows = col.db.all(revlog_sql(offset))
             phone = read_files(_media_dir(col))
             index = _phone_index(col, {event["card"] for event in phone.events if "card" in event})
             return run_fit(self._store, rows, conf, _template_names(col), progress,
-                           _media_dir(col), index)
+                           _media_dir(col), index, recall)
 
         QueryOp(parent=self, op=fit, success=self._onFitDone).failure(
             self._onFitFailed

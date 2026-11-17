@@ -27,15 +27,21 @@ Guidelines for LLMs updating this changelog from git history:
 
 ## [2.3.0] - Unreleased
 
+
+<!--FIXME:
+1) unreadable dialog in light theme
+2) reviews are not bound to the timezone in which they were made
+3) FSRS BASED no longer experimental (sustained concentration remains)-->
+
 ### Added
 - Heatmap settings changes can be undone and redone from Anki's Edit menu: palette, measure, color scale, reference day, calibration, exclusions, color scheme and calendar mode
 
 ### Changed
+- FSRS-based now weighs each answer by how close the card was to being forgotten (probability of recall), instead of the FSRS difficulty heuristic: late reviews count a little more, early ones a little less. The upcoming FSRS v7 is used for probability of recall on intra-day reviews for best accuracy.
 - The palette is now saved in each profile and syncs with your collection; a customized palette moves there automatically and leaves the add-on's Config window
 
 ### Fixed
-- FSRS-based + sustained concentration now rewards long sittings on cards that mix quick and long answers, which could earn no bonus before; each card type is judged on its last 60 days, adjustable in Calibrate
-- In that measure, a reference day now scores the same as it does on the calendar
+- Sustained concentration now relies on last 60 days of review history of a card type as previously it would not be active on card types that had an old history of quick reviews
 
 ## [2.2.1] - 2026-10-29
 

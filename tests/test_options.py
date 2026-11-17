@@ -476,7 +476,7 @@ def test_calibration_popup_stores_only_manual_changes_and_respects_cancel(
     assert dialog.btnCustomWeights.isHidden()
     dialog.dateReference.setDate(QDate(2026, 3, 9))
     conf = dialog.getData()["synced"]
-    mature = answer_effort(False, 21, 550, fsrs_calibration({}))
+    mature = answer_effort(False, 21, 0.0, 0.0, fsrs_calibration({}))
     assert saved_reference(conf)["value"] == pytest.approx(
         1.5 ** 0.6 * 0.25 ** 0.4 + mature ** 0.6 * 4 ** 0.4
     )

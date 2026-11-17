@@ -17,7 +17,8 @@ from ..metrics import (
 from ..times import study_day_sql
 from .store import DAY_MS
 
-# Rows as revlog_sql selects them: answer_inputs' columns, then the factor.
+# Rows as revlog_sql selects them: answer_inputs' columns, then the factor,
+# which nothing reads since the FSRS-based measure dropped difficulty.
 CID, ID, EASE, DURATION, LAST_IVL, MID, ORD, DAY, FACTOR = range(9)
 
 # From this wording on, cost and why sit on sliders. Earlier prompts offered
@@ -57,7 +58,7 @@ class LoggedAnswer(NamedTuple):
 class DayAnswer(NamedTuple):
     duration_ms: int
     last_ivl: int
-    factor: int
+    recall: Tuple[float, float]  # (recall, same_day_recall) gaps, unclamped
     logged: bool  # False: answered elsewhere, or while the recorder was off
     inputs: Dict[str, float]
     template: Optional[Template]
@@ -97,9 +98,12 @@ ORDER BY revlog.id"""
 
 
 def read_dataset(events: Iterable[dict], rows: Sequence[Sequence],
-                 gap_hours: float = 2) -> Dataset:
+                 gap_hours: float = 2, recall=None) -> Dataset:
     """Join events to rows (see revlog_sql), which must hold the whole revlog:
-    reps, elapsed and template norms all read answers nobody rated."""
+    reps, elapsed and template norms all read answers nobody rated.
+
+    recall is the collection's memory.RecallIndex, which scoring reads too;
+    without one every recall gap is 0."""
     log = _read_log(events)
     answers = [row for row in rows if row[EASE] >= 1]  # 0 is a reschedule
     ids = [row[ID] for row in answers]
@@ -127,7 +131,8 @@ def read_dataset(events: Iterable[dict], rows: Sequence[Sequence],
     day_answers: Dict[int, List[DayAnswer]] = {day: [] for day in day_ratings}
     unlogged = 0
     for row in answers:
-        inputs = answer_inputs(row[:FACTOR], history, profiles)
+        gaps = recall.get(row[ID]) if recall is not None else (0.0, 0.0)
+        inputs = answer_inputs(row[:FACTOR], history, profiles, gaps)
         rev_id, day = row[ID], row[DAY]
         template = None if row[MID] is None else (row[MID], row[ORD])
         event = log.answers.get(rev_id)
@@ -137,7 +142,7 @@ def read_dataset(events: Iterable[dict], rows: Sequence[Sequence],
             unlogged += 1
         if day in day_answers:
             day_answers[day].append(DayAnswer(
-                row[DURATION], row[LAST_IVL], row[FACTOR], bool(event), inputs, template,
+                row[DURATION], row[LAST_IVL], gaps, bool(event), inputs, template,
             ))
         rating = ratings.get(rev_id)
         if rating:

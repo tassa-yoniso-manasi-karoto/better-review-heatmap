@@ -75,13 +75,18 @@ def create_parser() -> argparse.ArgumentParser:
     time_group.add_argument(
         "--answers-json", type=Path,
         help=("JSON array of answers [duration_ms, last_interval, factor, first, end_ms, "
-              "typical_ms, ease, elapsed_days, interday_answers, median_ms] as recorded in "
-              "Anki's revlog (lastIvl, factor; first marks the card's earliest answer; end_ms "
+              "typical_ms, ease, elapsed_days, interday_answers, median_ms, recall, same_day, "
+              "desired_retention, day_answers] as recorded in Anki's revlog (lastIvl; factor "
+              "is accepted and no longer read; first marks the card's earliest answer; end_ms "
               "is the answer's timestamp; typical_ms the card template's usual duration; the "
-              "last four feed the fitted measure: the button pressed, days since the card's "
-              "previous answer, its earlier interday answers and the template's median). "
-              "Trailing fields default to 0/false/null, with ease 3; without any end_ms the "
-              "answers are taken as one back-to-back session. Gives exact experimental scores."),
+              "next four feed the fitted measure: the button pressed, days since the card's "
+              "previous answer, its earlier interday answers and the template's median; "
+              "recall is the card's chance of recall just before the answer, same_day says "
+              "it came from the same-day model, desired_retention is its deck's, and "
+              "day_answers counts the answers given earlier that study day). Trailing fields "
+              "default to 0/false/null, with ease 3 and desired retention 0.9; without any "
+              "end_ms the answers are taken as one back-to-back session. Gives exact "
+              "experimental scores."),
     )
     metric_choices = ["all"] + list(metrics.METRICS.keys())
     parser.add_argument("--theme", choices=list(metrics.COLOR_THEMES), default="lime",
@@ -144,9 +149,22 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
+ANSWER_FIELDS = ("[duration_ms, last_interval, factor, first, end_ms, typical_ms, ease, "
+                 "elapsed_days, interday_answers, median_ms, recall, same_day, "
+                 "desired_retention, day_answers]")
+
+
+def recall_gap(recall: float, desired_retention: float) -> float:
+    """logit(desired retention) - logit(recall), as memory.Replay measures it."""
+    def logit(p):
+        p = min(1 - 1e-4, max(1e-4, p))
+        return math.log(p / (1 - p))
+    return logit(desired_retention) - logit(recall)
+
+
 def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> List[tuple]:
-    """Read [duration_ms, last_interval, factor, first, end_ms, typical_ms, ease,
-    elapsed_days, interday_answers, median_ms] rows.
+    """Read rows of ANSWER_FIELDS; each becomes a tuple of the first ten fields,
+    then the recall gaps (a day or more later, same day) and day_answers.
 
     Trailing fields are optional. Without timestamps the answers form one
     back-to-back session in the given order.
@@ -157,13 +175,12 @@ def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> Li
             raise ValueError("expected a non-empty JSON array of answers")
         answers = []
         for row in rows:
-            if not isinstance(row, list) or not 1 <= len(row) <= 10:
-                raise ValueError("each answer is [duration_ms, last_interval, factor, first, "
-                                 "end_ms, typical_ms, ease, elapsed_days, interday_answers, "
-                                 "median_ms]")
-            padding = [0, 0, 0, False, None, None, 3, None, 0, None]
+            if not isinstance(row, list) or not 1 <= len(row) <= 14:
+                raise ValueError("each answer is " + ANSWER_FIELDS)
+            padding = [0, 0, 0, False, None, None, 3, None, 0, None, None, False, 0.9, 0]
             duration, last_interval, factor, first, end, typical, ease, elapsed, interday, \
-                typical_median = row + padding[len(row):]
+                typical_median, recall, same_day, retention, day_answers = \
+                row + padding[len(row):]
             if any(type(value) is not int for value in (duration, last_interval, factor)):
                 raise ValueError("duration_ms, last_interval and factor must be integers")
             if duration < 0 or factor < 0:
@@ -180,8 +197,18 @@ def load_answers(parser: argparse.ArgumentParser, path: Path, option: str) -> Li
                 raise ValueError("elapsed_days must be a nonnegative number or null")
             if type(interday) is not int or interday < 0:
                 raise ValueError("interday_answers must be a nonnegative integer")
+            if recall is not None and (type(recall) not in (int, float) or not 0 < recall <= 1):
+                raise ValueError("recall must be a chance between 0 and 1, or null")
+            if same_day not in (True, False, 0, 1):
+                raise ValueError("same_day must be true or false")
+            if type(retention) not in (int, float) or not 0 < retention < 1:
+                raise ValueError("desired_retention must be between 0 and 1")
+            if type(day_answers) is not int or day_answers < 0:
+                raise ValueError("day_answers must be a nonnegative integer")
+            gap = 0.0 if recall is None else recall_gap(recall, retention)
             answers.append((duration, last_interval, factor, bool(first), end, typical,
-                            ease, elapsed, interday, typical_median))
+                            ease, elapsed, interday, typical_median,
+                            0.0 if same_day else gap, gap if same_day else 0.0, day_answers))
         timestamps = [answer[4] for answer in answers]
         if any(end is None for end in timestamps) and any(end is not None for end in timestamps):
             raise ValueError("give end_ms for every answer or for none")
@@ -385,9 +412,9 @@ def evaluate(
             concentration_settings,
         )
         counted = Counter(
-            (duration, metrics.answer_effort(first, last_interval, factor, effort_settings),
+            (row[0], metrics.answer_effort(row[3], row[1], row[10], row[11], effort_settings),
              round(scale, 2))
-            for (duration, last_interval, factor, first, *_), scale in zip(rows, scales)
+            for row, scale in zip(rows, scales)
         )
         return [(duration, count, effort, scale)
                 for (duration, effort, scale), count in sorted(counted.items())]
@@ -396,12 +423,13 @@ def evaluate(
         model = metrics.active_effort_model()
         counted: Counter = Counter()
         for (duration, last_interval, _, first, _, typical, ease, elapsed, interday,
-             typical_median) in rows:
+             typical_median, recall, same_day_recall, day_answers) in rows:
             profile = None if typical is None or typical_median is None else (
                 typical_median, typical,
             )
             inputs = metrics.model_inputs(duration, ease, first, last_interval, elapsed,
-                                          interday, profile)
+                                          interday, profile, recall, same_day_recall,
+                                          day_answers)
             counted[(duration, metrics.effort_model_credit(inputs, model))] += 1
         return [(duration, count, credit)
                 for (duration, credit), count in sorted(counted.items())]

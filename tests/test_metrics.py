@@ -6,7 +6,7 @@ import pytest
 
 from review_heatmap.metrics import (
     activity_levels, activity_value, adaptive_anchor, activity_color, adaptive_color,
-    answer_effort, fsrs_calibration, fsrs_difficulty, FSRS_CALIBRATION_DEFAULTS,
+    answer_effort, fsrs_calibration, FSRS_CALIBRATION_DEFAULTS,
     CONCENTRATION_DEFAULTS, EXPERIMENTAL_METRICS, METRICS, calibration_overrides,
     concentration_calibration, concentration_coefficients,
     COLOR_THEMES,
@@ -304,27 +304,32 @@ def test_invalid_saved_reference_is_ignored(value):
     assert saved_reference(conf) is None
 
 
-def test_fsrs_effort_weights_new_young_and_difficult_answers_more():
+def test_fsrs_effort_weights_new_young_and_forgotten_answers_more():
     calibration = fsrs_calibration({})
     assert calibration == FSRS_CALIBRATION_DEFAULTS
-    assert fsrs_difficulty(550) == pytest.approx(5.05)
-    assert (fsrs_difficulty(100), fsrs_difficulty(1100)) == (1, 10)
-    assert fsrs_difficulty(2500) is None and fsrs_difficulty(0) is None
-    assert answer_effort(False, 21, 550, calibration) == pytest.approx((5.05 / 5.5) ** 0.25)
-    assert answer_effort(False, 21, 0) == 1  # SM-2 learning and cramming carry no difficulty
-    assert answer_effort(False, 21, 2500) == 1  # SM-2 ease is not FSRS difficulty
-    assert answer_effort(True, 0, 0) == 1.5
-    assert answer_effort(False, -600, 0) == 1
-    assert answer_effort(False, 3, 0) == pytest.approx(7 ** 0.25)
-    assert answer_effort(False, 1, 0) == 2  # the weight limit caps both directions
-    assert answer_effort(False, 3650, 0) == 0.5
-    assert answer_effort(True, 0, 1100) == pytest.approx(min(2, 1.5 * (10 / 5.5) ** 0.25))
+    assert answer_effort(False, 21) == 1  # a pivot card, at its deck's desired retention
+    assert answer_effort(True, 0) == 1.5
+    assert answer_effort(False, -600) == 1
+    assert answer_effort(False, 3) == pytest.approx(7 ** 0.25)
+    assert answer_effort(False, 1) == 2  # the weight limit caps both directions
+    assert answer_effort(False, 3650) == 0.5
+    # Recall at 80% where the deck asks for 90%: (odds 9 / odds 4) ** 0.25.
+    late = math.log(9) - math.log(4)
+    assert answer_effort(False, 21, late, 0.0, calibration) == pytest.approx(1.5 ** 0.5)
+    assert answer_effort(False, 21, -late) == pytest.approx(1.5 ** -0.5)  # reviewed early
+    assert answer_effort(False, -600, 0.0, late) == pytest.approx(1.5 ** 0.5)  # same day
+    assert answer_effort(True, 0, late) == pytest.approx(1.5 * 1.5 ** 0.5)
+    assert answer_effort(True, 0, 2 * late) == 2  # capped by the weight limit
     custom = fsrs_calibration({"fsrs_calibration": {
-        "maturity_exponent": 0, "difficulty_exponent": 0, "new_card_weight": 3,
+        "maturity_exponent": 0, "recall_exponent": 0, "new_card_weight": 3,
         "weight_limit": 2.5,
     }})
-    assert answer_effort(True, 0, 1100, custom) == 2.5
-    assert answer_effort(False, 1, 100, custom) == 1
+    assert answer_effort(True, 0, late, 0.0, custom) == 2.5
+    assert answer_effort(False, 1, late, 0.0, custom) == 1
+    assert answer_effort(False, 1, 0.0, late, custom) == pytest.approx(1.5 ** 0.5)
+    # Saved settings of the difficulty factor, which no longer exists, are ignored.
+    retired = {"fsrs_calibration": {"difficulty_pivot": 80, "difficulty_exponent": 1}}
+    assert fsrs_calibration(retired) == calibration
     invalid = {"fsrs_calibration": {"step_weight": 20, "weight_limit": "x"}}
     assert fsrs_calibration(invalid) == calibration
     assert fsrs_calibration({"fsrs_calibration": [1]}) == calibration
@@ -470,15 +475,24 @@ def test_card_history_reads_only_what_came_before():
     assert history.advance(1, 10 * day, 0) == (False, 1, 2)
 
 
+def test_card_history_counts_the_answers_already_given_that_day():
+    history = CardHistory()
+    assert [history.count_day(day) for day in (1, 1, 1, 2, 2, 5)] == [0, 1, 2, 0, 1, 0]
+
+
 def test_model_inputs_match_a_hand_calculation():
     inputs = model_inputs(40000, 1, False, 10, 15.0, 3, (20000, 80000))
-    assert tuple(inputs) == MODEL_INPUTS and len(MODEL_INPUTS) == 12
+    assert tuple(inputs) == MODEL_INPUTS and len(MODEL_INPUTS) == 15
     rich, log_d, reps = math.log(4), math.log(4), math.log(4)
     assert inputs == pytest.approx({
         "log_d": log_d, "rich": rich, "t_med": math.log(2), "log_d·rich": log_d * rich,
         "new": 0, "step": 0, "again": 1, "hard": 0, "easy": 0,
         "overdue": math.log(1.5), "reps": reps, "reps·rich": reps * rich,
+        "recall": 0, "same_day_recall": 0, "day_load": 0,
     })
+    loaded = model_inputs(40000, 1, False, 10, 15.0, 3, None, 1.5, -9.0, 99)
+    assert (loaded["recall"], loaded["same_day_recall"]) == (1.5, -4.0)  # clamped
+    assert loaded["day_load"] == pytest.approx(math.log(100))
     new = model_inputs(0, 3, True, 0, None, 0, None)
     assert new["log_d"] == pytest.approx(math.log(0.03))  # no logarithm of 0 ms
     assert (new["rich"], new["t_med"], new["new"], new["step"]) == (0, 0, 1, 0)
@@ -500,8 +514,12 @@ def test_answer_inputs_stream_each_cards_history_through_the_shared_function():
     assert answer_inputs(rows[0], history, profiles) == model_inputs(
         10000, 3, True, 0, None, 0, None,
     )
-    assert answer_inputs(rows[1], history, profiles) == model_inputs(
-        40000, 3, False, 10, 10.0, 0, (20000, 80000),
+    assert answer_inputs(rows[1], history, profiles, (0.75, 0.0)) == model_inputs(
+        40000, 3, False, 10, 10.0, 0, (20000, 80000), 0.75,
+    )
+    later_same_day = (1, 11 * day + 600000, 1, 8000, 0, 7, 1, 864000)
+    assert answer_inputs(later_same_day, history, profiles, (0.0, -0.5)) == model_inputs(
+        8000, 1, False, 0, 600000 / day, 1, (20000, 80000), 0.0, -0.5, 1,
     )
 
 

@@ -63,6 +63,7 @@ from .metrics import (
     answer_effort, answer_inputs, concentration_calibration, concentration_coefficients,
     effort_model_credit, fsrs_calibration, metric_name, template_norms, template_profiles,
 )
+from .memory import Preset, RecallIndex, Replay
 from .times import daystart_epoch, study_day_sql
 from .types import DeckId
 
@@ -72,6 +73,33 @@ MAX_FORECAST_DAYS = 73000
 # Fitted credits need every answer, and reporters come and go with each dialog,
 # so the last result outlives them until the collection or its model changes.
 _answer_credit_cache: Optional[Tuple] = None
+# Recall gaps replay every answer in order. A study session only adds answers, so
+# the replay is kept and extended; any other change replays everything again.
+_recall_cache: Optional[Tuple] = None
+# The replay counts whole days back from this far past the next day cutoff, so
+# answers given after later cutoffs count them as Anki does: only the cutoff's
+# hour matters.
+_REPLAY_ANCHOR_DAYS = 36500
+# Without FSRS there is nothing to replay; one shared empty index keeps caches keyed on it valid.
+_NO_RECALL = RecallIndex()
+# FSRS-based days read every answer one by one, so the last result is kept until an
+# answer, a card's deck, the calibration or the view changes.
+_effort_days_cache: Optional[Tuple] = None
+
+
+def _fsrs_params(config: dict) -> list:
+    """The parameters FSRS uses for a preset: its newest set that is not empty."""
+    return (config.get("fsrsParams6") or config.get("fsrsParams5")
+            or config.get("fsrsWeights") or [])
+
+
+def _date_ms(date: str) -> int:
+    """A preset's "ignore reviews before" date, at midnight UTC, as Anki reads it."""
+    try:
+        parsed = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return 0
+    return int(parsed.replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
 
 
 class ActivityType(Enum):
@@ -610,18 +638,17 @@ GROUP BY day ORDER BY day""".format(
 SELECT {study_day_sql("revlog.id / 1000", self._offset)}
 AS day, revlog.id, COALESCE(time, 0) AS duration, revlog.id = first_id AS is_first,
 CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl,
-COALESCE(revlog.factor, 0) AS factor, {deck_limit or 1} AS included, notes.mid, cards.ord
+{deck_limit or 1} AS included, notes.mid, cards.ord
 FROM revlog LEFT JOIN {first_answers} ON first_cid = cid
 LEFT JOIN cards ON cards.id = cid LEFT JOIN notes ON notes.id = cards.nid {lim}
 ORDER BY revlog.id"""
         elif with_effort:
             cmd = f"""\
 SELECT {study_day_sql("id / 1000", self._offset)}
-AS day, COUNT(), COALESCE(time, 0) AS duration, id = first_id AS is_first,
-CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl, COALESCE(factor, 0) AS factor
+AS day, id, COALESCE(time, 0) AS duration, id = first_id AS is_first,
+CASE WHEN lastIvl >= 1 THEN lastIvl ELSE 0 END AS last_ivl
 FROM revlog LEFT JOIN {first_answers} ON first_cid = cid {lim}
-GROUP BY day, duration, is_first, last_ivl, factor
-ORDER BY day, duration, is_first, last_ivl, factor"""
+ORDER BY id"""
         else:
             cmd = """\
 SELECT {}
@@ -634,6 +661,19 @@ GROUP BY {} ORDER BY {}""".format(
                 "day, COALESCE(time, 0)" if with_durations else "day",
             )
 
+        global _effort_days_cache
+        if with_effort and not with_concentration:
+            calibration = fsrs_calibration(self._config["synced"])
+            recall = self._recall_index()
+            key = (
+                cmd, tuple(sorted(calibration.items())),
+                tuple(self._db.all("SELECT COUNT(), MAX(id) FROM revlog")[0]),
+                tuple(self._db.all("SELECT COUNT(), TOTAL(did), TOTAL(odid) FROM cards")[0]),
+            )
+            cache = _effort_days_cache
+            if cache and cache[0] is self._col and cache[1] is recall and cache[2] == key:
+                return list(cache[3])
+
         res = self._db.all(cmd)
 
         if with_concentration:
@@ -642,15 +682,17 @@ GROUP BY {} ORDER BY {}""".format(
             concentration_settings = concentration_calibration(conf)
             norms = self._template_norms(concentration_settings["template_norm_days"])
             coefficients = concentration_coefficients(
-                [(row[1], row[2], norms.get((row[7], row[8], row[0]))) for row in res],
+                [(row[1], row[2], norms.get((row[6], row[7], row[0]))) for row in res],
                 concentration_settings,
             )
+            gaps = self._recall_index().reader()
             days = {}
             for row, scale in zip(res, coefficients):
-                day, _, duration, is_first, last_ivl, factor, included = row[:7]
+                day, rev_id, duration, is_first, last_ivl, included = row[:6]
                 if not included:
                     continue
-                effort = answer_effort(bool(is_first), last_ivl, factor, effort_settings)
+                effort = answer_effort(bool(is_first), last_ivl, *gaps(rev_id),
+                                       effort_settings)
                 key = (duration, effort, round(scale, 2))
                 totals = days.setdefault(day, [0, 0, {}])
                 totals[0] += 1
@@ -665,15 +707,24 @@ GROUP BY {} ORDER BY {}""".format(
             ]
         elif with_effort:
             # Exponents are applied in Python (see below); answers sharing a
-            # duration and card state are merged so the renderer stays light.
-            calibration = fsrs_calibration(self._config["synced"])
+            # duration and effort are merged so the renderer stays light.
+            gaps = recall.reader()
+            # Most answers have no recall gap: their weight depends on card state alone.
+            plain: Dict[tuple, float] = {}
             days = {}
-            for day, count, duration, is_first, last_ivl, factor in res:
-                effort = answer_effort(bool(is_first), last_ivl, factor, calibration)
+            for day, rev_id, duration, is_first, last_ivl in res:
+                later, same = gaps(rev_id)
+                if later or same:
+                    effort = answer_effort(bool(is_first), last_ivl, later, same, calibration)
+                else:
+                    effort = plain.get((is_first, last_ivl))
+                    if effort is None:
+                        effort = plain[is_first, last_ivl] = answer_effort(
+                            bool(is_first), last_ivl, 0.0, 0.0, calibration)
                 totals = days.setdefault(day, [0, 0, {}])
-                totals[0] += count
-                totals[1] += count * duration
-                totals[2][(duration, effort)] = totals[2].get((duration, effort), 0) + count
+                totals[0] += 1
+                totals[1] += duration
+                totals[2][(duration, effort)] = totals[2].get((duration, effort), 0) + 1
             res = [
                 (day, total, milliseconds, [
                     (duration, count, effort)
@@ -681,6 +732,7 @@ GROUP BY {} ORDER BY {}""".format(
                 ])
                 for day, (total, milliseconds, buckets) in days.items()
             ]
+            _effort_days_cache = (self._col, recall, key, list(res))
         elif with_durations:
             # Group exact millisecond durations in SQL, then apply powers in
             # Python. This works with Anki SQLite builds without math extensions
@@ -749,17 +801,98 @@ ORDER BY revlog.id""")
         profiles = template_profiles(
             sorted((*row, count) for row, count in template_rows.items()), MODEL_TEMPLATE_DAYS,
         )
+        gaps = self._recall_index().reader()
         history = CardHistory()
         days: Dict[int, List[Tuple]] = {}
         for row in rows:
             credit = 0.0
             if row[2] >= 1:
                 credit = effort_model_credit(
-                    answer_inputs(row, history, profiles), model, row[5:7],
+                    answer_inputs(row, history, profiles, gaps(row[1])), model, row[5:7],
                 )
             days.setdefault(row[7], []).append((row[0], row[2], row[3], credit))
         _answer_credit_cache = (self._col, model, key, days)
         return days
+
+    def _recall_index(self) -> RecallIndex:
+        """Every answer's recall gaps (memory.Replay), for the whole revlog.
+
+        Each card's whole history feeds them, whatever the view, like fitted
+        credits. Without FSRS every gap is 0. The replay outlives reporters and
+        takes in new answers as they come; a change to decks, presets, cards or
+        to older revlog entries (a sync, an undo) replays everything again.
+        """
+        global _recall_cache
+        col = self._col
+        get_config = getattr(col, "get_config", None)
+        if not get_config or not get_config("fsrs", False):
+            return _NO_RECALL
+        fingerprint = self._preset_fingerprint()
+        count, last = self._db.all("SELECT COUNT(), MAX(id) FROM revlog")[0]
+        cache = _recall_cache
+        since = None
+        if cache and cache[0] is col and cache[1] == fingerprint and cache[2] <= (last or 0):
+            older = self._db.all("SELECT COUNT() FROM revlog WHERE id <= ?", cache[2])[0][0]
+            if older == cache[3]:
+                since, replay, index = cache[2], cache[4], cache[5]
+        if since is None:
+            replay = Replay(self._card_presets(),
+                            col.sched.day_cutoff + _REPLAY_ANCHOR_DAYS * 86400)
+            index = RecallIndex()
+            since = -1
+        for rev_id, cid, rtype, ease, ivl, factor in self._db.all(
+            "SELECT id, cid, type, ease, ivl, factor FROM revlog WHERE id > ? ORDER BY id",
+            since,
+        ):
+            index.add(rev_id, *replay.feed(cid, rev_id, rtype, ease, ivl, factor))
+        _recall_cache = (col, fingerprint, last or 0, count, replay, index)
+        return index
+
+    def _preset_fingerprint(self) -> tuple:
+        """What the replay reads besides the revlog: decks, presets, card homes, cutoff hour."""
+        decks = self._col.decks
+        cards = self._db.all(
+            "SELECT COUNT(), TOTAL(CASE WHEN odid THEN odid ELSE did END) FROM cards"
+        )[0]
+        return (
+            tuple(sorted(
+                (deck["id"], deck.get("conf"), deck.get("desiredRetention"))
+                for deck in decks.all() if not deck.get("dyn")
+            )),
+            tuple(sorted(
+                (config["id"], tuple(_fsrs_params(config)), config.get("desiredRetention"),
+                 config.get("sm2Retention"), config.get("ignoreRevlogsBeforeDate"))
+                for config in decks.all_config()
+            )),
+            tuple(cards),
+            self._col.sched.day_cutoff % 86400,
+        )
+
+    def _card_presets(self) -> Dict[int, Preset]:
+        """Each card's Preset, from its home deck: a filtered deck lends no preset."""
+        decks = self._col.decks
+        by_deck: Dict[int, Preset] = {}
+        shared: Dict[tuple, Preset] = {}
+        for deck in decks.all():
+            if deck.get("dyn"):
+                continue
+            config = decks.get_config(deck.get("conf", 1))
+            if not config:
+                continue
+            params = _fsrs_params(config)
+            # A deck may override its preset's desired retention, in percent.
+            retention = deck.get("desiredRetention")
+            retention = retention / 100 if retention else config.get("desiredRetention", 0.9)
+            key = (tuple(params), retention, config.get("sm2Retention", 0.9),
+                   _date_ms(config.get("ignoreRevlogsBeforeDate", "")))
+            if key not in shared:
+                shared[key] = Preset(*key)
+            by_deck[deck["id"]] = shared[key]
+        return {
+            cid: by_deck[did] for cid, did in self._db.all(
+                "SELECT id, CASE WHEN odid THEN odid ELSE did END FROM cards"
+            ) if did in by_deck
+        }
 
     def _template_norms(self, days: float) -> Dict[tuple, int]:
         """Norm per card template and study day, read from the days before it.

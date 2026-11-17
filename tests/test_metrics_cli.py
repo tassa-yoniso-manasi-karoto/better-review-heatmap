@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -256,10 +257,10 @@ def test_fsrs_answers_and_calibration_match_direct_calls(tmp_path):
     conf = {"fsrs_calibration": {"new_card_weight": 2, "weight_limit": 4}}
     calibration = fsrs_calibration(conf)
     buckets = [
-        (15000, 1, answer_effort(False, 21, 550, calibration)),
-        (15000, 1, answer_effort(True, 0, 640, calibration)),
-        (240000, 1, answer_effort(False, -600, 640, calibration)),
-        (30000, 1, answer_effort(False, 0, 0, calibration)),
+        (15000, 1, answer_effort(False, 21, 0.0, 0.0, calibration)),
+        (15000, 1, answer_effort(True, 0, 0.0, 0.0, calibration)),
+        (240000, 1, answer_effort(False, -600, 0.0, 0.0, calibration)),
+        (30000, 1, answer_effort(False, 0, 0.0, 0.0, calibration)),
     ]
     assert data["inputs"] == {"reviews": 4, "minutes": 5.0, "milliseconds": 300000}
     assert data["duration_model"] == "individual"
@@ -298,7 +299,7 @@ def test_concentration_answers_follow_sessions_with_or_without_timestamps(tmp_pa
     scales = concentration_coefficients(
         [(row[4], row[0], row[5]) for row in rows], concentration_calibration(conf),
     )
-    effort = answer_effort(False, 21, 550, fsrs_calibration(conf))
+    effort = answer_effort(False, 21, 0.0, 0.0, fsrs_calibration(conf))
     expected = sum(round(scale, 2) * effort ** 0.6 * 2 ** 0.4 for scale in scales)
     assert scales[0] < scales[-1] == 2
     assert result["score"] == pytest.approx(expected)
@@ -342,11 +343,46 @@ def test_effort_model_scores_answers_through_the_shared_functions(tmp_path):
     results = json.loads(proc.stdout)["results"]
     assert results["effort_model"]["score"] == pytest.approx(expected)
     assert results["reviews"]["score"] == 2
-    effort = answer_effort(True, 0, 0, fsrs_calibration({}))
+    effort = answer_effort(True, 0, 0.0, 0.0, fsrs_calibration({}))
     assert results["fsrs"]["score"] == pytest.approx(
         effort ** 0.6 * 0.5 ** 0.4
-        + answer_effort(False, 10, 550, fsrs_calibration({})) ** 0.6 * 1.5 ** 0.4
+        + answer_effort(False, 10, 0.0, 0.0, fsrs_calibration({})) ** 0.6 * 1.5 ** 0.4
     )
+
+
+def test_answers_read_recall_against_their_decks_desired_retention(tmp_path):
+    def logit(p):
+        return math.log(p / (1 - p))
+
+    # 80% a day or more later where the deck asks for 90%; 70% on the same day
+    # where it asks for 85%, after three answers that day.
+    rows = [[60000, 21, 0, False, None, None, 3, 21.0, 2, None, 0.8],
+            [60000, -600, 0, False, None, None, 3, 0.01, 2, None, 0.7, True, 0.85, 3]]
+    path = tmp_path / "answers.json"
+    path.write_text(json.dumps(rows))
+    model = {"status": "local", "version": 2, "intercept": 0,
+             "weights": {"recall": 1.0, "same_day_recall": 0.5, "day_load": 0.2}}
+    model_path = tmp_path / "model.json"
+    model_path.write_text(json.dumps(model))
+    proc = run_cli(["--answers-json", str(path), "--effort-model", str(model_path), "--json"])
+    assert proc.returncode == 0, proc.stderr
+    results = json.loads(proc.stdout)["results"]
+    later, same = logit(0.9) - logit(0.8), logit(0.85) - logit(0.7)
+    calibration = fsrs_calibration({})
+    assert results["fsrs"]["score"] == pytest.approx(activity_value(2, 120000, "fsrs", [
+        (60000, 1, answer_effort(False, 21, later, 0.0, calibration)),
+        (60000, 1, answer_effort(False, -600, 0.0, same, calibration)),
+    ]))
+    assert results["fsrs"]["score"] > activity_value(2, 120000, "fsrs", [(60000, 2, 1.0)])
+    assert results["effort_model"]["score"] == pytest.approx(
+        math.exp(later) + math.exp(0.5 * same + 0.2 * math.log(4))
+    )
+    for bad in (1.5, 0, "0.8"):
+        path.write_text(json.dumps([[60000, 21, 0, False, None, None, 3, None, 0, None, bad]]))
+        assert run_cli(["--answers-json", str(path)]).returncode == 2
+    for tail in ([0.8, "yes"], [0.8, False, 1], [0.8, False, 0.9, -1]):
+        path.write_text(json.dumps([[60000, 21, 0, False, None, None, 3, None, 0, None, *tail]]))
+        assert run_cli(["--answers-json", str(path)]).returncode == 2
 
 
 def test_effort_model_needs_a_model_and_rejects_bad_input(tmp_path):

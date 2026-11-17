@@ -40,7 +40,7 @@ SCALES = {
     "baseline": {"label": "Baseline (based on a reference day)"},
 }
 
-FORMULA_VERSION = 3
+FORMULA_VERSION = 4
 DAY_GROUPING_VERSION = 1
 DEFAULT_CUSTOM_TIME_WEIGHT = 0.5
 # Experimental measures replace each answer's count credit of 1 with an effort
@@ -52,8 +52,8 @@ FSRS_CALIBRATION_DEFAULTS = {
     "step_weight": 1.0,
     "maturity_pivot_days": 21.0,
     "maturity_exponent": 0.25,
-    "difficulty_pivot": 50.0,
-    "difficulty_exponent": 0.25,
+    "recall_exponent": 0.25,
+    "same_day_recall_exponent": 0.25,
     "weight_limit": 2.0,
 }
 FSRS_CALIBRATION_RANGES = {
@@ -61,8 +61,8 @@ FSRS_CALIBRATION_RANGES = {
     "step_weight": (0.1, 10.0),
     "maturity_pivot_days": (1.0, 3650.0),
     "maturity_exponent": (0.0, 1.0),
-    "difficulty_pivot": (0.0, 100.0),
-    "difficulty_exponent": (0.0, 1.0),
+    "recall_exponent": (0.0, 1.0),
+    "same_day_recall_exponent": (0.0, 1.0),
     "weight_limit": (1.0, 10.0),
 }
 CONCENTRATION_DEFAULTS = {
@@ -97,21 +97,21 @@ METRIC_CALIBRATIONS = {
 }
 # With fewer recent answers, a template's norm reads all its earlier ones.
 TEMPLATE_NORM_MIN_ANSWERS = 30
-# Anki writes FSRS difficulty to revlog.factor as ((D - 1) / 9 + 0.1) * 1000,
-# i.e. 100-1100. SM-2 ease factors are 1300 and above; 0 marks SM-2 learning
-# steps and cramming.
-FSRS_FACTOR_RANGE = (100, 1100)
 # What the fitted model reads about an answer. Fitting and scoring both go
 # through answer_inputs, so they cannot drift apart.
 MODEL_INPUTS = (
     "log_d", "rich", "t_med", "log_d·rich", "new", "step",
     "again", "hard", "easy", "overdue", "reps", "reps·rich",
+    "recall", "same_day_recall", "day_load",
 )
 MODEL_TEMPLATE_DAYS = 60
 # Answers and template medians can read 0 ms, which has no logarithm.
 MODEL_MIN_MS = 300
 MODEL_RICH_RANGE = (0.0, 3.0)
 MODEL_OVERDUE_RANGE = (0.2, 50.0)
+# Recall gaps in log-odds (memory.Replay); beyond these the chance of recall is
+# within a percent or two of 0 or 1 at any desired retention.
+MODEL_RECALL_RANGE = (-4.0, 4.0)
 MODEL_ETA_RANGE = (math.log(1 / 16), math.log(32))
 BASELINE_FRACTION = 0.85
 ABOVE_BASELINE_FACTORS = (1.25, 1.5, 2.0, 3.0)
@@ -198,24 +198,17 @@ def concentration_calibration(conf: Optional[Dict] = None) -> Dict[str, float]:
     return calibration(conf, "concentration_calibration")
 
 
-def fsrs_difficulty(factor) -> Optional[float]:
-    """FSRS difficulty on its 1-10 scale, or None when the answer predates FSRS."""
-    try:
-        factor = int(factor)
-    except (TypeError, ValueError):
-        return None
-    if not FSRS_FACTOR_RANGE[0] <= factor <= FSRS_FACTOR_RANGE[1]:
-        return None
-    return (factor / 1000 - 0.1) * 9 + 1
-
-
-def answer_effort(first: bool, last_interval: int, factor: int,
+def answer_effort(first: bool, last_interval: int, recall: float = 0.0,
+                  same_day_recall: float = 0.0,
                   calibration: Optional[Dict[str, float]] = None) -> float:
-    """Effort of one answer relative to a routine review of a pivot card.
+    """Effort of one answer relative to a routine review of a pivot card, on time.
 
     first marks the card's earliest recorded answer. last_interval is
-    revlog.lastIvl: days when at least 1, otherwise a same-day step. factor is
-    revlog.factor; answers without an FSRS difficulty keep a neutral weight.
+    revlog.lastIvl: days when at least 1, otherwise a same-day step. recall and
+    same_day_recall are the answer's recall gaps (memory.Replay): how far the
+    card's chance of recall had fallen below its deck's desired retention, in
+    log-odds, a day or more after its previous answer and on the same day. 0
+    means on time, or no FSRS state, and leaves the effort alone.
     """
     settings = calibration if calibration is not None else fsrs_calibration()
     if first:
@@ -224,10 +217,9 @@ def answer_effort(first: bool, last_interval: int, factor: int,
         effort = (settings["maturity_pivot_days"] / last_interval) ** settings["maturity_exponent"]
     else:
         effort = settings["step_weight"]
-    difficulty = fsrs_difficulty(factor)
-    if difficulty is not None:
-        pivot = 1 + 9 * settings["difficulty_pivot"] / 100
-        effort *= (difficulty / pivot) ** settings["difficulty_exponent"]
+    if recall or same_day_recall:
+        effort *= math.exp(settings["recall_exponent"] * recall
+                           + settings["same_day_recall_exponent"] * same_day_recall)
     limit = settings["weight_limit"]
     return min(limit, max(1 / limit, effort))
 
@@ -387,6 +379,8 @@ class CardHistory:
 
     def __init__(self):
         self._cards: Dict[int, tuple] = {}
+        self._day: Optional[int] = None
+        self._day_answers = 0
 
     def advance(self, cid: int, answer_ms: int, last_ivl: int) -> tuple:
         """(first, days since the card's last answer, interday answers before this)."""
@@ -395,6 +389,13 @@ class CardHistory:
         if previous is None:
             return True, None, 0
         return False, (answer_ms - previous) / 86400000, interday
+
+    def count_day(self, day: int) -> int:
+        """Answers given earlier on this study day, across the whole collection."""
+        if day != self._day:
+            self._day, self._day_answers = day, 0
+        self._day_answers += 1
+        return self._day_answers - 1
 
 
 @lru_cache(maxsize=4096)
@@ -406,12 +407,15 @@ def _template_inputs(median_ms: int, time_weighted_ms: int) -> tuple:
 
 def model_inputs(duration_ms: int, ease: int, first: bool, last_ivl: int,
                  elapsed_days: Optional[float], interday_answers: int,
-                 profile: Optional[Sequence[int]]) -> Dict[str, float]:
+                 profile: Optional[Sequence[int]], recall: float = 0.0,
+                 same_day_recall: float = 0.0, day_answers: int = 0) -> Dict[str, float]:
     """The fitted model's MODEL_INPUTS for one answer.
 
     last_ivl is revlog.lastIvl: days when at least 1, otherwise a same-day
     step. profile is the template's (median_ms, time_weighted_ms), or None
-    when the card is deleted or its template has no earlier answers.
+    when the card is deleted or its template has no earlier answers. recall and
+    same_day_recall are the answer's recall gaps (see answer_effort), and
+    day_answers counts the answers given earlier that study day.
     """
     log_d = math.log(max(duration_ms, MODEL_MIN_MS) / 10000)
     t_med, rich = (0.0, 0.0) if profile is None else _template_inputs(*profile)
@@ -421,6 +425,7 @@ def model_inputs(duration_ms: int, ease: int, first: bool, last_ivl: int,
         low, high = MODEL_OVERDUE_RANGE
         overdue = math.log(min(high, max(low, elapsed_days / last_ivl)))
     reps = math.log1p(interday_answers)
+    low, high = MODEL_RECALL_RANGE
     return {
         "log_d": log_d,
         "rich": rich,
@@ -434,19 +439,25 @@ def model_inputs(duration_ms: int, ease: int, first: bool, last_ivl: int,
         "overdue": overdue,
         "reps": reps,
         "reps·rich": reps * rich,
+        "recall": min(high, max(low, recall)),
+        "same_day_recall": min(high, max(low, same_day_recall)),
+        "day_load": math.log1p(day_answers),
     }
 
 
-def answer_inputs(row: Sequence, history: CardHistory, profiles: Dict) -> Dict[str, float]:
+def answer_inputs(row: Sequence, history: CardHistory, profiles: Dict,
+                  recall: Sequence[float] = (0.0, 0.0)) -> Dict[str, float]:
     """Inputs for a revlog row (cid, id, ease, duration_ms, last_ivl, mid, ord, day).
 
-    profiles comes from template_profiles over MODEL_TEMPLATE_DAYS. Call this
-    for every answer in revlog order, skipping only reschedules (ease 0).
+    profiles comes from template_profiles over MODEL_TEMPLATE_DAYS, recall is the
+    row's (recall, same_day_recall) from memory.RecallIndex. Call this for every
+    answer in revlog order, skipping only reschedules (ease 0).
     """
     cid, answer_ms, ease, duration_ms, last_ivl, mid, card_ord, day = row
     first, elapsed_days, interday_answers = history.advance(cid, answer_ms, last_ivl)
     return model_inputs(duration_ms, ease, first, last_ivl, elapsed_days, interday_answers,
-                        profiles.get((mid, card_ord, day)))
+                        profiles.get((mid, card_ord, day)), recall[0], recall[1],
+                        history.count_day(day))
 
 
 def effort_model_credit(inputs: Dict[str, float], model: Dict,

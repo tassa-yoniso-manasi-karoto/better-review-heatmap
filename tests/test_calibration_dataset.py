@@ -321,3 +321,30 @@ def test_design_centres_sharpness_and_offsets_only_well_rated_templates():
 def test_design_offsets_ignore_a_deleted_card():
     rated = rated_answers((None, MIN_TEMPLATE_RATINGS, None))
     assert design(rated, note_type_offsets=True)[3] == ["sharpness", "drift"]
+
+
+def test_recall_gaps_reach_the_fit_and_the_day_scores_as_the_calendar_reads_them():
+    from review_heatmap.calibration.report import _day_scores
+    from review_heatmap.memory import RecallIndex
+    from review_heatmap.metrics import activity_value, answer_effort, fsrs_calibration
+
+    late, early = START + HOUR, START + 2 * HOUR
+    index = RecallIndex()
+    index.add(late, 0.8, 0.0)
+    index.add(early, 0.0, -0.3)
+    rows = [row(START), row(late, cid=2, last_ivl=10), row(early, cid=2, last_ivl=0)]
+    events = [rating(late, cost=4), day_rating(START + DAY_MS - 1, tiring=4)]
+    dataset = read_dataset(events, rows, recall=index)
+    rated, = dataset.rated
+    assert (rated.inputs["recall"], rated.inputs["same_day_recall"]) == (0.8, 0.0)
+    assert rated.inputs["day_load"] == pytest.approx(math.log(2))  # third answer of the day
+    day, = dataset.days
+    assert [answer.recall for answer in day.answers] == [(0.0, 0.0), (0.8, 0.0), (0.0, -0.3)]
+    calibration = fsrs_calibration({})
+    assert _day_scores(day, {}, {})["fsrs"] == pytest.approx(activity_value(3, 30_000, "fsrs", [
+        (10_000, 1, answer_effort(True, 0, 0.0, 0.0, calibration)),
+        (10_000, 1, answer_effort(True, 10, 0.8, 0.0, calibration)),
+        (10_000, 1, answer_effort(False, 0, 0.0, -0.3, calibration)),
+    ]))
+    without = read_dataset(events, rows)
+    assert without.rated[0].inputs["recall"] == 0

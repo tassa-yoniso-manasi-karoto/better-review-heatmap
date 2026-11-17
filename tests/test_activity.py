@@ -27,9 +27,10 @@ class MemoryDB:
         self.connection = sqlite3.connect(":memory:")
         self.connection.executescript(
             "CREATE TABLE revlog (id INTEGER, cid INTEGER, ease INTEGER, time INTEGER,"
-            " lastIvl INTEGER DEFAULT 0, factor INTEGER DEFAULT 0);"
+            " lastIvl INTEGER DEFAULT 0, factor INTEGER DEFAULT 0, type INTEGER DEFAULT 1,"
+            " ivl INTEGER DEFAULT 0);"
             "CREATE TABLE cards (id INTEGER, did INTEGER, due INTEGER, queue INTEGER,"
-            " nid INTEGER DEFAULT 0, ord INTEGER DEFAULT 0);"
+            " nid INTEGER DEFAULT 0, ord INTEGER DEFAULT 0, odid INTEGER DEFAULT 0);"
             "CREATE TABLE notes (id INTEGER, mid INTEGER);"
         )
 
@@ -101,10 +102,12 @@ def setup(addon_modules):
 
 
 def add_review(setup, date, cid=1, ease=3, milliseconds=30000, sequence=0,
-               last_interval=0, factor=0):
+               last_interval=0, factor=0, kind=1, interval=0):
     setup.db.connection.execute(
-        "INSERT INTO revlog (id, cid, ease, time, lastIvl, factor) VALUES (?, ?, ?, ?, ?, ?)",
-        ((date + 16 * 3600) * 1000 + sequence, cid, ease, milliseconds, last_interval, factor),
+        "INSERT INTO revlog (id, cid, ease, time, lastIvl, factor, type, ivl)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ((date + 16 * 3600) * 1000 + sequence, cid, ease, milliseconds, last_interval, factor,
+         kind, interval),
     )
 
 
@@ -152,18 +155,17 @@ def test_fsrs_mode_weights_answers_by_card_state_and_keeps_filters(setup):
     conf = setup.conf["synced"]
     conf["activity_metric"] = "fsrs"
     calibration = fsrs_calibration(conf)
-    mature = answer_effort(False, 21, 550, calibration)
-    new = answer_effort(True, 0, 640, calibration)
-    step = answer_effort(False, -600, 640, calibration)
-    young = answer_effort(False, 2, 2500, calibration)  # SM-2 ease is not a difficulty
+    # Without FSRS every recall gap is 0: card state alone sets the weight.
+    mature = answer_effort(False, 21, 0.0, 0.0, calibration)
+    new = answer_effort(True, 0, 0.0, 0.0, calibration)
+    step = answer_effort(False, -600, 0.0, 0.0, calibration)
+    young = answer_effort(False, 2, 0.0, 0.0, calibration)
     assert young == pytest.approx((21 / 2) ** 0.25)
-    assert mature < step < new < young
+    assert mature == step == 1 < new < young
     rows = setup.reporter._cards_done(with_durations=True)
-    assert rows[0] == (earlier, 2, 60000, [
-        (30000, 1, answer_effort(True, 0, 400, calibration)), (30000, 1, 1.5),
-    ])
+    assert rows[0] == (earlier, 2, 60000, [(30000, 2, 1.5)])
     assert rows[1] == (yesterday, 5, 130000, [
-        (10000, 1, step), (30000, 1, mature), (30000, 1, step), (30000, 1, new), (30000, 1, young),
+        (10000, 1, step), (30000, 2, mature), (30000, 1, new), (30000, 1, young),
     ])
     assert setup.reporter.reference_history(yesterday, with_durations=True) == [rows[1]]
     assert setup.reporter._cards_done(with_durations=True, with_effort=False)[1] == (
@@ -171,7 +173,8 @@ def test_fsrs_mode_weights_answers_by_card_state_and_keeps_filters(setup):
     )
     report = setup.reporter.get_report(limfcst=0)
     assert make_renderer(setup)._activity_scores(report)[yesterday] == pytest.approx(
-        sum(effort ** 0.6 * (duration / 60000) ** 0.4 for duration, _, effort in rows[1][3])
+        sum(count * effort ** 0.6 * (duration / 60000) ** 0.4
+            for duration, count, effort in rows[1][3])
     )
     conf["activity_metric"] = "workload"
     assert setup.reporter._cards_done(with_durations=True)[1][3] == [(10000, 1), (30000, 4)]
@@ -181,6 +184,136 @@ def test_fsrs_mode_weights_answers_by_card_state_and_keeps_filters(setup):
     conf.update(limcdel=False, limresched=False)
     assert setup.reporter._cards_done(with_durations=True)[1][3][0] == (0, 1, 1)
     assert activity_value(6, 130000, "fsrs", [(0, 1, 1)], conf) == 0
+
+
+def enable_fsrs(setup, params=(), desired_retention=0.9, deck_retention=None):
+    """FSRS on, every deck on one preset; returns the preset."""
+    config = {"id": 1, "fsrsParams6": list(params), "desiredRetention": desired_retention,
+              "sm2Retention": 0.9, "ignoreRevlogsBeforeDate": ""}
+    decks = [{"id": 1, "conf": 1}, {"id": 2, "conf": 1}]
+    if deck_retention is not None:  # deck 2 overrides its preset's retention, in percent
+        decks[1]["desiredRetention"] = deck_retention
+    setup.col.get_config = lambda key, default=None: True if key == "fsrs" else default
+    setup.col.decks.all = lambda: decks
+    setup.col.decks.all_config = lambda: [config]
+    setup.col.decks.get_config = lambda conf_id: config if conf_id == 1 else None
+    setup.col.sched.day_cutoff = TODAY + 86400 + 4 * 3600
+    return config
+
+
+def replayed_gaps(setup, desired_retention=0.9):
+    """Every answer's gaps, replayed from scratch the way the reporter should."""
+    from review_heatmap.memory import Preset, Replay
+    preset = Preset([], desired_retention)
+    homes = dict(setup.db.all("SELECT id, CASE WHEN odid THEN odid ELSE did END FROM cards"))
+    replay = Replay({cid: preset for cid in homes}, setup.col.sched.day_cutoff + 36500 * 86400)
+    return {
+        rev_id: replay.feed(cid, rev_id, kind, ease, ivl, factor)
+        for rev_id, cid, kind, ease, ivl, factor in setup.db.all(
+            "SELECT id, cid, type, ease, ivl, factor FROM revlog ORDER BY id")
+    }
+
+
+def test_fsrs_mode_reads_each_answers_recall_from_the_replay(setup):
+    from review_heatmap import activity
+    from review_heatmap.metrics import answer_effort, fsrs_calibration
+
+    activity._recall_cache = None
+    enable_fsrs(setup)
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue, odid) VALUES (?, ?, 0, 2, ?)",
+        [(1, 1, 0), (2, 3, 2)],  # card 2 sits in a filtered deck: its home deck 2 counts
+    )
+    for cid in (1, 2):
+        add_review(setup, TODAY - 40 * 86400, cid=cid, kind=0, interval=1, sequence=cid)
+        add_review(setup, TODAY - 39 * 86400, cid=cid, last_interval=1, interval=8, sequence=cid)
+        # Twenty days late: recall well below the desired retention.
+        add_review(setup, TODAY - 11 * 86400, cid=cid, last_interval=8, interval=30,
+                   sequence=cid)
+    add_review(setup, TODAY - 11 * 86400, cid=1, ease=1, kind=1, last_interval=30,
+               interval=-600, sequence=300000)
+    add_review(setup, TODAY - 11 * 86400, cid=1, kind=2, last_interval=-600, interval=10,
+               sequence=600005)  # same day: its gap comes from FSRS-7
+    conf = setup.conf["synced"]
+    conf["activity_metric"] = "fsrs"
+    calibration = fsrs_calibration(conf)
+
+    def expected():
+        gaps = replayed_gaps(setup)
+        rows = setup.db.all("SELECT id, lastIvl FROM revlog ORDER BY id")
+        first = {rev_id for (rev_id,) in setup.db.all("SELECT MIN(id) FROM revlog GROUP BY cid")}
+        efforts = sorted(
+            answer_effort(rev_id in first, max(last_ivl, 0) if last_ivl >= 1 else 0,
+                          *gaps[rev_id], calibration)
+            for rev_id, last_ivl in rows
+        )
+        return gaps, efforts
+
+    def efforts():
+        return sorted(effort for row in setup.reporter._cards_done(with_durations=True)
+                      for _, count, effort in row[3] for _ in range(count))
+
+    gaps, wanted = expected()
+    late = [gap for gap, same in gaps.values() if gap]
+    # Per card, a review a day after learning (early) and one twenty days late.
+    assert len(late) == 4 and min(late) < 0 < 0.5 < max(late)
+    # Card 1 then fails and relearns on that same day: both read FSRS-7.
+    assert sum(1 for gap, same in gaps.values() if same) == 2
+    assert efforts() == pytest.approx(wanted)
+    index = setup.reporter._recall_index()
+    assert {rev_id: index.get(rev_id) for rev_id in gaps if any(gaps[rev_id])} == {
+        rev_id: value for rev_id, value in gaps.items() if any(value)
+    }
+    # New answers extend the kept replay; an older one arriving by sync replays it all.
+    cached = activity._recall_cache[4]
+    add_review(setup, TODAY - 86400, cid=2, last_interval=30, interval=60)
+    assert efforts() == pytest.approx(expected()[1])
+    assert activity._recall_cache[4] is cached
+    add_review(setup, TODAY - 20 * 86400, cid=1, last_interval=8, interval=12, sequence=9)
+    assert efforts() == pytest.approx(expected()[1])
+    assert activity._recall_cache[4] is not cached
+    # A deck that asks for less retention counts the same lateness less: card 2's
+    # home deck does, card 1's does not.
+    before = replayed_gaps(setup)
+    enable_fsrs(setup, deck_retention=70)
+    lower = setup.reporter._recall_index()
+    card_one, card_two = ([rev_id for (rev_id,) in setup.db.all(
+        "SELECT id FROM revlog WHERE cid = ?", cid)] for cid in (1, 2))
+    assert [lower.get(r) for r in card_one] == [before[r] for r in card_one]
+    assert max(lower.get(r)[0] for r in card_two) < max(before[r][0] for r in card_two)
+    assert [lower.get(r) for r in card_two] == pytest.approx(
+        [replayed_gaps(setup, 0.7)[r] for r in card_two])
+    # Without FSRS, nothing is replayed.
+    setup.col.get_config = lambda key, default=None: default
+    assert len(setup.reporter._recall_index()) == 0
+    activity._recall_cache = None
+
+
+def test_fsrs_days_are_kept_only_while_nothing_they_read_changes(setup):
+    from review_heatmap import activity
+
+    setup.db.connection.executemany(
+        "INSERT INTO cards (id, did, due, queue) VALUES (?, ?, 0, 2)", [(1, 1), (2, 2)],
+    )
+    yesterday = TODAY - 86400
+    add_review(setup, yesterday - 5 * 86400, cid=1)
+    add_review(setup, yesterday, cid=1, last_interval=5, sequence=1)
+    add_review(setup, yesterday, cid=2, sequence=2)
+    conf = setup.conf["synced"]
+    conf.update(activity_metric="fsrs", limdecks=[2])
+    first = setup.reporter._cards_done(with_durations=True)
+    assert setup.reporter._cards_done(with_durations=True) == first
+    assert activity._effort_days_cache[3] == first
+    add_review(setup, yesterday, cid=1, last_interval=5, sequence=3)  # a new answer
+    assert setup.reporter._cards_done(with_durations=True)[-1][1] == 2
+    # Deck 2 is excluded: moving card 1 there leaves nothing, card 2 back brings its answer.
+    setup.db.connection.execute("UPDATE cards SET did = 2 WHERE id = 1")
+    assert setup.reporter._cards_done(with_durations=True) == []
+    setup.db.connection.execute("UPDATE cards SET did = 1 WHERE id = 2")
+    assert setup.reporter._cards_done(with_durations=True)[0][3] == [(30000, 1, 1.5)]
+    conf["fsrs_calibration"] = {"new_card_weight": 3}  # capped by the weight limit of 2
+    assert setup.reporter._cards_done(with_durations=True)[0][3] == [(30000, 1, 2.0)]
+    activity._effort_days_cache = None
 
 
 def test_concentration_mode_follows_sessions_across_excluded_answers(setup):
@@ -221,7 +354,7 @@ def test_concentration_mode_follows_sessions_across_excluded_answers(setup):
         concentration_calibration(conf),
     )
     assert expected[0] == 1 and 1 < expected[6] < expected[12] == 2 and expected[13] == 1
-    effort = answer_effort(False, 21, 550, fsrs_calibration(conf))
+    effort = answer_effort(False, 21, 0.0, 0.0, fsrs_calibration(conf))
     rows = setup.reporter._cards_done(with_durations=True)
     assert len(rows) == 2 and rows[1][:3] == (yesterday, 14, 28 * minute)
     buckets = rows[1][3]

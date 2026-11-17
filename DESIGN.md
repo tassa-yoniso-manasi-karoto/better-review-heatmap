@@ -70,7 +70,8 @@ Each answer contributes $e_i^a d_i^b$ with the review-weighted exponents
 $a=0.6$, $b=0.4$. The effort
 
 $$
-e_i=\mathrm{clamp}\big(s_i\,(D_i/D_p)^{\lambda},\ 1/L,\ L\big)
+e_i=\mathrm{clamp}\big(s_i\,e^{\rho g_i+\sigma h_i},\ 1/L,\ L\big),
+\qquad g,\ h=\mathrm{logit}(\text{desired retention})-\mathrm{logit}(R)
 $$
 
 > [!TIP]
@@ -80,10 +81,16 @@ $$
 > and for ordinary reviews `(P / I) ** mu`, which falls as the previous
 > interval `I` grows past the pivot `P` and rises below it. `mu = 0.25` is a
 > fourth root, so the effect is deliberately gentle: a 1-day card gets 2.14
-> and a 1-year card 0.49. The second factor `(D / D_p) ** lambda` reads the
-> FSRS difficulty, with `D_p` the difficulty that counts as neutral; another
-> fourth root, so even extreme difficulties move the weight by about 20%. The
-> clamp caps how far the two factors can stack. `e_i` then enters the credit as
+> and a 1-year card 0.49. The second factor reads how close the card was to
+> being forgotten. `R` is its chance of recall just before the answer, and the
+> gap compares it with the desired retention of the card's deck in log-odds: 0
+> when the card was answered at that retention, positive when late, negative
+> when early. `g` is the gap of an answer a day or more after the card's
+> previous one, `h` that of an answer on the same study day; the other is 0.
+> `exp(rho * g)` is the ratio of the two odds to the power `rho`: with
+> `rho = 0.25`, a card at 80% where the deck asks for 90% counts
+> `(9 / 4) ** 0.25 = 1.22` times, and one at 95% counts 0.83 times. The clamp
+> caps how far the factors can stack. `e_i` then enters the credit as
 > `e_i ** 0.6`, so a weight of 2 adds about 52% to an answer's credit, not 100%.
 
 With the defaults, the state factor is
@@ -97,7 +104,7 @@ s_i=
 \end{cases}
 $$
 
-and for a review of a card at the neutral difficulty the clamp gives
+and for a review answered at its deck's desired retention the clamp gives
 
 $$
 e_i=
@@ -109,22 +116,72 @@ e_i=
 $$
 
 so a 7-day review counts 1.32, a 21-day one 1 and a 90-day one 0.69. The
-difficulty factor $(D_i/5.5)^{0.25}$ multiplies this by 0.65 at difficulty 1
-and 1.16 at 10 before the clamp. The formula uses the card state Anki records
-per answer:
+formula uses the card state Anki records per answer, and the chance of recall
+replayed from it (see Chance of recall):
 
 - $s_i$: $w_{new}$ for a card's earliest recorded answer, $w_{step}$ for
   same-day learning and relearning answers (`lastIvl` below one day), and
   $(P/I_i)^{\mu}$ for interday reviews with previous interval $I_i$ days.
-- $D_i$: FSRS difficulty after the answer, decoded from `revlog.factor`
-  (100–1100 maps to 1–10). Answers recorded without FSRS use $D_i=D_p$.
+- $g_i$, $h_i$: the answer's recall gaps. A card's first answer, deleted cards
+  and collections without FSRS hold no state before the answer and read 0.
 
-Defaults: $w_{new}=1.5$, $w_{step}=1$, $P=21$ d, $\mu=0.25$, $D_p$ at 50%
-(5.5), $\lambda=0.25$, $L=2$, edited from `Calibrate…` beside `Color by`. A
-routine review of a pivot card has $e_i=1$, so days of routine reviews score as
-in Workload (review-weighted). The manual reference day is shared with the
-other workload modes and recomputed when a calibration changes. Only the
+Defaults: $w_{new}=1.5$, $w_{step}=1$, $P=21$ d, $\mu=0.25$, $\rho=\sigma=0.25$,
+$L=2$, edited from `Calibrate…` beside `Color by`. A routine review of a pivot
+card answered on time has $e_i=1$, so days of routine reviews score as in
+Workload (review-weighted). The manual reference day is shared with the other
+workload modes and recomputed when a calibration changes. Only the
 experimental modes read per-answer card state.
+
+Up to formula 3, a fourth root of the FSRS difficulty, decoded from
+`revlog.factor`, stood where the recall factor is. It explained nothing: on one
+person's reviews, 0.01% of answer time once template, month and button were
+known, and nothing beyond recall and lateness. Its scale also differs between
+presets.
+
+### Chance of recall
+
+Anki keeps no chance of recall per answer, so `memory.py` replays each card's
+review log in plain Python. It follows Anki's rules for which entries make up a
+card's history (rslib `scheduler/fsrs/params.rs`, `reviews_for_fsrs`): the
+card's last run of learning steps starts it; without one, its first answer that
+set an interval of a day or more does, from the state SM-2's ease and interval
+imply; a reset discards what came before; cramming in a filtered deck never
+counts; a preset's "ignore reviews before" date is honoured. Whole days count
+from the next day cutoff, as Anki counts them.
+
+- An answer a day or more after the card's previous one reads FSRS-6 with the
+  parameters of the card's deck preset: the model Anki schedules with, fitted
+  to the user's own reviews. A filtered card reads its home deck's preset, and
+  a deck's own desired retention replaces its preset's.
+- An answer on the same study day reads FSRS-7 with its published default
+  parameters. FSRS-6 counts whole days and gives every same-day answer
+  $R = 1$; FSRS-7 counts fractions of a day. Anki fits no FSRS-7 parameters,
+  so everyone gets the defaults.
+
+The formulas agree with the official libraries, py-fsrs 6.3.3 for FSRS-6 and
+ts-fsrs 6.0.0 for FSRS-7, to rounding, on 20,000 random states each.
+
+On one person's 2026 reviews:
+
+| | FSRS-6, fitted | FSRS-7, defaults |
+| --- | --- | --- |
+| Log loss of $R$ on pass or fail, a day or more apart | 0.461 | 0.495 |
+| The same within a day | 3.41 (always 1) | 0.532 |
+| Answer time at 80% instead of 90%, a day or more apart | +4.6% | +3.4% |
+| The same within a day | | +0.2% |
+
+Answer time was compared within a template and month, with the button,
+lateness and previous interval known; recall explained 0.24% of what varied.
+Where FSRS-7 had fitted parameters too, it edged out FSRS-6 a day or more apart
+(0.544 against 0.546), as its author reports. A first look at 39 felt-effort
+ratings found no link with the gap (rank correlation 0.04), so both exponents
+stay gentle until more ratings settle it.
+
+The replay takes about 0.3 s for 133,000 answers. It is kept between redraws
+and takes in new answers as they come; anything else (older answers arriving
+by sync, an undo, a changed preset, deck or card) replays everything. FSRS-based
+days are kept until an answer, a card's deck, the calibration or the view
+changes: recomputing a full history costs about 0.2 s, redrawing it 13 ms.
 
 ## Sustained concentration
 
@@ -242,7 +299,8 @@ felt effort, which is why ratings are collected at all.
   predicted almost nothing within a template, and its scale differs by preset: in
   one, a new card rated Good starts at 1 and loses up to 23% credit. Failures
   followed lateness, not interval: about 10% on time and 30% when over 2.5× late,
-  at every interval length.
+  at every interval length. Difficulty has since left FSRS-based; the chance of
+  recall, which reads lateness and the card's memory together, took its place.
 - **Split "effort".** It mixes how demanding an answer was, how sharp the rater
   was, how much they invested and what they got from it, so one number can't
   carry it all.
@@ -309,8 +367,9 @@ $$
 > `exp(w * log_d)` is `(seconds / 10) ** w`: its weight **is** the time exponent,
 > learned from ratings instead of set by hand. The clamp only stops a wild input.
 
-The inputs come from revlog rows alone, through one function shared by fitting and
-scoring, so a day scores the same on any view and historic days can be scored:
+The inputs come from revlog rows and deck presets alone, through one function shared
+by fitting and scoring, so a day scores the same on any view and historic days can be
+scored:
 
 | Input | Meaning |
 | --- | --- |
@@ -323,6 +382,9 @@ scoring, so a day scores the same on any view and historic days can be scored:
 | `overdue` | $\ln(\text{elapsed}/\text{last interval})$, 0.2 to 50, 0 unless interday |
 | `reps` | $\ln(1+\text{interday answers so far})$ |
 | `reps·rich` | Lets repetition matter differently on rich templates |
+| `recall` | Recall gap a day or more after the card's previous answer (FSRS-6), −4 to 4 |
+| `same_day_recall` | Recall gap on the same study day (FSRS-7 defaults), −4 to 4 |
+| `day_load` | $\ln(1+\text{answers given earlier that study day})$ |
 
 Template inputs read the 60 days before the answer, or all earlier days under 30
 answers, and never the day itself. `rich` is meant to tell rich cards from quick
