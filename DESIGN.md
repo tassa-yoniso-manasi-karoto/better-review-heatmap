@@ -43,7 +43,7 @@ is 0).
 | Workload (review-weighted) | $\sum_i d_i^{2/5}$ | ⅗/⅖ review/time weights; more time influence than the previous ⅓. |
 | Workload (custom) | $\sum_i d_i^b$ | Users set both exponents; require $a,b\geq0$ and $a+b=1$. |
 | Recorded time | $T$ | Dedicated time-only mode. |
-| ⭐ FSRS-based (exp.) | $\sum_i e_i^a d_i^b$ | Effort $e_i$ from card state replaces the count credit of 1; every constant is a calibration setting. Default. |
+| ⭐ FSRS-based | $\sum_i e_i^a d_i^b$ | Effort $e_i$ from card state replaces the count credit of 1; every constant is a calibration setting. Default. |
 | 🧪 FSRS-based + sustained concentration (exp.) | $\sum_i c_i e_i^a d_i^b$ | Session coefficient $c_i$ scales the whole credit; see below. |
 | 🧪 Calibrated effort (exp.) | $\sum_i e^{\eta_i}$ | Credit fitted to one person's ratings; hidden until it passes the ship gate; see below. |
 
@@ -57,8 +57,9 @@ Durations use minutes; additional pace-anchor calibration remains undecided.
 - Preserve review history, settings, selected reference dates, and history filters.
 - Preserve the intentional below/above-target color jump.
 - Defer individual-deck changes and special zero-time handling.
-- Experimental modes are shown to everyone and suffixed `(exp.)`; the default,
-  FSRS-based, carries ⭐ and the other 🧪. Their constants are calibration settings
+- The default, FSRS-based, carries ⭐ and is no longer marked experimental. The
+  other measures that read card state are suffixed `(exp.)` and carry 🧪. All of
+  them are shown to everyone, and their constants are calibration settings
   with hover hints; only values a user changed are stored (`fsrs_calibration`,
   `concentration_calibration`), so updated defaults reach everyone else.
   Calibrated effort is the exception: nobody sees it until a model passes its gate.

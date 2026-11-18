@@ -438,7 +438,10 @@ def test_calibration_stores_only_manual_changes_and_keys_references():
     assert activity_value(3, 240000, "workload", buckets) == pytest.approx(2 + 2 ** 0.4)
     assert METRICS["fsrs"]["label"].startswith("⭐ ")
     assert METRICS["concentration"]["label"].startswith("🧪 ")
-    assert all(METRICS[key]["label"].endswith("(exp.)") for key in EXPERIMENTAL_METRICS)
+    # FSRS-based, the default, is no longer marked experimental; it still reads card state.
+    assert METRICS["fsrs"]["label"] == "⭐ FSRS-based" and "fsrs" in EXPERIMENTAL_METRICS
+    assert all(METRICS[key]["label"].endswith("(exp.)") for key in EXPERIMENTAL_METRICS
+               if key != "fsrs")
     assert metrics_module_default() == "fsrs"
 
 

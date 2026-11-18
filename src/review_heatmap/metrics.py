@@ -25,7 +25,7 @@ METRICS = {
     # Experimental measures share the review-weighted exponents; everything
     # they add is calibrated in the options dialog. FSRS-based only adjusts
     # review-weighted's scores, so it is the default and carries the star.
-    "fsrs": {"label": "⭐ FSRS-based (exp.)", "time_weight": 0.4},
+    "fsrs": {"label": "⭐ FSRS-based", "time_weight": 0.4},
     "concentration": {
         "label": "🧪 FSRS-based + sustained concentration (exp.)",
         "time_weight": 0.4,

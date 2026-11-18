@@ -80,7 +80,7 @@ python scripts/metrics_cli.py --answers-json answers.json --metric effort_model 
 - `--metric KEY`: defaults to `all`; keys are `reviews`, `time`, `workload`,
   `custom`, `recorded_time`, `fsrs`, `concentration`, `effort_model`. Legacy key
   `time` means **Workload (linear)**; `recorded_time` means time alone; `fsrs`
-  is the add-on's default **⭐ FSRS-based (exp.)**, `concentration` **🧪
+  is the add-on's default **⭐ FSRS-based**, `concentration` **🧪
   FSRS-based + sustained concentration (exp.)** and `effort_model` **🧪
   Calibrated effort (exp.)**. `all` lists `effort_model` at credit 1 while no
   model is available; asking for it by name is then an error.

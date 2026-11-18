@@ -27,14 +27,11 @@ Guidelines for LLMs updating this changelog from git history:
 
 ## [2.3.0] - Unreleased
 
-
-<!--FIXME:
-1) reviews are not bound to the timezone in which they were made-->
-
 ### Added
 - Heatmap settings changes can be undone and redone from Anki's Edit menu: palette, measure, color scale, reference day, calibration, exclusions, color scheme and calendar mode
 
 ### Changed
+- FSRS-based, the default measure, is no longer marked experimental.
 - FSRS-based now weighs each answer by how close the card was to being forgotten (probability of recall), instead of the FSRS difficulty heuristic: late reviews count a little more, early ones a little less.
 - The palette is now saved in each profile and syncs with your collection; a customized palette moves there automatically and leaves the add-on's Config window
 
