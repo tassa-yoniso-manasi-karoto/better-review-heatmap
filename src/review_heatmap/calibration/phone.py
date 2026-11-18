@@ -16,13 +16,16 @@ from .dataset import CID, ID, EASE, DURATION, LAST_IVL
 # From this wording on, a card is asked about on a sheet shown once it is answered,
 # over the card that follows. Earlier wordings asked on the card itself.
 SHEET_WORDING = 5
+# From this wording on, an answer may lie half a step between two neighbouring levels
+# (effort 2.5, know 27.5), and a sheet says how sure the owner was of each answer.
+HALF_STEP_WORDING = 6
 # Lowest and highest value of each answer. No id has meant two scales.
 SCALES = {
     'cost': (0, 10), 'gain': (0, 6), 'grasp': (0, 10), 'why': (0, 4),
     'sharpness': (1, 7), 'tiring': (1, 7), 'learned': (1, 7),
     'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 4),
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
-    'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5),
+    'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
 }
 # What went wrong on a failed card: any number of these, kept in this order.
 REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')
@@ -101,24 +104,44 @@ def _revised(events: dict) -> list:
         revision = newest.get(event['id']) if event['t'] == 'prompt' else None
         if revision:
             event = {**event, 'answers': revision['answers'],
+                     'confidence': revision.get('confidence', event.get('confidence')),
                      'skipped': revision.get('skipped', []), 'revised': True,
                      'withdrawn': revision.get('withdrawn') is True}
         out.append(event)
     return out
 
 
-def _answers(raw) -> dict:
-    """Answers on a known scale; anything else a file holds is dropped."""
+def _number(value, halves: bool):
+    """An integer, or with halves a value on a half step; None for anything else. A whole
+    number written as a float (3.0) never came from a sheet, so it stays dropped."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, int):
+        return value
+    return value if halves and value != int(value) and value * 2 == int(value * 2) else None
+
+
+def _answers(raw, halves: bool = False) -> dict:
+    """Answers on a known scale; anything else a file holds is dropped. Before wording 6 a
+    value between two levels meant nothing, so only then are halves read."""
     answers = {}
     for key, value in raw.items() if isinstance(raw, dict) else ():
         if key == 'wrong':
             reasons = [reason for reason in REASONS if reason in value] if isinstance(value, list) else []
             if reasons:
                 answers[key] = reasons
-        elif (key in SCALES and isinstance(value, int) and not isinstance(value, bool)
-                and SCALES[key][0] <= value <= SCALES[key][1]):
-            answers[key] = value
+        elif key in SCALES:
+            number = _number(value, halves)
+            if number is not None and SCALES[key][0] <= number <= SCALES[key][1]:
+                answers[key] = number
     return answers
+
+
+def _confidence(raw, answers: dict) -> dict:
+    """How sure, 0 to 100, for answers that were given: a confidence alone says nothing."""
+    return {key: value for key, value in raw.items()
+            if key in answers and not isinstance(value, bool) and isinstance(value, (int, float))
+            and 0 <= value <= 100} if isinstance(raw, dict) else {}
 
 
 def _skipped(raw) -> list:
@@ -127,7 +150,11 @@ def _skipped(raw) -> list:
 
 
 def _prompt(event, **fields):
-    return {**event, 'run': 'phone', 'answers': _answers(event.get('answers')),
+    version = event.get('wording_v')
+    halves = isinstance(version, int) and version >= HALF_STEP_WORDING
+    answers = _answers(event.get('answers'), halves)
+    return {**event, 'run': 'phone', 'answers': answers,
+            'confidence': _confidence(event.get('confidence'), answers),
             'skipped': _skipped(event.get('skipped', [])), **fields}
 
 
@@ -254,11 +281,12 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
         sheet_prompts = [e for e in prompts if e.get('kind') == 'answer' and _is_sheet(e)]
         asks = [e for e in window if e['t'] == 'offer' and isinstance(e.get('ask'), list) and e['ask']]
         if sheet_prompts:
-            answers, skipped, rt, sheet_ms = {}, set(), {}, 0
+            answers, skipped, rt, sheet_ms, sure = {}, set(), {}, 0, {}
             credits = [credit for credit in map(_credit, sheet_prompts) if credit is not None]
             for event in sheet_prompts:
                 cleaned = _prompt(event)
                 answers.update(cleaned['answers'])
+                sure.update(cleaned['confidence'])
                 skipped.update(cleaned['skipped'])
                 if isinstance(event.get('rt_ms'), dict):
                     rt.update(event['rt_ms'])
@@ -273,6 +301,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
             # panel_ms stays 0: the sheet took its time from the next card, not this one.
             output.append({**common, 't': 'prompt', 'kind': 'answer', 'ts': rev_id,
                            'ease': row[EASE], 'wording_v': last['wording_v'], 'answers': answers,
+                           'confidence': {key: value for key, value in sure.items() if key in answers},
                            'skipped': sorted(skipped), 'rt_ms': rt, 'panel_ms': 0,
                            'sheet_ms': sheet_ms,
                            'timer_credit_ms': sum(credits) if credits else None,

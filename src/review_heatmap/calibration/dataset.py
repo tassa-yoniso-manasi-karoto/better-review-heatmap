@@ -57,11 +57,15 @@ class Answer(NamedTuple):
 class Tap(NamedTuple):
     """An answer rated on effort once it was given."""
     answer: Answer
-    effort: int  # 1 is None, 6 Maximal
-    answers: Dict[str, object]  # all its sheet got: effort, familiar, gained, know, wrong
+    # 1 is None, 6 Maximal. From wording 6, a half step lies between two levels (2.5),
+    # a level of its own for the fit: only levels that occur get a cut point.
+    effort: float
+    answers: Dict[str, object]  # all its sheet got: effort, familiar, gained, know, fresh, ...
     know_q: Optional[str]  # which of its two wordings "know" was asked in
     focus: Optional[int]  # as rated for the sitting holding this answer
     drift: float  # periods of DRIFT_DAYS since the first rated answer
+    # How sure the owner was of each answer, 0 to 100, from wording 6. Recorded, not fitted yet.
+    confidence: Dict[str, float] = {}
 
 
 class Sitting(NamedTuple):
@@ -284,6 +288,7 @@ def _taps(prompts: Sequence[dict], kept: Sequence[Answer],
             taps.append(Tap(
                 answer, event["answers"]["effort"], event["answers"], event.get("know_q"),
                 focus.get(index), (answer.rev_id - first) / (DRIFT_DAYS * DAY_MS),
+                event.get("confidence") or {},
             ))
     return taps
 

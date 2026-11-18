@@ -262,9 +262,9 @@ def test_semantically_damaged_lines_are_ignored(tmp_path):
 # Wording 5: a card is asked about once it is answered, on a sheet over the next card.
 
 
-def sheet(ts, at, key='extra::คำ', **fields):
+def sheet(ts, at, key='extra::คำ', wording_v=5, **fields):
     """Sent after its card's answer, and stamped back inside that card's review."""
-    return event('prompt', ts, key, kind='answer', wording_v=5, after=True, at=at, **fields)
+    return event('prompt', ts, key, kind='answer', wording_v=wording_v, after=True, at=at, **fields)
 
 
 def two_cards(*extra):
@@ -318,6 +318,46 @@ def test_sheet_without_a_valid_credit_is_still_taken_off_for_fitting(credit):
     prompt, = (e for e in data.events if e['t'] == 'prompt')
     assert prompt['timer_credit_ms'] is None
     assert data.diagnostics['credit_gap_ms'] is None and data.diagnostics['credit_answers'] == 0
+
+
+# Wording 6: half steps between levels, a confidence per answer, richness and freshness.
+
+
+def test_wording_6_reads_half_steps_and_confidence_for_answered_questions():
+    rows = [row(), row(110_000, cid=2, duration=9500)]
+    data = merge(two_cards(sheet(
+        95_001, 103_500, wording_v=6, sheet_ms=3000,
+        answers={'effort': 2.5, 'know': 27.5, 'fresh': 4, 'richness': 5, 'wrong': ['blank']},
+        confidence={'effort': 80, 'know': 40, 'fresh': 101, 'gained': 70, 'wrong': 30, 'richness': True},
+        skipped=['gained'])), rows)
+    dataset = read_dataset(data.events, data.rows)
+    prompt, = (e for e in dataset.prompts if e['kind'] == 'answer')
+    # Reasons only count after a real Again, and so does how sure the owner was of them.
+    assert prompt['answers'] == {'effort': 2.5, 'know': 27.5, 'fresh': 4, 'richness': 5}
+    assert prompt['confidence'] == {'effort': 80, 'know': 40}
+    tap, = dataset.taps
+    assert tap.effort == 2.5 and tap.confidence == {'effort': 80, 'know': 40}
+
+
+@pytest.mark.parametrize('value', [2.5, 2.25, 3.0])
+def test_half_steps_are_read_from_wording_6_only(value):
+    rows = [row(), row(110_000, cid=2, duration=9500)]
+    for wording, kept in ((5, False), (6, value == 2.5)):
+        data = merge(two_cards(sheet(95_001, 103_500, wording_v=wording, sheet_ms=3000,
+                                     answers={'effort': value})), rows)
+        prompt, = (e for e in data.events if e['t'] == 'prompt')
+        assert prompt['answers'] == ({'effort': value} if kept else {})
+
+
+def test_revision_brings_its_own_confidence(tmp_path):
+    rated = sheet(95_001, 103_500, wording_v=6, answers={'effort': 3}, confidence={'effort': 60},
+                  skipped=[], sheet_ms=3000)
+    lines = [rated, revision(rated['id'], 200_000, {'effort': 2.5}, confidence={'effort': 90},
+                             skipped=[])]
+    (tmp_path / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, lines)), encoding='utf-8')
+    data = merge(two_cards(*read_files(tmp_path).events), [row(), row(110_000, cid=2, duration=9500)])
+    merged, = (e for e in data.events if e['t'] == 'prompt')
+    assert merged['answers'] == {'effort': 2.5} and merged['confidence'] == {'effort': 90}
 
 
 def revision(of, ts, answers, **fields):

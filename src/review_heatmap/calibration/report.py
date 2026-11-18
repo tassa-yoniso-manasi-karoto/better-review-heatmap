@@ -34,7 +34,7 @@ from .dataset import (
     prompt_counts, read_dataset,
 )
 from .fit import (
-    ONE_SIDED_5_PERCENT, OrderedFit, added_t, fit_ordered, mean_log_loss, ordinal_t,
+    ONE_SIDED_5_PERCENT, OrderedFit, added_t, fit_ordered, mean_log_loss, ordinal_t, predict_eta,
     spearman,
 )
 from .phone import merge_phone, read_files
@@ -546,6 +546,9 @@ def _questions(dataset: Dataset, shared: TwoStage, conf: Optional[Dict]) -> dict
         "effort": _held_out(taps, "effort"),
         "gained": _held_out(taps, "gained"),
         "know": _held_out(taps, "know"),
+        "fresh": _held_out(taps, "fresh"),
+        "richness": _richness(dataset, shared),
+        "detail": _answer_detail(taps),
         "familiar": _control(shared.cards, "familiar", ["familiar" in tap.answers for tap in taps]),
         "focus": _control(shared.cards, "focus", [tap.focus is not None for tap in taps]),
         "wrong": _reasons(taps),
@@ -553,6 +556,50 @@ def _questions(dataset: Dataset, shared: TwoStage, conf: Optional[Dict]) -> dict
         "versus": _versus_agreement(dataset),
         "sources": _source_sets(dataset, shared),
         "deep": _deep(dataset, conf),
+    }
+
+
+# A note's richness, asked once, counts for every tap of its card: fewer than this says nothing.
+MIN_RICHNESS_TAPS = 30
+
+
+def _richness(dataset: Dataset, shared: TwoStage) -> Optional[dict]:
+    """Whether the owner's forecast of a note's total work says more about how hard its card
+    felt than the inputs do: the t of richness beside the difficulty index, on every tap of a
+    card whose note was rated. It is never a scoring input: no other collection has it."""
+    sheets = [event for event in dataset.prompts if event["kind"] == "answer"]
+    card_of = {event.get("rev_id"): event.get("cid") for event in sheets}
+    rated = {event.get("cid"): event["answers"]["richness"] for event in sheets
+             if "richness" in event.get("answers", {})}
+    if shared.cards is None or not rated:
+        return None
+    rows, ratings, _, _ = design(dataset.taps)
+    chosen = [(row, rating, rated[card_of.get(tap.answer.rev_id)])
+              for tap, row, rating in zip(dataset.taps, rows, ratings)
+              if card_of.get(tap.answer.rev_id) in rated]
+    found = {"taps": len(chosen), "notes": len(rated), "t": None}
+    if len(chosen) >= MIN_RICHNESS_TAPS:
+        index = [predict_eta(shared.cards, row) for row, _, _ in chosen]
+        found["t"] = added_t([rating for _, rating, _ in chosen],
+                             [index, [float(value) for _, _, value in chosen]])
+    return found
+
+
+def _answer_detail(taps: Sequence[Tap]) -> dict:
+    """Per question, from wording 6 on: answers given half a step between two levels, and
+    how often and how sure the owner rated their own answer."""
+    found: Dict[str, dict] = {}
+    for tap in taps:
+        for question, value in tap.answers.items():
+            row = found.setdefault(question, {"answers": 0, "half_steps": 0, "sure": []})
+            row["answers"] += 1
+            row["half_steps"] += isinstance(value, float) and value != int(value)
+            if question in tap.confidence:
+                row["sure"].append(tap.confidence[question])
+    return {
+        question: {"answers": row["answers"], "half_steps": row["half_steps"],
+                   "rated": len(row["sure"]), "median": median(row["sure"]) if row["sure"] else None}
+        for question, row in sorted(found.items())
     }
 
 
@@ -991,8 +1038,8 @@ def _judge_lines(judge: Optional[dict]) -> List[str]:
 
 def _question_lines(questions: dict) -> List[str]:
     lines = []
-    for question in ("effort", "gained", "know"):
-        held = questions[question]
+    for question in ("effort", "gained", "know", "fresh"):
+        held = questions.get(question)
         if held:
             loss = held["log_loss"]
             lines.append(
@@ -1008,6 +1055,23 @@ def _question_lines(questions: dict) -> List[str]:
                 f"{control} in effort: {row['weight']:+.3f} ± {row['se']:.3f} "
                 f"({row['ratings']} ratings)."
             )
+    richness = questions.get("richness")
+    if richness and richness["t"] is not None:
+        lines.append(
+            f"richness in effort, beyond the inputs: t {richness['t']:+.2f} on {richness['taps']} "
+            f"ratings of {richness['notes']} rated notes."
+        )
+    elif richness:
+        lines.append(f"richness: {richness['notes']} notes rated, {richness['taps']} effort "
+                     f"ratings on their cards, too few to test.")
+    detail = [
+        f"{question} {row['half_steps']}/{row['answers']} half steps"
+        + (f", {row['rated']} sure at median {row['median']:.0f}%" if row["rated"] else "")
+        for question, row in (questions.get("detail") or {}).items()
+        if row["half_steps"] or row["rated"]
+    ]
+    if detail:
+        lines.append("Half steps and confidence: " + "; ".join(detail) + ".")
     wrong = questions["wrong"]
     if wrong["ratings"]:
         lines.append(f"wrong, on {wrong['ratings']} failed cards: " + "; ".join(

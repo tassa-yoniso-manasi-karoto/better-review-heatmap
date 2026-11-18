@@ -745,3 +745,24 @@ def test_a_failed_activation_still_starts_the_recorder(
     calibration._on_profile_did_open()
     assert len(started) == 1
     assert store.error_count() == 1
+
+
+def test_half_steps_and_confidence_are_counted_per_question():
+    from review_heatmap.calibration import report
+    from review_heatmap.calibration.dataset import Tap
+    def tap(answers, confidence):
+        return Tap(None, answers["effort"], answers, None, None, 0.0, confidence)
+    taps = [tap({"effort": 2.5, "fresh": 4}, {"effort": 80}),
+            tap({"effort": 3, "fresh": 3.5}, {"effort": 60, "fresh": 90}),
+            tap({"effort": 2}, {})]
+    detail = report._answer_detail(taps)
+    assert detail["effort"] == {"answers": 3, "half_steps": 1, "rated": 2, "median": 70}
+    assert detail["fresh"] == {"answers": 2, "half_steps": 1, "rated": 1, "median": 90}
+    questions = {"effort": None, "gained": None, "know": None, "fresh": None,
+                 "richness": {"taps": 4, "notes": 2, "t": None}, "detail": detail,
+                 "familiar": None, "focus": None, "wrong": {"ratings": 0},
+                 "state": {"rest_strain": {"spearman": None}, "rest_amount": {"t": None}},
+                 "versus": {"days": 0}, "sources": [], "deep": {"spearman": None}}
+    text = "\n".join(report._question_lines(questions))
+    assert "effort 1/3 half steps, 2 sure at median 70%" in text
+    assert "richness: 2 notes rated, 4 effort ratings on their cards, too few to test." in text

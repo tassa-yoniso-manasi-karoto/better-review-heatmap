@@ -413,7 +413,8 @@ $$
 > [!TIP]
 > `F` is the logistic curve. The cut points `c_j` between the six levels are fitted
 > too: a rating says which of two answers was harder, not by how much, so the
-> weights `v` only order answers. An L2 penalty of 2 on standardized inputs keeps few
+> weights `v` only order answers. A rating halfway between two levels is a level of
+> its own, between them, and every level that occurs gets its cut point. An L2 penalty of 2 on standardized inputs keeps few
 > ratings from overfitting. The difficulty `δ` leaves out `T`, the two time inputs
 > `log_d` and `log_d·rich`: the fit reads them, so that its other weights compare
 > answers of equal length, and time is then counted once, in stage 2. Controls

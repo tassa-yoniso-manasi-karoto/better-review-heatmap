@@ -338,3 +338,12 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 - A rated day holds the answers of its study day given before the rating: what came later that day wasn't rated. The last answer before the rating names the day.
 - A sitting holds every answer from its first card's to its last's, found by when its cards were shown, with five minutes before `from_ms` allowed for: its bounds say when the tool received them. A day or a sitting rated twice keeps the later rating.
 - `pair_cards` names the two templates `pair` compares, as `Note type/Template`, and the rating grows with the second. A day on which either wasn't answered has no pair.
+
+### Wording 6
+
+From `wording_v` 6, a card prompt can say more about each answer. Earlier prompts read as before.
+
+- **Half steps.** An answer may lie halfway between two neighbouring levels: `effort` 2.5 lies between Slight and Some, and `know` 27.5 between 20 and 35. Only values on a half step are read, and only from wording 6. The fit treats a half step as a level of its own: its cut points are fitted, so the levels that occur are all it needs.
+- **`confidence`.** From question id to 0 to 100: how sure the rater was of that answer. It is kept only for answers given; untouched means no rating. A revision carrying `confidence` replaces the prompt's, as its answers do. Check Phone and the report count it per question. No fit reads it yet.
+- **`fresh`**, 1 to 5: how fresh and solid the card felt in memory once its answer was seen. It is asked on cards seen a day or more before. The report tests it like `gained` and `know`.
+- **`richness`**, 1 to 5: the rater's forecast of how much work the whole note will take before it is known well, asked once per note. The report tests whether it explains effort beyond the inputs, counting every rated card of a rated note. It is never a scoring input: no other collection has it.
