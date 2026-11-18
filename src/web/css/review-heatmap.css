@@ -448,12 +448,17 @@ select.hm-sel:active, select.hm-sel:focus {
     min-width: 100%;
     margin: 6px auto;
     padding: 6px 10px;
-    border: 1px solid rgba(110, 210, 255, 0.09);
+    border: 1px solid rgba(0, 110, 170, 0.16);
     border-radius: 14px;
-    background: rgba(80, 200, 255, 0.04);
-    color: #bfc3cb;
+    background: rgba(0, 130, 210, 0.05);
+    color: #5c636e;
     font-size: 12px;
     line-height: 1.5;
+}
+.night_mode .rh-reference-reminder {
+    border-color: rgba(110, 210, 255, 0.09);
+    background: rgba(80, 200, 255, 0.04);
+    color: #bfc3cb;
 }
 .rh-reference-icon {
     place-self: center;
@@ -472,9 +477,9 @@ select.hm-sel:active, select.hm-sel:focus {
     align-items: center;
     justify-content: center;
     padding: 5px 9px;
-    border: 1px solid rgba(190, 196, 207, 0.04);
+    border: 1px solid rgba(60, 70, 85, 0.12);
     border-radius: 999px;
-    background: rgba(190, 196, 207, 0.045);
+    background: rgba(60, 70, 85, 0.06);
     color: inherit;
     font: inherit;
     line-height: 1.3;
@@ -483,12 +488,23 @@ select.hm-sel:active, select.hm-sel:focus {
     cursor: pointer;
 }
 .rh-container .rh-reference-reminder > button:hover {
+    background: rgba(60, 70, 85, 0.11);
+    border-color: rgba(60, 70, 85, 0.2);
+}
+.rh-container .rh-reference-reminder > button:focus-visible {
+    outline: 1px solid rgba(60, 70, 85, 0.6);
+    outline-offset: 2px;
+}
+.night_mode .rh-container .rh-reference-reminder > button {
+    border-color: rgba(190, 196, 207, 0.04);
+    background: rgba(190, 196, 207, 0.045);
+}
+.night_mode .rh-container .rh-reference-reminder > button:hover {
     background: rgba(190, 196, 207, 0.09);
     border-color: rgba(190, 196, 207, 0.08);
 }
-.rh-container .rh-reference-reminder > button:focus-visible {
-    outline: 1px solid rgba(190, 196, 207, 0.65);
-    outline-offset: 2px;
+.night_mode .rh-container .rh-reference-reminder > button:focus-visible {
+    outline-color: rgba(190, 196, 207, 0.65);
 }
 
 /* Platform-specific adjustments / workarounds */
