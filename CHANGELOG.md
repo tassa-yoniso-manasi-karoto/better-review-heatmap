@@ -25,7 +25,7 @@ Guidelines for LLMs updating this changelog from git history:
 -->
 
 
-## [2.3.0] - Unreleased
+## [2.3.0] - 2026-11-18
 
 ### Added
 - Heatmap settings changes can be undone and redone from Anki's Edit menu: palette, measure, color scale, reference day, calibration, exclusions, color scheme and calendar mode

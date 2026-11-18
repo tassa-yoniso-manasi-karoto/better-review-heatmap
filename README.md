@@ -17,8 +17,8 @@ Open **Tools → Review Heatmap Options → Display Mode** and choose a measure:
 - **Workload (custom):** allows you to choose your own balance between reviews
   and time.
 - **Recorded time:** scores days strictly by study duration.
-- **⭐ FSRS-based (exp.)** (default): based on review-weighted workload, except each answer counts a little more when its card is new or recently learned, or when FSRS rates it closer to forgotten than your desired retention, and a little less when it is mature or reviewed early.
-- **🧪 FSRS-based + sustained concentration (exp.):** the same but workload calculations additionally rewards long uninterrupted stretches on cards with long review (x s/card) time, reward fades once a sitting runs past about an hour.
+- **⭐ FSRS-based (default mode)**: based on review-weighted workload, except each answer counts a little more when its card is new or recently learned, or when FSRS rates it closer to forgotten than your desired retention, and a little less when it is mature or reviewed early.
+- **FSRS-based + sustained concentration (experimental):** the same but workload calculations additionally rewards long uninterrupted stretches on cards with long review (x s/card) time, reward fades once a sitting runs past about an hour.
 
 The experimental measures come with sensible defaults. **Calibrate…**, next to
 the measure, lists every setting with an explanation on hover. Only settings
