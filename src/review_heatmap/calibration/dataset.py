@@ -26,6 +26,11 @@ CID, ID, EASE, DURATION, LAST_IVL, MID, ORD, DAY, FACTOR = range(9)
 # in routine reviews: those ratings followed the button, not the time, and no
 # fit reads them.
 MIN_WORDING = 5
+# Card answers count towards the thresholds from this wording on, the survey asked since
+# 2026-11-18 with half steps and confidence: a fresh start. The fit still reads every
+# effort answer from MIN_WORDING, the same question on the same scale. Evening and
+# sitting questions did not change and are still recorded as wording 5: they keep counting.
+COUNTED_CARD_WORDING = 6
 MIN_TEMPLATE_RATINGS = 30
 DRIFT_DAYS = 90
 OFFSET_PREFIX = "template:"
@@ -226,13 +231,13 @@ def design(taps: Sequence[Tap], note_type_offsets: bool = False) -> tuple:
 
 
 def prompt_counts(events: Iterable[dict]) -> dict:
-    """Answers per question from "prompt" events in the wording that is fitted,
+    """Answers per question from "prompt" events in the wording that is counted,
     how many of those prompts came up and how many left a question unanswered,
     and how many prompts of earlier wordings were answered."""
     counts = dict.fromkeys(("effort", "amount", "work", "pair"), 0)
     counts.update(prompts=0, skipped=0, earlier=0)
     for event in events:
-        if not _is_fitted(event):
+        if not _is_counted(event):
             counts["earlier"] += bool(event["answers"])
             continue
         counts["prompts"] += 1
@@ -241,6 +246,13 @@ def prompt_counts(events: Iterable[dict]) -> dict:
             if question in counts:
                 counts[question] += 1
     return counts
+
+
+def _is_counted(event: dict) -> bool:
+    if event.get("kind") == "answer":
+        version = event.get("wording_v")
+        return isinstance(version, int) and version >= COUNTED_CARD_WORDING
+    return _is_fitted(event)
 
 
 def _is_fitted(event: dict) -> bool:

@@ -190,7 +190,7 @@ def test_raw_phone_ratings_enable_fit_before_matching(
     app = QApplication.instance() or QApplication([])
     media = tmp_path / 'media'
     media.mkdir()
-    events = [sheet(index, index + 1000, answers={'effort': 2})
+    events = [sheet(index, index + 1000, wording_v=6, answers={'effort': 2})
               for index in range(FIT_EFFORT_RATINGS)]
     events += [dict(v=1, id=f'day-{index}', t='prompt', ts=10_000 + index, kind='day',
                     wording_v=5, answers={'amount': 4})
@@ -456,7 +456,7 @@ def test_sitting_and_day_answers_reach_the_dataset_without_a_card(tmp_path):
              dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=5,
                   answers={'amount': 5, 'strain': 2, 'pair': 1, 'tiring': 0}, pair_cards=['a', 'b'])]
     events = [event('q', 90_000), event('a', 95_000),
-              sheet(95_001, 100_800, answers={'effort': 2, 'wrong': ['sense']}), *extra]
+              sheet(95_001, 100_800, wording_v=6, answers={'effort': 2, 'wrong': ['sense']}), *extra]
     (tmp_path / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, events)))
     assert read_files(tmp_path).events == sorted(events, key=lambda e: e['ts'])
     data = merge(events, [row(ease=1)])

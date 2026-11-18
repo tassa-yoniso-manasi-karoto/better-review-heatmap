@@ -104,7 +104,7 @@ def world(days=70, seed=7, kanji_effort=0.0):
                     answers["wrong"] = ["blank"] if effort > 3 else ["form"]
                 events.append({
                     "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": seq,
-                    "rev_id": rev_id, "wording_v": 5, "answers": answers, "skipped": [],
+                    "rev_id": rev_id, "wording_v": 6, "answers": answers, "skipped": [],
                 })
             sitting = bounds[half]
             sitting[0] = shown if sitting[0] is None else sitting[0]
@@ -301,7 +301,7 @@ def paced_events(slow_after_prompt=1.0, slow_since=1.0):
             if previous_prompted:
                 events.append({
                     "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": seq,
-                    "rev_id": rev_id, "wording_v": 5, "answers": {"effort": 2}, "skipped": [],
+                    "rev_id": rev_id, "wording_v": 6, "answers": {"effort": 2}, "skipped": [],
                 })
     return events, rows
 
@@ -326,7 +326,7 @@ def test_too_little_data_still_reports_and_fails_the_gate():
     rows = [(1, START, 3, 10_000, 0, 100, 0, 0, 0)]
     events = [{
         "t": "prompt", "kind": "answer", "ts": START, "run": RUN, "seq": 1,
-        "rev_id": START, "wording_v": 5, "answers": {"effort": 2}, "skipped": [],
+        "rev_id": START, "wording_v": 6, "answers": {"effort": 2}, "skipped": [],
     }]
     report = report_of(events, rows)
     assert (report["cards"], report["work"], report["model"], report["judge"]) == (None,) * 4
@@ -561,7 +561,7 @@ def seed_ratings(store, days, taps_per_day=8, setup=None):
             if index < taps_per_day:
                 store.append({
                     "t": "prompt", "kind": "answer", "ts": rev_id, "run": RUN, "seq": index,
-                    "rev_id": rev_id, "wording_v": 5, "answers": {"effort": 1 + index % 4},
+                    "rev_id": rev_id, "wording_v": 6, "answers": {"effort": 1 + index % 4},
                     "skipped": [],
                 })
         end = base + 11 * MINUTE

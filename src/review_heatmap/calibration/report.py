@@ -136,7 +136,9 @@ def build_report(dataset: Dataset, conf: Optional[Dict],
         "date_ms": now_ms(),
         "counts": {
             **counts,
-            "effort_ratings": len(dataset.taps),
+            # Counted from wording 6 on (dataset.COUNTED_CARD_WORDING); the fit reads more.
+            "effort_ratings": counts["effort"],
+            "fitted_effort_ratings": len(dataset.taps),
             "rated_days": rated_days,
             "rated_sittings": sum("work" in sitting.ratings for sitting in dataset.sittings),
             "pair_days": sum(day.pair is not None for day in dataset.days),
@@ -182,7 +184,7 @@ def build_report(dataset: Dataset, conf: Optional[Dict],
         "reactivity": _reactivity(dataset),
         # Without a fit yet, the gate says so: nothing failed to converge.
         "gate": ship_gate(
-            len(dataset.taps), rated_days, judge, shared.work is None or _converged(shared),
+            counts["effort"], rated_days, judge, shared.work is None or _converged(shared),
         ),
     }
 

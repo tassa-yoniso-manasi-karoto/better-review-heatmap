@@ -466,15 +466,17 @@ def test_design_offsets_ignore_a_deleted_card():
 ###########################################################################
 
 
-def test_prompt_counts_count_the_fitted_wording_and_set_the_rest_apart():
+def test_prompt_counts_count_the_counted_wording_and_set_the_rest_apart():
     events = [
-        sheet(START, effort=2, gained=1),
-        dict(sheet(START + 1, effort=1), skipped=["know"]),
+        sheet(START, wording=6, effort=2, gained=1),
+        dict(sheet(START + 1, wording=6, effort=1), skipped=["know"]),
         sheet(START + 2, wording=4, cost=3),
+        # Card answers count from wording 6 on; the fit still reads this one.
+        sheet(START + 3, effort=3),
         session(START, START + HOUR, work=3, focus=2),
         day_rating(START + 2 * HOUR, amount=4, pair=2),
     ]
     assert prompt_counts(events) == {
         "effort": 2, "amount": 1, "work": 1, "pair": 1,
-        "prompts": 4, "skipped": 1, "earlier": 1,
+        "prompts": 4, "skipped": 1, "earlier": 2,
     }
