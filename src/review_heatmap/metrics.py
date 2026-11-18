@@ -52,8 +52,12 @@ FSRS_CALIBRATION_DEFAULTS = {
     "step_weight": 1.0,
     "maturity_pivot_days": 21.0,
     "maturity_exponent": 0.25,
-    "recall_exponent": 0.25,
-    "same_day_recall_exponent": 0.25,
+    # From 118 effort ratings, 2026-11-18: effort barely follows recall a day or more after
+    # a card's previous answer (rank correlation 0.11), and rises only once recall is far
+    # below target; same-day answers felt the easiest of all, while FSRS-7's default
+    # parameters read same-day recall low and would give nearly every step a bonus.
+    "recall_exponent": 0.15,
+    "same_day_recall_exponent": 0.0,
     "weight_limit": 2.0,
 }
 FSRS_CALIBRATION_RANGES = {

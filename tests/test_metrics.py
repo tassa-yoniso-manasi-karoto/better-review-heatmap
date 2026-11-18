@@ -313,16 +313,17 @@ def test_fsrs_effort_weights_new_young_and_forgotten_answers_more():
     assert answer_effort(False, 3) == pytest.approx(7 ** 0.25)
     assert answer_effort(False, 1) == 2  # the weight limit caps both directions
     assert answer_effort(False, 3650) == 0.5
-    # Recall at 80% where the deck asks for 90%: (odds 9 / odds 4) ** 0.25.
+    # Recall at 80% where the deck asks for 90%: (odds 9 / odds 4) ** 0.15.
     late = math.log(9) - math.log(4)
-    assert answer_effort(False, 21, late, 0.0, calibration) == pytest.approx(1.5 ** 0.5)
-    assert answer_effort(False, 21, -late) == pytest.approx(1.5 ** -0.5)  # reviewed early
-    assert answer_effort(False, -600, 0.0, late) == pytest.approx(1.5 ** 0.5)  # same day
-    assert answer_effort(True, 0, late) == pytest.approx(1.5 * 1.5 ** 0.5)
-    assert answer_effort(True, 0, 2 * late) == 2  # capped by the weight limit
+    assert answer_effort(False, 21, late, 0.0, calibration) == pytest.approx(2.25 ** 0.15)
+    assert answer_effort(False, 21, -late) == pytest.approx(2.25 ** -0.15)  # reviewed early
+    # Same-day recall is off by default: FSRS-7's default parameters read it low.
+    assert answer_effort(False, -600, 0.0, late) == 1
+    assert answer_effort(True, 0, late) == pytest.approx(1.5 * 2.25 ** 0.15)
+    assert answer_effort(True, 0, 5 * late) == 2  # capped by the weight limit
     custom = fsrs_calibration({"fsrs_calibration": {
         "maturity_exponent": 0, "recall_exponent": 0, "new_card_weight": 3,
-        "weight_limit": 2.5,
+        "weight_limit": 2.5, "same_day_recall_exponent": 0.25,
     }})
     assert answer_effort(True, 0, late, 0.0, custom) == 2.5
     assert answer_effort(False, 1, late, 0.0, custom) == 1

@@ -37,7 +37,7 @@ Guidelines for LLMs updating this changelog from git history:
 - Heatmap settings changes can be undone and redone from Anki's Edit menu: palette, measure, color scale, reference day, calibration, exclusions, color scheme and calendar mode
 
 ### Changed
-- FSRS-based now weighs each answer by how close the card was to being forgotten (probability of recall), instead of the FSRS difficulty heuristic: late reviews count a little more, early ones a little less. The upcoming FSRS v7 is used for probability of recall on intra-day reviews for best accuracy.
+- FSRS-based now weighs each answer by how close the card was to being forgotten (probability of recall), instead of the FSRS difficulty heuristic: late reviews count a little more, early ones a little less. Reviews on the same day get no such factor by default; Calibrate… can turn it on, using the upcoming FSRS v7, which can tell minutes from hours.
 - The palette is now saved in each profile and syncs with your collection; a customized palette moves there automatically and leaves the add-on's Config window
 
 ### Fixed

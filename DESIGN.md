@@ -88,8 +88,8 @@ $$
 > when early. `g` is the gap of an answer a day or more after the card's
 > previous one, `h` that of an answer on the same study day; the other is 0.
 > `exp(rho * g)` is the ratio of the two odds to the power `rho`: with
-> `rho = 0.25`, a card at 80% where the deck asks for 90% counts
-> `(9 / 4) ** 0.25 = 1.22` times, and one at 95% counts 0.83 times. The clamp
+> `rho = 0.15`, a card at 80% where the deck asks for 90% counts
+> `(9 / 4) ** 0.15 = 1.13` times, and one at 95% counts 0.89 times. The clamp
 > caps how far the factors can stack. `e_i` then enters the credit as
 > `e_i ** 0.6`, so a weight of 2 adds about 52% to an answer's credit, not 100%.
 
@@ -125,7 +125,7 @@ replayed from it (see Chance of recall):
 - $g_i$, $h_i$: the answer's recall gaps. A card's first answer, deleted cards
   and collections without FSRS hold no state before the answer and read 0.
 
-Defaults: $w_{new}=1.5$, $w_{step}=1$, $P=21$ d, $\mu=0.25$, $\rho=\sigma=0.25$,
+Defaults: $w_{new}=1.5$, $w_{step}=1$, $P=21$ d, $\mu=0.25$, $\rho=0.15$, $\sigma=0$,
 $L=2$, edited from `Calibrate…` beside `Color by`. A routine review of a pivot
 card answered on time has $e_i=1$, so days of routine reviews score as in
 Workload (review-weighted). The manual reference day is shared with the other
@@ -156,7 +156,10 @@ from the next day cutoff, as Anki counts them.
 - An answer on the same study day reads FSRS-7 with its published default
   parameters. FSRS-6 counts whole days and gives every same-day answer
   $R = 1$; FSRS-7 counts fractions of a day. Anki fits no FSRS-7 parameters,
-  so everyone gets the defaults.
+  so everyone gets the defaults. Its exponent $\sigma$ defaults to 0, so this
+  gap only counts for a user who sets it: on one person's reviews the defaults
+  read same-day recall low (mean $R$ 0.674 where 0.753 passed), which gives
+  nearly every learning step a bonus, while those answers felt the easiest.
 
 The formulas agree with the official libraries, py-fsrs 6.3.3 for FSRS-6 and
 ts-fsrs 6.0.0 for FSRS-7, to rounding, on 20,000 random states each.
@@ -173,9 +176,11 @@ On one person's 2026 reviews:
 Answer time was compared within a template and month, with the button,
 lateness and previous interval known; recall explained 0.24% of what varied.
 Where FSRS-7 had fitted parameters too, it edged out FSRS-6 a day or more apart
-(0.544 against 0.546), as its author reports. A first look at 39 felt-effort
-ratings found no link with the gap (rank correlation 0.04), so both exponents
-stay gentle until more ratings settle it.
+(0.544 against 0.546), as its author reports. On 118 felt-effort ratings,
+effort barely followed the gap a day or more apart (rank correlation 0.11, and
+none within a button): it rose only once recall was far below target. So $\rho$
+is 0.15, gentler than at first, and same-day answers, rated the easiest of all,
+get no recall factor. More ratings will settle both.
 
 The replay takes about 0.3 s for 133,000 answers. It is kept between redraws
 and takes in new answers as they come; anything else (older answers arriving
