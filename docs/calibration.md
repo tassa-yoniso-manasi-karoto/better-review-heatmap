@@ -48,7 +48,7 @@ The recording tool asks; this add-on only reads the answers. Every answer is one
 | Asked | Questions |
 | --- | --- |
 | About a sampled card once it is answered, on a sheet over whatever follows | `effort`, then `familiar` on a new card, or `gained` or `know` on another. `wrong` after a failure |
-| About a sitting of 15+ cards, once it has ended | `work`, `focus`, `deep` |
+| About a sitting of 15+ cards, once it has ended, or any sitting the rater ends | `work`, `focus`, `deep`; from wording 6, `work` and a drawn `curve` |
 | In the evening, once a day | `amount`, `strain`, `rest`, `versus` and `pair` when there is something to name, `learned`, a note |
 
 A card is asked about after its answer, never on it: a control on the card went unseen on quick answers, and a question during the card would land on its clock.
@@ -68,6 +68,8 @@ A card is asked about after its answer, never on it: a control on the card went 
 **`focus`, 1 to 5.** How well could you concentrate during it? *Used for:* a control in stage 1. It never scores.
 
 **`deep`, 1 to 5.** How much of the sitting were you deep in it, with no break in your attention? Count stretches of several minutes on demanding cards. *Used for:* a check of sustained concentration, in the report.
+
+**`curve`, from wording 6, in place of `focus` and `deep`.** Concentration has a depth and a length, and one answer folded both. The rater draws the sitting instead: time from its first card to its last across, depth up from Scattered (1) to Absorbed (5), with half steps, and lines where the kind of card changed. *Used for:* the control `focus` in stage 1, read off the curve at each answer, so that it rises and falls within a sitting. The report's check of sustained concentration still reads `deep`, from the sittings rated before the curve.
 
 **`amount`, 1 to 7.** How much Anki work did you do today, all in all? From Almost none to About the most I ever do. Only Anki: a short day is a small day, even when it was all you could manage. *Used for:* stage 2, and the judge of every formula.
 
@@ -325,6 +327,7 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 | `wrong` | A list from `blank`, `other`, `form`, `sense`, `misread`, `purpose`, `else` |
 | `work`, `focus` | 1 to 5, about a sitting: how much work it was, and how well you could concentrate |
 | `deep` | 1 to 5: how much of the sitting was spent in unbroken concentration on demanding cards |
+| `curve` | Session prompts from wording 6: `[[ts_ms, depth], ...]` inside `from_ms`..`to_ms`, depth 1 to 5 on whole or half steps, in time order |
 | `amount` | 1 to 7, about the day: how much study was done |
 | `strain`, `rest`, `versus`, `pair` | 1 to 5, about the day: how hard it felt, what the rest of the day took, and two comparisons |
 
@@ -341,9 +344,11 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 
 ### Wording 6
 
-From `wording_v` 6, a card prompt can say more about each answer. Earlier prompts read as before.
+From `wording_v` 6, a card prompt can say more about each answer, and so can the evening and sitting prompts. Earlier prompts read as before.
 
 - **Half steps.** An answer may lie halfway between two neighbouring levels: `effort` 2.5 lies between Slight and Some, and `know` 27.5 between 20 and 35. Only values on a half step are read, and only from wording 6. The fit treats a half step as a level of its own: its cut points are fitted, so the levels that occur are all it needs.
-- **`confidence`.** From question id to 0 to 100: how sure the rater was of that answer. It is kept only for answers given; untouched means no rating. A revision carrying `confidence` replaces the prompt's, as its answers do. Check Phone and the report count it per question. No fit reads it yet.
+- **`confidence`.** From question id to 0 to 100: how sure the rater was of that answer. It is kept only for answers given; untouched means no rating. A revision carrying `confidence` replaces the prompt's, as its answers do. Check Phone and the report count it per question. No fit reads it yet. Wording 7 drops the slider, since the half steps give the same granularity: its prompts carry no `confidence`, and wording 6's are kept as recorded.
 - **`fresh`**, 1 to 5: how fresh and solid the card felt in memory once its answer was seen. It is asked on cards seen a day or more before. The report tests it like `gained` and `know`.
+- **Evening and sitting ratings** take half steps too, on every question: `amount` 4.5 lies between Usual and More than usual. The fits of `amount`, `work` and `pair` treat a half step as a level of its own, as for `effort`.
+- **`curve`** replaces `focus` and `deep` on sitting prompts (see above). Only points inside the sitting, on a half step, are read, and at most 200 of them. A sitting with a curve and no answer is still a rated sitting for the control, never for `work`. Between two points the depth runs straight; before the first and after the last it stays at that point's.
 - **`richness`**, 1 to 5: the rater's forecast of how much work the whole note will take before it is known well, asked once per note. The report tests whether it explains effort beyond the inputs, counting every rated card of a rated note. It is never a scoring input: no other collection has it.

@@ -67,7 +67,8 @@ class Tap(NamedTuple):
     effort: float
     answers: Dict[str, object]  # all its sheet got: effort, familiar, gained, know, fresh, ...
     know_q: Optional[str]  # which of its two wordings "know" was asked in
-    focus: Optional[int]  # as rated for the sitting holding this answer
+    # As rated for the sitting holding this answer; from wording 6, its curve at the answer.
+    focus: Optional[float]
     drift: float  # periods of DRIFT_DAYS since the first rated answer
     # How sure the owner was of each answer, 0 to 100, from wording 6. Recorded, not fitted yet.
     confidence: Dict[str, float] = {}
@@ -76,7 +77,9 @@ class Tap(NamedTuple):
 class Sitting(NamedTuple):
     span: Span
     day: int  # study day of its last answer
-    ratings: Dict[str, int]  # work, focus and deep, as far as answered
+    ratings: Dict[str, float]  # work, and before wording 6 focus and deep, as far as answered
+    # From wording 6: concentration as the rater drew it, (ms, depth 1 to 5) in time order.
+    curve: Tuple[Tuple[int, float], ...] = ()
 
 
 class RatedDay(NamedTuple):
@@ -288,9 +291,13 @@ def _taps(prompts: Sequence[dict], kept: Sequence[Answer],
         event.get("rev_id"): event for event in prompts
         if event["kind"] == "answer" and _is_fitted(event) and "effort" in event["answers"]
     }
-    focus: Dict[int, int] = {}
+    focus: Dict[int, float] = {}
     for sitting in sittings:
-        if "focus" in sitting.ratings:
+        if sitting.curve:
+            # Read at each answer: a sitting's concentration rises and falls.
+            focus.update({index: curve_at(sitting.curve, kept[index].rev_id)
+                          for index in range(*sitting.span)})
+        elif "focus" in sitting.ratings:
             focus.update(dict.fromkeys(range(*sitting.span), sitting.ratings["focus"]))
     taps: List[Tap] = []
     for index, answer in enumerate(kept):
@@ -303,6 +310,17 @@ def _taps(prompts: Sequence[dict], kept: Sequence[Answer],
                 event.get("confidence") or {},
             ))
     return taps
+
+
+def curve_at(curve: Sequence[Tuple[int, float]], ts: int) -> float:
+    """A drawn curve's depth at a moment: straight between its points, and before the first or
+    after the last, that point's depth."""
+    if ts <= curve[0][0]:
+        return curve[0][1]
+    for (before, low), (after, high) in zip(curve, curve[1:]):
+        if ts <= after:
+            return low if after == before else low + (high - low) * (ts - before) / (after - before)
+    return curve[-1][1]
 
 
 def _sittings(log: _Log, kept: Sequence[Answer], kept_ids: Sequence[int]) -> List[Sitting]:
@@ -323,7 +341,8 @@ def _sittings(log: _Log, kept: Sequence[Answer], kept_ids: Sequence[int]) -> Lis
     newest: Dict[int, dict] = {}
     for event in log.prompts:
         bounds = event.get("from_ms"), event.get("to_ms")
-        if (event["kind"] == "session" and _is_fitted(event) and event["answers"]
+        if (event["kind"] == "session" and _is_fitted(event)
+                and (event["answers"] or event.get("curve"))
                 and all(isinstance(bound, int) for bound in bounds)):
             newest[bounds[0]] = event
     sittings = []
@@ -335,7 +354,8 @@ def _sittings(log: _Log, kept: Sequence[Answer], kept_ids: Sequence[int]) -> Lis
             continue
         span = bisect_left(kept_ids, min(inside)), bisect_right(kept_ids, max(inside))
         if span[0] < span[1]:
-            sittings.append(Sitting(span, kept[span[1] - 1].day, event["answers"]))
+            curve = tuple((ts, depth) for ts, depth in event.get("curve") or ())
+            sittings.append(Sitting(span, kept[span[1] - 1].day, event["answers"], curve))
     return sittings
 
 

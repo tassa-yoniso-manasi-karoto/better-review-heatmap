@@ -124,6 +124,23 @@ def test_day_ratings_reach_the_dataset_and_earlier_wordings_stay_unread():
     assert {e['kind'] for e in dataset.prompts} == {'sharpness', 'day'}
 
 
+def test_wording_6_day_and_sitting_ratings_keep_half_steps_and_the_drawn_curve():
+    day = dict(v=1, id='day', t='prompt', ts=101_000, kind='day', wording_v=6,
+               answers={'amount': 4.5, 'strain': 2, 'learned': 3.0})
+    sitting = dict(v=1, id='sitting', t='prompt', ts=102_000, kind='session', wording_v=6,
+                   from_ms=90_000, to_ms=100_000, answers={'work': 3.5}, skipped=['curve'],
+                   curve=[[99_000, 4], [90_000, 2.5], [100_001, 3], [95_000, 3.0], [96_000, True],
+                          [97_000, 6], 'x', [98_000], [True, 3]])
+    data = merge([event('q', 90_000), event('a', 95_000), day, sitting])
+    day, = (e for e in data.events if e.get('kind') == 'day')
+    sitting, = (e for e in data.events if e.get('kind') == 'session')
+    # 3.0 never came from a screen, which writes whole levels as integers.
+    assert day['answers'] == {'amount': 4.5, 'strain': 2}
+    assert sitting['answers'] == {'work': 3.5} and sitting['skipped'] == ['curve']
+    # Inside the sitting, on a half step from 1 to 5, in time order.
+    assert sitting['curve'] == [[90_000, 2.5], [99_000, 4]]
+
+
 def test_front_panel_correction_preserves_split_and_does_not_mutate_rows():
     original = row()
     data = merge([event('q', 90_000), event('prompt', 93_000, kind='sharpness', answers={'sharpness': 4}, panel_ms=2000), event('a', 95_000)], [original])

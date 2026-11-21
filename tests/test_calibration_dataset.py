@@ -6,8 +6,8 @@ from test_activity import TODAY, add_review, setup  # noqa: F401
 from test_activity import add_cards, fitted  # noqa: F401
 
 from review_heatmap.calibration.dataset import (
-    DRIFT_DAYS, MIN_TEMPLATE_RATINGS, PACE_DAYS, SITTING_SLACK_MS, design, prompt_counts,
-    read_dataset, revlog_sql,
+    DRIFT_DAYS, MIN_TEMPLATE_RATINGS, PACE_DAYS, SITTING_SLACK_MS, curve_at, design,
+    prompt_counts, read_dataset, revlog_sql,
 )
 from review_heatmap.calibration.store import DAY_MS, Store
 from review_heatmap.metrics import MODEL_INPUTS, effort_model_credit
@@ -262,6 +262,24 @@ def test_a_sitting_rated_twice_keeps_the_later_rating_and_one_unsynced_waits():
     ]
     dataset = read_dataset(events, rows)
     assert [sitting.ratings for sitting in dataset.sittings] == [{"work": 4}]
+
+
+def test_a_curve_reads_straight_between_its_points_and_flat_beyond_them():
+    curve = ((100, 2), (200, 4), (200, 1), (400, 1.5))
+    assert curve_at(curve, 50) == 2 and curve_at(curve, 150) == 3
+    assert curve_at(curve, 300) == 1.25 and curve_at(curve, 900) == 1.5
+
+
+def test_a_tap_reads_its_sittings_curve_at_its_answer():
+    ids, _, events, rows = sitting_world()
+    events += [sheet(ids[1], 2, effort=3), sheet(ids[3], 4, effort=2), sheet(ids[-1] + HOUR, effort=1)]
+    # Wording 6 draws concentration instead of asking it: a sitting with a curve and no answer.
+    rated = dict(session(ids[0], ids[-1], wording=6), curve=((ids[0], 2), (ids[-1], 4)))
+    events.append(rated)
+    rows.append(row(ids[-1] + HOUR, cid=3))
+    dataset = read_dataset(events, rows)
+    assert [sitting.curve for sitting in dataset.sittings] == [((ids[0], 2), (ids[-1], 4))]
+    assert [tap.focus for tap in dataset.taps] == [2.5, 3.5, None]
 
 
 def test_a_tap_takes_the_focus_of_its_sitting():

@@ -145,17 +145,40 @@ def _confidence(raw, answers: dict) -> dict:
 
 
 def _skipped(raw) -> list:
-    return [key for key in raw if isinstance(key, str) and (key in SCALES or key == 'wrong')
+    return [key for key in raw if isinstance(key, str) and (key in SCALES or key in ('wrong', 'curve'))
             ] if isinstance(raw, list) else []
+
+
+# The most points a sitting's curve keeps.
+CURVE_POINTS = 200
+
+
+def _curve(raw, start, end) -> list:
+    """A sitting's concentration as the rater drew it, from wording 6: [ts, depth] pairs inside the
+    sitting, depth from 1 to 5 in half steps, in time order. Anything else is left out."""
+    if (not isinstance(raw, list) or isinstance(start, bool) or isinstance(end, bool)
+            or not isinstance(start, int) or not isinstance(end, int)):
+        return []
+    points = []
+    for item in raw[:CURVE_POINTS]:
+        if (isinstance(item, list) and len(item) == 2 and isinstance(item[0], int)
+                and not isinstance(item[0], bool) and start <= item[0] <= end):
+            depth = _number(item[1], True)
+            if depth is not None and 1 <= depth <= 5:
+                points.append([item[0], depth])
+    return sorted(points)
 
 
 def _prompt(event, **fields):
     version = event.get('wording_v')
     halves = isinstance(version, int) and version >= HALF_STEP_WORDING
     answers = _answers(event.get('answers'), halves)
-    return {**event, 'run': 'phone', 'answers': answers,
-            'confidence': _confidence(event.get('confidence'), answers),
-            'skipped': _skipped(event.get('skipped', [])), **fields}
+    cleaned = {**event, 'run': 'phone', 'answers': answers,
+               'confidence': _confidence(event.get('confidence'), answers),
+               'skipped': _skipped(event.get('skipped', [])), **fields}
+    if event.get('kind') == 'session':
+        cleaned['curve'] = _curve(event.get('curve'), event.get('from_ms'), event.get('to_ms'))
+    return cleaned
 
 
 def _is_sheet(event) -> bool:
