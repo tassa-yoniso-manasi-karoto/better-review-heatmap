@@ -27,6 +27,7 @@ SCALES = {
     'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 5), 'fixed': (0, 3),
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
     'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
+    'interfered': (0, 1),
 }
 # gained says how much firmer a review left the card: Nothing 0, Kept it alive 1, Firmer 2, and
 # from wording 9 Much firmer 3; fixed, asked with it, whether the review fixed something. Up to
@@ -38,6 +39,10 @@ GAINED_EARLIER_MAX = 2
 GAINED_WORDING_8 = {0: 0, 0.5: 0.5, 1: 1, 1.5: 1.5, 4: 2, 4.5: 3}
 # What went wrong on a failed card: any number of these, kept in this order.
 REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')
+# From wording 10, on a card not failed: whether another word got in the way (interfered, 1 with
+# the word in interfered_word, 0 for No). After a word named there or as the one a failed card was
+# taken for, how strong its pull was, 0 to 100 (strength, by question).
+NAMED = ('confused', 'interfered')
 # Taken for another word ('other'): how the two are alike, as related-word lists class them.
 CONFUSIONS = ('homophone', 'similar-sound', 'tone-pair', 'similar-spelling', 'similar-kanji',
               'similar-meaning', 'pair', 'false-friend')
@@ -159,6 +164,13 @@ def _confidence(raw, answers: dict) -> dict:
             and 0 <= value <= 100} if isinstance(raw, dict) else {}
 
 
+def _strength(raw, answers: dict) -> dict:
+    """How strong a named word's pull was, 0 to 100: only beside the answer that named it."""
+    return {key: value for key, value in raw.items()
+            if key in NAMED and answers.get(key) not in (None, 0) and not isinstance(value, bool)
+            and isinstance(value, (int, float)) and 0 <= value <= 100} if isinstance(raw, dict) else {}
+
+
 def _skipped(raw) -> list:
     return [key for key in raw if isinstance(key, str)
             and (key in SCALES or key in ('wrong', 'confused', 'curve'))] if isinstance(raw, list) else []
@@ -199,6 +211,7 @@ def _prompt(event, **fields):
             answers['gained'] = gained
     cleaned = {**event, 'run': 'phone', 'answers': answers,
                'confidence': _confidence(event.get('confidence'), answers),
+               'strength': _strength(event.get('strength'), answers),
                'skipped': _skipped(event.get('skipped', [])), **fields}
     if event.get('kind') == 'session':
         cleaned['curve'] = _curve(event.get('curve'), event.get('from_ms'), event.get('to_ms'))
@@ -328,12 +341,13 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
         sheet_prompts = [e for e in prompts if e.get('kind') == 'answer' and _is_sheet(e)]
         asks = [e for e in window if e['t'] == 'offer' and isinstance(e.get('ask'), list) and e['ask']]
         if sheet_prompts:
-            answers, skipped, rt, sheet_ms, sure = {}, set(), {}, 0, {}
+            answers, skipped, rt, sheet_ms, sure, pull = {}, set(), {}, 0, {}, {}
             credits = [credit for credit in map(_credit, sheet_prompts) if credit is not None]
             for event in sheet_prompts:
                 cleaned = _prompt(event)
                 answers.update(cleaned['answers'])
                 sure.update(cleaned['confidence'])
+                pull.update(cleaned['strength'])
                 skipped.update(cleaned['skipped'])
                 if isinstance(event.get('rt_ms'), dict):
                     rt.update(event['rt_ms'])
@@ -353,6 +367,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
             output.append({**common, 't': 'prompt', 'kind': 'answer', 'ts': rev_id,
                            'ease': row[EASE], 'wording_v': last['wording_v'], 'answers': answers,
                            'confidence': {key: value for key, value in sure.items() if key in answers},
+                           'strength': {key: value for key, value in pull.items() if key in answers},
                            'skipped': sorted(skipped), 'rt_ms': rt, 'panel_ms': 0,
                            'sheet_ms': sheet_ms,
                            'timer_credit_ms': sum(credits) if credits else None,

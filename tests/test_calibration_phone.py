@@ -426,6 +426,25 @@ def test_the_word_a_failed_card_was_taken_for_counts_with_its_reason_only():
     assert read({'wrong': ['other'], 'confused': 'Tone pair'}) == ({'wrong': ['other']}, ['confused'])
 
 
+def test_another_word_in_the_way_and_a_words_pull_are_read_from_wording_10():
+    def read(answers, ease=2, **fields):
+        data = merge([event('q', 90_000), event('a', 95_000),
+                      sheet(95_001, 100_800, wording_v=10, answers=answers, skipped=[], **fields)], [row(ease=ease)])
+        prompt, = (e for e in data.events if e['t'] == 'prompt')
+        return prompt['answers'], prompt['strength']
+    assert read({'effort': 2, 'interfered': 1}, interfered_word='返す', strength={'interfered': 70}) == (
+        {'effort': 2, 'interfered': 1}, {'interfered': 70})
+    assert read({'interfered': 0}) == ({'interfered': 0}, {})
+    # A pull goes with a word named only: none for "No", a stray question or a value off the scale.
+    assert read({'interfered': 0}, strength={'interfered': 40, 'effort': 50}) == ({'interfered': 0}, {})
+    assert read({'interfered': 1}, strength={'interfered': 140}) == ({'interfered': 1}, {})
+    assert read({'interfered': 2}, strength={'interfered': 40}) == ({}, {})
+    assert read({'wrong': ['other'], 'confused': 'homophone'}, ease=1, strength={'confused': 55}) == (
+        {'wrong': ['other'], 'confused': 'homophone'}, {'confused': 55})
+    # The word taken drops out with its reason, and its pull with it.
+    assert read({'wrong': ['other'], 'confused': 'homophone'}, ease=3, strength={'confused': 55}) == ({}, {})
+
+
 def test_newest_revision_replaces_the_sheets_answers_and_drops_out(tmp_path):
     rated = sheet(95_001, 103_500, answers={'effort': 3, 'gained': 2}, skipped=[], sheet_ms=3000)
     lines = [rated, revision(rated['id'], 200_000, {'effort': 5}, skipped=['gained']),

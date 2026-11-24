@@ -47,7 +47,7 @@ The recording tool asks; this add-on only reads the answers. Every answer is one
 
 | Asked | Questions |
 | --- | --- |
-| About a sampled card once it is answered, on a sheet over whatever follows | `effort`, then `familiar` on a new card, or `gained` or `know` on another. `wrong` after a failure |
+| About a sampled card once it is answered, on a sheet over whatever follows | `effort`, then `familiar` on a new card, or `gained` or `know` on another. From wording 10, `interfered` on a card not failed. `wrong` after a failure |
 | About a sitting of 15+ cards, once it has ended, or any sitting the rater ends | `work`, `focus`, `deep`; from wording 6, `work` and a drawn `curve` |
 | In the evening, once a day | `amount`, `strain`, `rest`, `versus` and `pair` when there is something to name, `learned`, a note |
 
@@ -62,6 +62,8 @@ A card is asked about after its answer, never on it: a control on the card went 
 **`gained`, 0 to 3, or `know`, 0 to 100,** taking turns. How much firmer the review left the card, from Nothing to Much firmer, with `fixed`, 0 to 3, on the same view from wording 9: whether it fixed something (see Wording 8 and 9); and how much of the card you know, asked about its main point on a young card and about its details on a mature one, on one scale. *Used for:* nothing scores them. The report tests whether the inputs predict them.
 
 **`wrong`, any number of reasons.** After a failure: blank, another word or meaning, a wrong form, a missed sense, misheard or misread, on purpose, something else. From wording 8, taking the card for another word also says how the two are alike (`confused`). *Used for:* the report's effort by reason, and the classes of `confused`. It can't feed the model: public scoring never has it.
+
+**`interfered`, 0 or 1, from wording 10.** Did another word get in the way, on a card not failed? No, or the word that came to mind instead or had to be pushed aside, with how strong its pull was (`strength`, optional). A confusion was otherwise recorded only when it made a card fail. *Used for:* nothing here yet. It is kept for a recall model that knows which words pull at each other.
 
 **`work`, 1 to 5.** How much Anki work was that sitting, all in all? Tiny to Huge. *Used for:* stage 2, how answers add up.
 
@@ -383,3 +385,12 @@ From `wording_v` 8, a failure can say what the card was taken for (`confused`). 
   - The prompt's `confused_word` names that word, and `confused_listed` says whether the card already listed it among its related words.
   - It is kept only with `other`, so only after a real Again.
   - The report counts the classes under the reasons.
+
+### Wording 10
+
+From `wording_v` 10, a card not failed can say whether another word got in the way, and a word named can say how strong its pull was.
+
+- **`interfered`**, 0 or 1: 0 for No, 1 with the word in the prompt's `interfered_word`. `interfered_listed` says whether the card listed that word among its related words, and `interfered_type` gives the listed entry's class. Unlike `confused`, it is kept whatever the button: a word in the way is worth knowing even on a card that turned out failed.
+- **`strength`**: from question id (`confused` or `interfered`) to 0 to 100, how strong the named word's pull was, from Faint to It took over. Optional: untouched means no rating. It is kept only beside an answer that names a word, so never with `interfered` 0, and it goes with `confused` when that is dropped. A revision keeps the prompt's.
+- Nothing scores them, and the report doesn't show them yet.
+- Recording files may also hold `links` events: when the words a note names as related were added or removed. The add-on doesn't read them.
