@@ -766,3 +766,22 @@ def test_half_steps_and_confidence_are_counted_per_question():
     text = "\n".join(report._question_lines(questions))
     assert "effort 1/3 half steps, 2 sure at median 70%" in text
     assert "richness: 2 notes rated, 4 effort ratings on their cards, too few to test." in text
+
+
+def test_reasons_count_how_the_word_a_card_was_taken_for_was_alike():
+    from review_heatmap.calibration import report
+    from review_heatmap.calibration.dataset import Tap
+    def tap(answers):
+        return Tap(None, answers["effort"], answers, None, None, 0.0, {})
+    taps = [tap({"effort": 3, "wrong": ["other"], "confused": "tone-pair"}),
+            tap({"effort": 2, "wrong": ["other", "form"], "confused": "tone-pair"}),
+            tap({"effort": 4, "wrong": ["other"], "confused": "similar-meaning"}),
+            tap({"effort": 5, "wrong": ["blank"]})]
+    wrong = report._reasons(taps)
+    assert wrong["confused"] == {"tone-pair": 2, "similar-meaning": 1}
+    questions = {"effort": None, "gained": None, "know": None, "fresh": None,
+                 "richness": None, "detail": {}, "familiar": None, "focus": None, "wrong": wrong,
+                 "state": {"rest_strain": {"spearman": None}, "rest_amount": {"t": None}},
+                 "versus": {"days": 0}, "sources": [], "deep": {"spearman": None}}
+    text = "\n".join(report._question_lines(questions))
+    assert "Taken for another word, alike by: tone-pair 2, similar-meaning 1." in text

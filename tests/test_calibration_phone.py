@@ -6,7 +6,7 @@ import pytest
 from test_calibration_recorder import col  # noqa: F401
 
 from review_heatmap.calibration.dataset import read_dataset
-from review_heatmap.calibration.phone import PhoneFiles, merge_phone, read_files
+from review_heatmap.calibration.phone import PhoneFiles, _revised, merge_phone, read_files
 
 CARD = 'Vocabulary/Word'
 INDEX = {CARD: {'extra::คำ': {1}, 'x&amp;y': {2}, '123': {3}, 'same': {4, 5}}}
@@ -379,6 +379,51 @@ def test_revision_brings_its_own_confidence(tmp_path):
 
 def revision(of, ts, answers, **fields):
     return dict(v=1, id=f'revision-{ts}', t='revision', ts=ts, of=of, answers=answers, **fields)
+
+
+# None: dropped. Up to wording 7, 3 and 4 asked about fixes (never answered); wording 8 had a
+# scale of its own, of which only firmness is read.
+@pytest.mark.parametrize('wording, given, read', [
+    (5, 0, 0), (6, 0.5, 0.5), (7, 1, 1), (7, 1.5, 1.5), (6, 2, 2), (7, 2.5, None), (7, 3, None),
+    (7, 4, None), (8, 1.5, 1.5), (8, 2, None), (8, 2.5, None), (8, 3, None), (8, 4, 2), (8, 4.5, 3),
+    (8, 5, None), (9, 2.5, 2.5), (9, 3, 3), (9, 3.5, None)])
+def test_gained_reads_how_much_firmer_whatever_its_wording(wording, given, read):
+    data = merge(two_cards(sheet(95_001, 103_500, wording_v=wording, answers={'gained': given})),
+                 [row(), row(110_000, cid=2, duration=9500)])
+    prompt, = (e for e in data.events if e['t'] == 'prompt')
+    assert prompt['answers'] == ({} if read is None else {'gained': read})
+
+
+def test_a_revision_of_a_wording_8_sheet_reads_gained_as_that_sheet_did():
+    rated = sheet(95_001, 103_500, wording_v=8, answers={'gained': 1})
+    files = PhoneFiles(_revised({e['id']: e for e in [rated, revision(rated['id'], 200_000, {'gained': 4})]}), 1)
+    data = merge(two_cards(*files.events), [row(), row(110_000, cid=2, duration=9500)])
+    merged, = (e for e in data.events if e['t'] == 'prompt')
+    assert merged['answers'] == {'gained': 2}
+
+
+def test_whether_a_review_fixed_something_is_read_with_gained():
+    data = merge(two_cards(sheet(95_001, 103_500, wording_v=9, answers={'gained': 2.5, 'fixed': 1.5},
+                                 skipped=[])), [row(), row(110_000, cid=2, duration=9500)])
+    prompt, = (e for e in data.events if e['t'] == 'prompt')
+    assert prompt['answers'] == {'gained': 2.5, 'fixed': 1.5}
+    data = merge(two_cards(sheet(95_001, 103_500, wording_v=9, answers={'fixed': 4}, skipped=['gained'])),
+                 [row(), row(110_000, cid=2, duration=9500)])
+    prompt, = (e for e in data.events if e['t'] == 'prompt')
+    assert prompt['answers'] == {} and prompt['skipped'] == ['gained']
+
+
+def test_the_word_a_failed_card_was_taken_for_counts_with_its_reason_only():
+    def read(answers, ease=1):
+        data = merge([event('q', 90_000), event('a', 95_000),
+                      sheet(95_001, 100_800, wording_v=8, answers=answers, skipped=['confused'])], [row(ease=ease)])
+        prompt, = (e for e in data.events if e['t'] == 'prompt')
+        return prompt['answers'], prompt['skipped']
+    assert read({'wrong': ['other'], 'confused': 'tone-pair'}) == ({'wrong': ['other'], 'confused': 'tone-pair'}, [])
+    assert read({'wrong': ['other']}) == ({'wrong': ['other']}, ['confused'])
+    assert read({'wrong': ['blank'], 'confused': 'tone-pair'}) == ({'wrong': ['blank']}, [])
+    assert read({'wrong': ['other'], 'confused': 'tone-pair'}, ease=2) == ({}, [])
+    assert read({'wrong': ['other'], 'confused': 'Tone pair'}) == ({'wrong': ['other']}, ['confused'])
 
 
 def test_newest_revision_replaces_the_sheets_answers_and_drops_out(tmp_path):

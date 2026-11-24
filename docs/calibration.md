@@ -59,9 +59,9 @@ A card is asked about after its answer, never on it: a control on the card went 
 
 **`familiar`, 0 to 3.** Before this new card, did you know this word or idea? *Used for:* a control in stage 1. It never scores.
 
-**`gained`, 0 to 4, or `know`, 0 to 100,** taking turns. What the review left behind, from Nothing to Something new; and how much of the card you know, asked about its main point on a young card and about its details on a mature one, on one scale. *Used for:* nothing scores them. The report tests whether the inputs predict them.
+**`gained`, 0 to 3, or `know`, 0 to 100,** taking turns. How much firmer the review left the card, from Nothing to Much firmer, with `fixed`, 0 to 3, on the same view from wording 9: whether it fixed something (see Wording 8 and 9); and how much of the card you know, asked about its main point on a young card and about its details on a mature one, on one scale. *Used for:* nothing scores them. The report tests whether the inputs predict them.
 
-**`wrong`, any number of reasons.** After a failure: blank, another word or meaning, a wrong form, a missed sense, misheard or misread, on purpose, something else. *Used for:* the report's effort by reason. It can't feed the model: public scoring never has it.
+**`wrong`, any number of reasons.** After a failure: blank, another word or meaning, a wrong form, a missed sense, misheard or misread, on purpose, something else. From wording 8, taking the card for another word also says how the two are alike (`confused`). *Used for:* the report's effort by reason, and the classes of `confused`. It can't feed the model: public scoring never has it.
 
 **`work`, 1 to 5.** How much Anki work was that sitting, all in all? Tiny to Huge. *Used for:* stage 2, how answers add up.
 
@@ -194,7 +194,7 @@ The report appears in the tab, top to bottom:
 
 **Judge.** The result that matters, explained under Ship gate. For each measure, its rank correlation with `amount` and with `learned` on the judged days, then what fitted adds to review-weighted, block by block, and the same on `versus`.
 
-**Questions.** What each question shows so far, so that one showing nothing can stop being asked: how well every input, or the button alone, predicts `effort`, `gained` and `know` on later days; the weights of `familiar` and `focus`; effort by `wrong` reason; whether `rest` goes with `strain` and stays out of `amount`; how often `versus` agrees with its two days' `amount`; b from evenings alone, with pairs, and with sittings too; and `deep` against the share of a sitting that sustained concentration rewards.
+**Questions.** What each question shows so far, so that one showing nothing can stop being asked: how well every input, or the button alone, predicts `effort`, `gained`, `fixed` and `know` on later days; the weights of `familiar` and `focus`; effort by `wrong` reason, and the classes of `confused`; whether `rest` goes with `strain` and stays out of `amount`; how often `versus` agrees with its two days' `amount`; b from evenings alone, with pairs, and with sittings too; and `deep` against the share of a sitting that sustained concentration rewards.
 
 **Front share.** Median front and back time per template, from recorded answers.
 
@@ -323,7 +323,7 @@ A card is asked about once it is answered, on a sheet shown over whatever follow
 | `effort` | 1 to 6: how hard the card made you think, with no reference review and no time in it |
 | `familiar` | 0 to 3: what was known of a new card before it |
 | `know` | 0 to 100: how much of the card is known |
-| `gained` | 0 to 4: what the review left behind |
+| `gained` | 0 to 4: what the review left behind; read as in Wording 8 and 9 |
 | `wrong` | A list from `blank`, `other`, `form`, `sense`, `misread`, `purpose`, `else` |
 | `work`, `focus` | 1 to 5, about a sitting: how much work it was, and how well you could concentrate |
 | `deep` | 1 to 5: how much of the sitting was spent in unbroken concentration on demanding cards |
@@ -352,3 +352,34 @@ From `wording_v` 6, a card prompt can say more about each answer, and so can the
 - **Evening and sitting ratings** take half steps too, on every question: `amount` 4.5 lies between Usual and More than usual. The fits of `amount`, `work` and `pair` treat a half step as a level of its own, as for `effort`.
 - **`curve`** replaces `focus` and `deep` on sitting prompts (see above). Only points inside the sitting, on a half step, are read, and at most 200 of them. A sitting with a curve and no answer is still a rated sitting for the control, never for `work`. Between two points the depth runs straight; before the first and after the last it stays at that point's.
 - **`richness`**, 1 to 5: the rater's forecast of how much work the whole note will take before it is known well, asked once per note. The report tests whether it explains effort beyond the inputs, counting every rated card of a rated note. It is never a scoring input: no other collection has it.
+
+### Wording 8 and 9
+
+From `wording_v` 8, a failure can say what the card was taken for (`confused`). Wording 8 also put `gained` on eleven levels of its own that mixed two things: how much firmer the card was, and whether something was fixed. Wording 9 asks them apart.
+
+- **`gained`**, from wording 9, says only how much firmer the review left the card:
+
+  | Value | Level |
+  | --- | --- |
+  | 0 | Nothing |
+  | 1 | Kept it alive |
+  | 2 | Firmer |
+  | 3 | Much firmer |
+
+  Half steps lie between neighbours. Up to wording 7, 0 to 2 meant the same, and are read as they are. Its 3 and 4 (Fixed something, Something new) were never answered: they are dropped, as is 2.5.
+
+  Wording 8's levels were Nothing 0, Kept it alive 1, Usual 2, Cleared a small thing 3, Feels firmer 4 and Cleared a big thing 5, with an in-between at each half. Only its answers about firmness alone are read:
+
+  | Wording 8 | Read as |
+  | --- | --- |
+  | 0, 0.5, 1, 1.5 | The same |
+  | 4, Feels firmer | 2 |
+  | 4.5, Much firmer | 3 |
+  | Any other | Dropped |
+
+  A revision is read with its prompt's wording. The file keeps the answer as recorded.
+- **`fixed`**, 0 to 3, from wording 9, is asked with `gained` on the same view: did the review fix something? No 0, A slip 1, Something real 2, Something big 3, with half steps between. The report tests it like `gained`.
+- **`confused`**: with `other` among the `wrong` reasons, how the word the card was taken for is alike. It is one of `homophone`, `similar-sound`, `tone-pair`, `similar-spelling`, `similar-kanji`, `similar-meaning`, `pair` and `false-friend`.
+  - The prompt's `confused_word` names that word, and `confused_listed` says whether the card already listed it among its related words.
+  - It is kept only with `other`, so only after a real Again.
+  - The report counts the classes under the reasons.

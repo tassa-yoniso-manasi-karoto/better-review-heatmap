@@ -547,6 +547,7 @@ def _questions(dataset: Dataset, shared: TwoStage, conf: Optional[Dict]) -> dict
     return {
         "effort": _held_out(taps, "effort"),
         "gained": _held_out(taps, "gained"),
+        "fixed": _held_out(taps, "fixed"),
         "know": _held_out(taps, "know"),
         "fresh": _held_out(taps, "fresh"),
         "richness": _richness(dataset, shared),
@@ -665,7 +666,9 @@ def _reasons(taps: Sequence[Tap]) -> dict:
             "effort": fmean(tap.effort for tap in failed if reason in tap.answers["wrong"]),
             "others_effort": fmean(others) if others else None,
         })
-    return {"ratings": len(failed), "reasons": reasons}
+    # Taken for another word: how the two were alike, from wording 8.
+    alike = Counter(tap.answers["confused"] for tap in failed if "confused" in tap.answers)
+    return {"ratings": len(failed), "reasons": reasons, "confused": dict(alike.most_common())}
 
 
 def _state(dataset: Dataset, conf: Optional[Dict]) -> dict:
@@ -1040,7 +1043,7 @@ def _judge_lines(judge: Optional[dict]) -> List[str]:
 
 def _question_lines(questions: dict) -> List[str]:
     lines = []
-    for question in ("effort", "gained", "know", "fresh"):
+    for question in ("effort", "gained", "fixed", "know", "fresh"):
         held = questions.get(question)
         if held:
             loss = held["log_loss"]
@@ -1081,6 +1084,9 @@ def _question_lines(questions: dict) -> List[str]:
             + ("" if row["others_effort"] is None else f" against {row['others_effort']:.1f}")
             for row in wrong["reasons"]
         ) + ".")
+    if wrong.get("confused"):
+        lines.append("Taken for another word, alike by: " + ", ".join(
+            f"{kind} {count}" for kind, count in wrong["confused"].items()) + ".")
     state = questions["state"]
     if state["rest_strain"]["spearman"] is not None:
         lines.append(

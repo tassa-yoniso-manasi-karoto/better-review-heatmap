@@ -19,16 +19,28 @@ SHEET_WORDING = 5
 # From this wording on, an answer may lie half a step between two neighbouring levels
 # (effort 2.5, know 27.5), and a sheet says how sure the owner was of each answer.
 HALF_STEP_WORDING = 6
-# Lowest and highest value of each answer. No id has meant two scales.
+# Lowest and highest value of each answer. No id has meant two scales, except gained: read
+# through GAINED_WORDING, whatever its wording.
 SCALES = {
     'cost': (0, 10), 'gain': (0, 6), 'grasp': (0, 10), 'why': (0, 4),
     'sharpness': (1, 7), 'tiring': (1, 7), 'learned': (1, 7),
-    'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 4),
+    'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 5), 'fixed': (0, 3),
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
     'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
 }
+# gained says how much firmer a review left the card: Nothing 0, Kept it alive 1, Firmer 2, and
+# from wording 9 Much firmer 3; fixed, asked with it, whether the review fixed something. Up to
+# wording 7, gained's 3 and 4 were Fixed something and Something new: never answered, dropped.
+# Wording 8 alone mixed both on eleven levels of its own: its answers about firmness alone are read
+# on this scale, the others dropped.
+GAINED_WORDING = 9
+GAINED_EARLIER_MAX = 2
+GAINED_WORDING_8 = {0: 0, 0.5: 0.5, 1: 1, 1.5: 1.5, 4: 2, 4.5: 3}
 # What went wrong on a failed card: any number of these, kept in this order.
 REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')
+# Taken for another word ('other'): how the two are alike, as related-word lists class them.
+CONFUSIONS = ('homophone', 'similar-sound', 'tone-pair', 'similar-spelling', 'similar-kanji',
+              'similar-meaning', 'pair', 'false-friend')
 
 
 class PhoneFiles(NamedTuple):
@@ -130,6 +142,9 @@ def _answers(raw, halves: bool = False) -> dict:
             reasons = [reason for reason in REASONS if reason in value] if isinstance(value, list) else []
             if reasons:
                 answers[key] = reasons
+        elif key == 'confused':
+            if isinstance(value, str) and value in CONFUSIONS:
+                answers[key] = value
         elif key in SCALES:
             number = _number(value, halves)
             if number is not None and SCALES[key][0] <= number <= SCALES[key][1]:
@@ -145,8 +160,8 @@ def _confidence(raw, answers: dict) -> dict:
 
 
 def _skipped(raw) -> list:
-    return [key for key in raw if isinstance(key, str) and (key in SCALES or key in ('wrong', 'curve'))
-            ] if isinstance(raw, list) else []
+    return [key for key in raw if isinstance(key, str)
+            and (key in SCALES or key in ('wrong', 'confused', 'curve'))] if isinstance(raw, list) else []
 
 
 # The most points a sitting's curve keeps.
@@ -173,6 +188,15 @@ def _prompt(event, **fields):
     version = event.get('wording_v')
     halves = isinstance(version, int) and version >= HALF_STEP_WORDING
     answers = _answers(event.get('answers'), halves)
+    # A revision keeps its sheet's wording: both are read as the sheet asked.
+    if 'gained' in answers:
+        gained = answers.pop('gained')
+        if version == 8:
+            gained = GAINED_WORDING_8.get(gained)
+        elif gained > (3 if isinstance(version, int) and version >= GAINED_WORDING else GAINED_EARLIER_MAX):
+            gained = None
+        if gained is not None:
+            answers['gained'] = gained
     cleaned = {**event, 'run': 'phone', 'answers': answers,
                'confidence': _confidence(event.get('confidence'), answers),
                'skipped': _skipped(event.get('skipped', [])), **fields}
@@ -315,10 +339,14 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
                     rt.update(event['rt_ms'])
                 if isinstance(event.get('sheet_ms'), int) and event['sheet_ms'] > 0:
                     sheet_ms += event['sheet_ms']
-            # The card can't know its button: reasons only count after a real Again.
+            # The card can't know its button: reasons only count after a real Again, and the
+            # word it was taken for only as one of them.
             if row[EASE] != 1:
                 answers.pop('wrong', None)
                 skipped.discard('wrong')
+            if 'other' not in answers.get('wrong', ()):
+                answers.pop('confused', None)
+                skipped.discard('confused')
             skipped -= answers.keys()
             asked, last = (asks[-1] if asks else {}), sheet_prompts[-1]
             # panel_ms stays 0: the sheet took its time from the next card, not this one.
