@@ -27,7 +27,7 @@ SCALES = {
     'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 5), 'fixed': (0, 3),
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
     'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
-    'interfered': (0, 1),
+    'interfered': (0, 1), 'effort_recall': (1, 5), 'effort_reading': (1, 5),
 }
 # gained says how much firmer a review left the card: Nothing 0, Kept it alive 1, Firmer 2, and
 # from wording 9 Much firmer 3; fixed, asked with it, whether the review fixed something. Up to
@@ -43,6 +43,10 @@ REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')
 # the word in interfered_word, 0 for No). After a word named there or as the one a failed card was
 # taken for, how strong its pull was, 0 to 100 (strength, by question).
 NAMED = ('confused', 'interfered')
+# From wording 11, effort is asked in two parts on one view: the search for the word on the front
+# (effort_recall), the reading of the back (effort_reading), five levels each. The fit, which takes
+# one rating, reads the larger as effort: the hardest part of the card. The parts are kept as given.
+EFFORT_SPLIT_WORDING = 11
 # Taken for another word ('other'): how the two are alike, as related-word lists class them.
 CONFUSIONS = ('homophone', 'similar-sound', 'tone-pair', 'similar-spelling', 'similar-kanji',
               'similar-meaning', 'pair', 'false-friend')
@@ -209,6 +213,10 @@ def _prompt(event, **fields):
             gained = None
         if gained is not None:
             answers['gained'] = gained
+    if isinstance(version, int) and version >= EFFORT_SPLIT_WORDING and 'effort' not in answers:
+        parts = [answers[key] for key in ('effort_recall', 'effort_reading') if key in answers]
+        if parts:
+            answers['effort'] = max(parts)
     cleaned = {**event, 'run': 'phone', 'answers': answers,
                'confidence': _confidence(event.get('confidence'), answers),
                'strength': _strength(event.get('strength'), answers),

@@ -445,6 +445,20 @@ def test_another_word_in_the_way_and_a_words_pull_are_read_from_wording_10():
     assert read({'wrong': ['other'], 'confused': 'homophone'}, ease=3, strength={'confused': 55}) == ({}, {})
 
 
+def test_wording_11_asks_effort_in_two_parts_and_the_fit_reads_the_larger():
+    def read(answers, wording_v=11):
+        data = merge([event('q', 90_000), event('a', 95_000),
+                      sheet(95_001, 100_800, wording_v=wording_v, answers=answers, skipped=[])], [row()])
+        prompt, = (e for e in data.events if e['t'] == 'prompt')
+        return prompt['answers']
+    assert read({'effort_recall': 2, 'effort_reading': 3.5}) == {'effort_recall': 2, 'effort_reading': 3.5, 'effort': 3.5}
+    assert read({'effort_reading': 4}) == {'effort_reading': 4, 'effort': 4}
+    assert read({'effort_recall': 6}) == {}
+    assert read({}) == {}
+    # Before wording 11 no effort is derived: it stays as it was asked.
+    assert read({'effort': 3, 'effort_recall': 5}, wording_v=10) == {'effort': 3, 'effort_recall': 5}
+
+
 def test_newest_revision_replaces_the_sheets_answers_and_drops_out(tmp_path):
     rated = sheet(95_001, 103_500, answers={'effort': 3, 'gained': 2}, skipped=[], sheet_ms=3000)
     lines = [rated, revision(rated['id'], 200_000, {'effort': 5}, skipped=['gained']),

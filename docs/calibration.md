@@ -47,7 +47,7 @@ The recording tool asks; this add-on only reads the answers. Every answer is one
 
 | Asked | Questions |
 | --- | --- |
-| About a sampled card once it is answered, on a sheet over whatever follows | `effort`, then `familiar` on a new card, or `gained` or `know` on another. From wording 10, `interfered` on a card not failed. `wrong` after a failure |
+| About a sampled card once it is answered, on a sheet over whatever follows | `effort`, then `familiar` on a new card, or `gained` or `know` on another. From wording 10, `interfered` on a card not failed; from wording 11, effort in two parts, and `richness` of every note until answered. `wrong` after a failure |
 | About a sitting of 15+ cards, once it has ended, or any sitting the rater ends | `work`, `focus`, `deep`; from wording 6, `work` and a drawn `curve` |
 | In the evening, once a day | `amount`, `strain`, `rest`, `versus` and `pair` when there is something to name, `learned`, a note |
 
@@ -394,3 +394,11 @@ From `wording_v` 10, a card not failed can say whether another word got in the w
 - **`strength`**: from question id (`confused` or `interfered`) to 0 to 100, how strong the named word's pull was, from Faint to It took over. Optional: untouched means no rating. It is kept only beside an answer that names a word, so never with `interfered` 0, and it goes with `confused` when that is dropped. A revision keeps the prompt's.
 - Nothing scores them, and the report doesn't show them yet.
 - Recording files may also hold `links` events: when the words a note names as related were added or removed. The add-on doesn't read them.
+
+### Wording 11
+
+From `wording_v` 11, effort is asked in two parts on one view, and richness of every note.
+
+- **`effort_recall`**, 1 to 5: how hard it was to search for the word, on the front. **`effort_reading`**, 1 to 5: how much of the back had to be read with attention. Both from None to Hard, with half steps.
+- **`effort`**, which the fit takes as one rating, is read as the larger of the two: the hardest part of the card. A prompt with one part only gives that part. The parts are kept as given, and wording 11's `effort` never reaches 6.
+- **`richness`** is asked of every note until answered, from its first sight, and once more when its card is mature. The prompt's `richness_q` says which: `first` or `mature`.
