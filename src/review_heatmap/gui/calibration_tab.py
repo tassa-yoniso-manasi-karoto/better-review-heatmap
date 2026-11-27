@@ -306,7 +306,8 @@ def _sheet_lines(data) -> list:
         and event.get("wording_v", 0) >= SHEET_WORDING
     ]
     unshown = data.diagnostics.get("unshown", 0)
-    if not sheets and not unshown:
+    complaints = [event for event in data.events if event["t"] == "complaint"]
+    if not sheets and not unshown and not complaints:
         return []
     rated = sum("effort" in event["answers"] for event in sheets)
     lines = [f"Cards asked about: {len(sheets)} shown, {rated} rated on effort, "
@@ -329,6 +330,14 @@ def _sheet_lines(data) -> list:
         # Near 0 when the credit works; about a sheet's length when it doesn't.
         lines.append(f"Answers under them: recorded time is {gap / 1000:+.1f} s from first "
                      f"sight to answer without the sheet (median of {under})")
+    # From wording 12: cards that should not have been shown then, by the complaint button.
+    if complaints:
+        withdrawn = sum(event["withdrawn"] for event in complaints)
+        reasons = Counter(event["reason"] for event in complaints
+                          if event["reason"] and not event["withdrawn"])
+        lines.append(f"Complaints about a card shown then: {len(complaints) - withdrawn}"
+                     + (f", {withdrawn} taken back" if withdrawn else "")
+                     + "".join(f", {reason} {count}" for reason, count in reasons.most_common()))
     return lines
 
 

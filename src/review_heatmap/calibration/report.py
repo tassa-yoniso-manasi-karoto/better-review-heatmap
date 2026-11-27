@@ -666,8 +666,13 @@ def _reasons(taps: Sequence[Tap]) -> dict:
             "effort": fmean(tap.effort for tap in failed if reason in tap.answers["wrong"]),
             "others_effort": fmean(others) if others else None,
         })
-    # Taken for another word: how the two were alike, from wording 8.
-    alike = Counter(tap.answers["confused"] for tap in failed if "confused" in tap.answers)
+    # Taken for another word: how the two were alike, from wording 8; from wording 12 in several
+    # ways at once, each counted.
+    alike = Counter(
+        kind for tap in failed
+        for kind in ([tap.answers["confused"]] if "confused" in tap.answers
+                     else tap.answers.get("confused_alike", []))
+    )
     return {"ratings": len(failed), "reasons": reasons, "confused": dict(alike.most_common())}
 
 

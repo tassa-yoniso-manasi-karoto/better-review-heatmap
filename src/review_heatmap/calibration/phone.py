@@ -28,6 +28,7 @@ SCALES = {
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
     'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
     'interfered': (0, 1), 'effort_recall': (1, 5), 'effort_reading': (1, 5),
+    'timing': (1, 5), 'closeness': (0, 3), 'familiar_prompt': (0, 2), 'recalled': (0, 1),
 }
 # gained says how much firmer a review left the card: Nothing 0, Kept it alive 1, Firmer 2, and
 # from wording 9 Much firmer 3; fixed, asked with it, whether the review fixed something. Up to
@@ -37,8 +38,11 @@ SCALES = {
 GAINED_WORDING = 9
 GAINED_EARLIER_MAX = 2
 GAINED_WORDING_8 = {0: 0, 0.5: 0.5, 1: 1, 1.5: 1.5, 4: 2, 4.5: 3}
-# What went wrong on a failed card: any number of these, kept in this order.
-REASONS = ('blank', 'other', 'form', 'sense', 'misread', 'purpose', 'else')
+# What went wrong on a failed card: any number of these, kept in this order. From wording 12 'form'
+# (the reading, tone, pitch or spelling) is two reasons, 'reading' and 'pitch' (pitch or tone), and
+# 'prompt' (the front's prompt not understood) and 'unfocused' are new; 'form' stays on earlier sheets.
+REASONS = ('blank', 'other', 'form', 'reading', 'pitch', 'sense', 'misread', 'prompt', 'unfocused',
+           'purpose', 'else')
 # From wording 10, on a card not failed: whether another word got in the way (interfered, 1 with
 # the word in interfered_word, 0 for No). After a word named there or as the one a failed card was
 # taken for, how strong its pull was, 0 to 100 (strength, by question).
@@ -50,6 +54,20 @@ EFFORT_SPLIT_WORDING = 11
 # Taken for another word ('other'): how the two are alike, as related-word lists class them.
 CONFUSIONS = ('homophone', 'similar-sound', 'tone-pair', 'similar-spelling', 'similar-kanji',
               'similar-meaning', 'pair', 'false-friend')
+# From wording 12 (the two tiers): some questions are asked whatever the chance drew, and each sheet
+# carries that chance. How two words are alike takes several classes, the main one first, asked
+# fresh: confused_alike beside the word a failed card was taken for, interfered_alike beside a word
+# in the way. Up to wording 11, confused held one class.
+TIERS_WORDING = 12
+ALIKE = ('confused_alike', 'interfered_alike')
+# After a showing back to back with a rival: did it help tell them apart? Or did the first give the
+# second away? Answers by name, no scale.
+GROUPED = ('no', 'little', 'yes', 'gave_away')
+# The questions about a failure: kept only when the answer was one.
+FAILURE = ('wrong', 'closeness', 'confused', 'confused_alike')
+# The complaint button's reasons (complaint events, wording 12): why the card should not have been
+# shown at that moment.
+COMPLAINTS = ('early', 'late', 'often', 'gave_away', 'not_new_yet', 'else')
 
 
 class PhoneFiles(NamedTuple):
@@ -86,7 +104,7 @@ def read_files(folder) -> PhoneFiles:
                         if 'card' in event and (not isinstance(event['card'], str)
                                                 or not isinstance(event.get('key'), str)):
                             continue
-                        if event['t'] in ('q', 'a', 'state', 'offer', 'size', 'audio') and 'card' not in event:
+                        if event['t'] in ('q', 'a', 'state', 'offer', 'size', 'audio', 'complaint') and 'card' not in event:
                             continue
                         if event['t'] == 'prompt' and (
                                 not isinstance(event.get('answers'), dict)
@@ -154,6 +172,17 @@ def _answers(raw, halves: bool = False) -> dict:
         elif key == 'confused':
             if isinstance(value, str) and value in CONFUSIONS:
                 answers[key] = value
+        elif key in ALIKE:
+            # In the order ticked, the main one first; each once.
+            classes = []
+            for item in value if isinstance(value, list) else ():
+                if isinstance(item, str) and item in CONFUSIONS and item not in classes:
+                    classes.append(item)
+            if classes:
+                answers[key] = classes
+        elif key == 'grouped':
+            if isinstance(value, str) and value in GROUPED:
+                answers[key] = value
         elif key in SCALES:
             number = _number(value, halves)
             if number is not None and SCALES[key][0] <= number <= SCALES[key][1]:
@@ -168,16 +197,38 @@ def _confidence(raw, answers: dict) -> dict:
             and 0 <= value <= 100} if isinstance(raw, dict) else {}
 
 
+def _named(answers: dict) -> set:
+    """The questions whose answer named a word. From wording 12 the word a failed card was taken for
+    goes with how the two are alike."""
+    named = {key for key in NAMED if answers.get(key) not in (None, 0)}
+    if 'confused_alike' in answers:
+        named.add('confused')
+    return named
+
+
 def _strength(raw, answers: dict) -> dict:
     """How strong a named word's pull was, 0 to 100: only beside the answer that named it."""
+    named = _named(answers)
     return {key: value for key, value in raw.items()
-            if key in NAMED and answers.get(key) not in (None, 0) and not isinstance(value, bool)
+            if key in named and not isinstance(value, bool)
             and isinstance(value, (int, float)) and 0 <= value <= 100} if isinstance(raw, dict) else {}
 
 
 def _skipped(raw) -> list:
     return [key for key in raw if isinstance(key, str)
-            and (key in SCALES or key in ('wrong', 'confused', 'curve'))] if isinstance(raw, list) else []
+            and (key in SCALES or key in ('wrong', 'confused', 'curve', 'grouped', *ALIKE))] if isinstance(raw, list) else []
+
+
+def _skip_times(raw, skipped) -> dict:
+    """From wording 12, how long each skipped question stayed on screen before it was left (ms)."""
+    return {key: value for key, value in raw.items()
+            if key in skipped and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            } if isinstance(raw, dict) else {}
+
+
+def _ids(raw) -> list:
+    """A list of question ids as recorded; anything else is dropped."""
+    return [key for key in raw if isinstance(key, str)] if isinstance(raw, list) else []
 
 
 # The most points a sitting's curve keeps.
@@ -217,10 +268,14 @@ def _prompt(event, **fields):
         parts = [answers[key] for key in ('effort_recall', 'effort_reading') if key in answers]
         if parts:
             answers['effort'] = max(parts)
+    # How a word in the way is alike goes with that word only.
+    if answers.get('interfered') != 1:
+        answers.pop('interfered_alike', None)
+    skipped = _skipped(event.get('skipped', []))
     cleaned = {**event, 'run': 'phone', 'answers': answers,
                'confidence': _confidence(event.get('confidence'), answers),
                'strength': _strength(event.get('strength'), answers),
-               'skipped': _skipped(event.get('skipped', [])), **fields}
+               'skipped': skipped, 'skipped_ms': _skip_times(event.get('skipped_ms'), skipped), **fields}
     if event.get('kind') == 'session':
         cleaned['curve'] = _curve(event.get('curve'), event.get('from_ms'), event.get('to_ms'))
     return cleaned
@@ -237,6 +292,22 @@ def _credit(event):
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
+def _complaints(window, common, output) -> int:
+    """From wording 12, the complaint button: a tap on a card that should not have been shown then,
+    joined to the answer of its showing, with its reason and whether it was taken back. A reason or
+    an undo is an event of its own naming the tap (`of`); the newest reason counts."""
+    taps = [event for event in window if event['t'] == 'complaint' and not isinstance(event.get('of'), str)]
+    for tap in taps:
+        later = [event for event in window if event['t'] == 'complaint' and event.get('of') == tap['id']]
+        reasons = [event['reason'] for event in later if event.get('reason') in COMPLAINTS]
+        output.append({**common, 't': 'complaint', 'ts': tap['ts'],
+                       'side': tap.get('side') if tap.get('side') in ('q', 'a') else None,
+                       'sheet': tap.get('sheet') is True,
+                       'reason': reasons[-1] if reasons else None,
+                       'withdrawn': any(event.get('withdrawn') is True for event in later)})
+    return len(taps)
+
+
 def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     """Index is {card: {raw key: iterable of card IDs}}; collisions stay visible.
 
@@ -246,7 +317,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
     if not phone.events:
         return PhoneData([], rows, None,
                          {'files': phone.files, 'unresolved': 0, 'ambiguous': 0, 'unshown': 0,
-                          'credit_gap_ms': None, 'credit_answers': 0})
+                          'credit_gap_ms': None, 'credit_answers': 0, 'complaints': 0})
     # A different card, or reopening after hiding the reviewer, starts a new
     # presentation. Within it keep the first q: order redraws must not reset time.
     presentations = {}
@@ -275,7 +346,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
                 and event[name] > 0 for name in ('at', 'sheet_ms'))
     ), key=lambda sheet: sheet[:2])
     closed = [at for at, _, _ in sheets]
-    unshown = 0
+    unshown = complaints = 0
     # Under sheets already off the clock, recorded time should match the time from first
     # sight to answer without the sheet: that gap shows whether the credit works.
     credit_gaps = []
@@ -349,7 +420,7 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
         sheet_prompts = [e for e in prompts if e.get('kind') == 'answer' and _is_sheet(e)]
         asks = [e for e in window if e['t'] == 'offer' and isinstance(e.get('ask'), list) and e['ask']]
         if sheet_prompts:
-            answers, skipped, rt, sheet_ms, sure, pull = {}, set(), {}, 0, {}, {}
+            answers, skipped, rt, sheet_ms, sure, pull, lingered = {}, set(), {}, 0, {}, {}, {}
             credits = [credit for credit in map(_credit, sheet_prompts) if credit is not None]
             for event in sheet_prompts:
                 cleaned = _prompt(event)
@@ -357,36 +428,56 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
                 sure.update(cleaned['confidence'])
                 pull.update(cleaned['strength'])
                 skipped.update(cleaned['skipped'])
+                lingered.update(cleaned['skipped_ms'])
                 if isinstance(event.get('rt_ms'), dict):
                     rt.update(event['rt_ms'])
                 if isinstance(event.get('sheet_ms'), int) and event['sheet_ms'] > 0:
                     sheet_ms += event['sheet_ms']
-            # The card can't know its button: reasons only count after a real Again, and the
-            # word it was taken for only as one of them.
-            if row[EASE] != 1:
-                answers.pop('wrong', None)
-                skipped.discard('wrong')
+            # The card can't know its button: reasons, and how close the answer was, only count
+            # after a real Again, and the word it was taken for only as one of them. From wording
+            # 12 a Hard can be admitted as a failure (recalled 0): it counts as one; whether a card
+            # was recalled is kept after a Hard only.
+            admitted = row[EASE] == 2 and answers.get('recalled') == 0
+            if row[EASE] != 2:
+                answers.pop('recalled', None)
+                skipped.discard('recalled')
+            if row[EASE] != 1 and not admitted:
+                for key in FAILURE:
+                    answers.pop(key, None)
+                    skipped.discard(key)
             if 'other' not in answers.get('wrong', ()):
-                answers.pop('confused', None)
-                skipped.discard('confused')
+                for key in ('confused', 'confused_alike'):
+                    answers.pop(key, None)
+                    skipped.discard(key)
             skipped -= answers.keys()
             asked, last = (asks[-1] if asks else {}), sheet_prompts[-1]
+            named = _named(answers)
+            # From wording 12 the sheet carries the chance it had of being drawn, whether it was,
+            # and the questions asked whatever was drawn; an earlier sheet, its plan's chance.
+            own_p = last.get('p')
+            chance = (own_p if isinstance(own_p, (int, float)) and not isinstance(own_p, bool)
+                      and 0 <= own_p <= 1 else asked.get('p'))
             # panel_ms stays 0: the sheet took its time from the next card, not this one.
             output.append({**common, 't': 'prompt', 'kind': 'answer', 'ts': rev_id,
                            'ease': row[EASE], 'wording_v': last['wording_v'], 'answers': answers,
                            'confidence': {key: value for key, value in sure.items() if key in answers},
-                           'strength': {key: value for key, value in pull.items() if key in answers},
+                           'strength': {key: value for key, value in pull.items() if key in named},
                            'skipped': sorted(skipped), 'rt_ms': rt, 'panel_ms': 0,
+                           'skipped_ms': {key: value for key, value in lingered.items() if key in skipped},
                            'sheet_ms': sheet_ms,
                            'timer_credit_ms': sum(credits) if credits else None,
                            'revised': any(e.get('revised') is True for e in sheet_prompts),
                            'withdrawn': any(e.get('withdrawn') is True for e in sheet_prompts),
-                           'answer_p': asked.get('p'),
+                           'answer_p': chance,
+                           'drawn': last.get('drawn') if isinstance(last.get('drawn'), bool) else None,
+                           'always': _ids(last.get('always')), 'forced': last.get('forced') is True,
+                           'admitted_failure': admitted,
                            'situation': asked.get('situation'), 'know_q': last.get('know_q'),
                            'via': last.get('via'), 'why_p': 0, 'rotation_p': 0.5})
         elif asks:
             # Planned and never shown: reviewing stopped before anything followed the card.
             unshown += 1
+        complaints += _complaints(window, common, output)
         answer_prompts = [e for e in prompts if e.get('kind') == 'answer' and not _is_sheet(e)]
         offers = [e for e in window if e['t'] == 'offer' and 'cost' in e]
         for offer in window:
@@ -428,4 +519,4 @@ def merge_phone(phone: PhoneFiles, rows, index) -> PhoneData:
                      {'files': phone.files, 'unresolved': len(unresolved),
                       'ambiguous': len(ambiguous), 'unshown': unshown,
                       'credit_gap_ms': round(median(credit_gaps)) if credit_gaps else None,
-                      'credit_answers': len(credit_gaps)})
+                      'credit_answers': len(credit_gaps), 'complaints': complaints})

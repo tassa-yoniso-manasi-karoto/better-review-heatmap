@@ -785,3 +785,14 @@ def test_reasons_count_how_the_word_a_card_was_taken_for_was_alike():
                  "versus": {"days": 0}, "sources": [], "deep": {"spearman": None}}
     text = "\n".join(report._question_lines(questions))
     assert "Taken for another word, alike by: tone-pair 2, similar-meaning 1." in text
+
+
+def test_reasons_count_each_way_two_words_are_alike_from_wording_12():
+    from review_heatmap.calibration import report
+    from review_heatmap.calibration.dataset import Tap
+    def tap(answers):
+        return Tap(None, answers["effort"], answers, None, None, 0.0, {})
+    taps = [tap({"effort": 3, "wrong": ["other"], "confused_alike": ["tone-pair", "pair"]}),
+            tap({"effort": 2, "wrong": ["other", "reading"], "confused": "tone-pair"}),
+            tap({"effort": 4, "wrong": ["other"], "confused_alike": ["pair"]})]
+    assert report._reasons(taps)["confused"] == {"tone-pair": 2, "pair": 2}

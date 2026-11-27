@@ -30,7 +30,7 @@ def test_no_files_changes_nothing(tmp_path):
     assert data.rows == [row()]
     assert data.earliest_ms is None
     assert data.diagnostics == dict(files=0, unresolved=0, ambiguous=0, unshown=0,
-                                    credit_gap_ms=None, credit_answers=0)
+                                    credit_gap_ms=None, credit_answers=0, complaints=0)
 
 
 def test_files_are_deduped_and_damaged_lines_ignored(tmp_path):
@@ -53,7 +53,7 @@ def test_ambiguous_and_unresolved_keys_are_dropped_and_counted():
     data = merge([event('q', 80_000, 'same'), event('a', 90_000, 'same'), event('q', 95_000, 'x&y')])
     assert not data.events
     assert data.diagnostics == dict(files=1, ambiguous=1, unresolved=1, unshown=0,
-                                    credit_gap_ms=None, credit_answers=0)
+                                    credit_gap_ms=None, credit_answers=0, complaints=0)
 
 
 def test_first_question_and_answer_survive_redraws():
@@ -619,3 +619,111 @@ def test_check_phone_reports_sheets_already_off_the_clock(addon_modules):
         'Answers under them: recorded time is +0.3 s from first sight to answer without the sheet'
         ' (median of 1)',
     ]
+
+
+# Wording 12: questions always asked beside a chance, closeness, a Hard that hid a failure, the
+# reasons split, how two words are alike in several ways, the complaint button.
+
+
+def wording_12(answers, ease=1, **fields):
+    """The merged prompt of a wording-12 sheet about a card answered with this button."""
+    fields.setdefault('wording_v', 12)
+    data = merge([event('q', 90_000), event('a', 95_000),
+                  sheet(95_001, 100_800, answers=answers, **fields)], [row(ease=ease)])
+    prompt, = (e for e in data.events if e['t'] == 'prompt')
+    return prompt
+
+
+def test_wording_12_reads_its_new_answers_and_drops_what_is_off_its_scale():
+    assert wording_12({'timing': 2.5, 'closeness': 1.5, 'wrong': ['unfocused', 'reading', 'pitch', 'prompt']},
+                      skipped=[])['answers'] == {
+        'timing': 2.5, 'closeness': 1.5, 'wrong': ['reading', 'pitch', 'prompt', 'unfocused']}
+    assert wording_12({'timing': 6, 'closeness': 4, 'familiar_prompt': 3, 'recalled': 2}, ease=2)['answers'] == {}
+    assert wording_12({'familiar': 2, 'familiar_prompt': 1.5}, ease=3)['answers'] == {'familiar': 2, 'familiar_prompt': 1.5}
+    assert wording_12({'grouped': 'gave_away'}, ease=3)['answers'] == {'grouped': 'gave_away'}
+    assert wording_12({'grouped': 'maybe'}, ease=3)['answers'] == {}
+    # Wording 11's single reason stays readable.
+    assert wording_12({'wrong': ['form']}, wording_v=11)['answers'] == {'wrong': ['form']}
+
+
+@pytest.mark.parametrize('ease,recalled,kept', [
+    (1, None, True), (2, 0, True), (2, 1, False), (2, None, False), (3, None, False), (3, 0, False)])
+def test_a_hard_admitted_as_a_failure_counts_as_one(ease, recalled, kept):
+    answers = {'wrong': ['other'], 'closeness': 2, 'confused_alike': ['similar-sound', 'pair'], 'effort_recall': 3}
+    if recalled is not None:
+        answers['recalled'] = recalled
+    prompt = wording_12(answers, ease=ease, skipped=['timing'], confused_word='other-word',
+                        strength={'confused': 60})
+    expected = {'effort_recall': 3, 'effort': 3}
+    if kept:
+        expected.update(wrong=['other'], closeness=2, confused_alike=['similar-sound', 'pair'])
+    if ease == 2 and recalled is not None:
+        expected['recalled'] = recalled
+    assert prompt['answers'] == expected
+    assert prompt['admitted_failure'] is (ease == 2 and recalled == 0)
+    # The pull of the word taken goes with how the two are alike.
+    assert prompt['strength'] == ({'confused': 60} if kept else {})
+    assert prompt['skipped'] == ['timing']
+
+
+def test_how_two_words_are_alike_keeps_its_order_and_goes_with_its_word():
+    assert wording_12({'interfered': 1, 'interfered_alike': ['pair', 'homophone', 'pair', 'made-up']},
+                      ease=3, skipped=[])['answers'] == {'interfered': 1, 'interfered_alike': ['pair', 'homophone']}
+    assert wording_12({'interfered': 0, 'interfered_alike': ['pair']}, ease=3, skipped=[])['answers'] == {'interfered': 0}
+    # Without "Took it for another word", no word taken, and no likeness of one.
+    assert wording_12({'wrong': ['blank'], 'confused_alike': ['pair']}, skipped=['confused_alike'])['answers'] == {
+        'wrong': ['blank']}
+    prompt = wording_12({'wrong': ['other']}, skipped=['confused', 'confused_alike'])
+    assert prompt['skipped'] == ['confused', 'confused_alike']
+
+
+def test_a_wording_12_sheet_says_its_chance_whether_it_was_drawn_and_what_was_always_asked():
+    prompt = wording_12({'wrong': ['blank'], 'closeness': 0}, skipped=[], p=.1, drawn=False,
+                        always=['wrong', 'closeness', 7])
+    assert (prompt['answer_p'], prompt['drawn'], prompt['always'], prompt['forced']) == (
+        .1, False, ['wrong', 'closeness'], False)
+    forced = wording_12({}, ease=3, skipped=['effort_recall'], p=1, drawn=True, forced=True, always=[])
+    assert (forced['answer_p'], forced['drawn'], forced['forced']) == (1, True, True)
+    # Earlier sheets: the plan's chance, as before.
+    data = merge([event('q', 90_000), event('a', 95_000), event('offer', 95_001, ask=['effort'], p=.33),
+                  sheet(95_001, 100_800, answers={'effort': 3}, p=7)], [row()])
+    older, = (e for e in data.events if e['t'] == 'prompt')
+    assert (older['answer_p'], older['drawn'], older['always'], older['admitted_failure']) == (.33, None, [], False)
+
+
+def test_skip_times_say_how_long_a_skipped_question_stayed_on_screen():
+    prompt = wording_12({'effort_recall': 2}, ease=3, skipped=['know', 'timing'],
+                        skipped_ms={'know': 1700, 'timing': -1, 'effort_recall': 900, 'fresh': True})
+    assert prompt['skipped'] == ['know', 'timing'] and prompt['skipped_ms'] == {'know': 1700}
+
+
+def test_the_complaint_button_is_joined_to_its_answer_with_its_reason():
+    tap = event('complaint', 92_000, side='q', sheet=True)
+    reasons = [event('complaint', 93_000, of=tap['id'], reason='early'),
+               event('complaint', 94_000, of=tap['id'], reason='late')]
+    data = merge([event('q', 90_000), tap, *reasons, event('a', 95_000)], [row()])
+    complaint, = (e for e in data.events if e['t'] == 'complaint')
+    assert (complaint['rev_id'], complaint['cid'], complaint['ts'], complaint['side'], complaint['sheet'],
+            complaint['reason'], complaint['withdrawn']) == (100_000, 1, 92_000, 'q', True, 'late', False)
+    assert data.diagnostics['complaints'] == 1
+    undone = merge([event('q', 90_000), tap, event('complaint', 93_000, of=tap['id'], withdrawn=True),
+                    event('complaint', 93_500, of=tap['id'], reason='made-up'), event('a', 95_000)], [row()])
+    complaint, = (e for e in undone.events if e['t'] == 'complaint')
+    assert complaint['withdrawn'] is True and complaint['reason'] is None
+    # Dataset reading leaves them be; a card never answered keeps its complaint out.
+    assert read_dataset(data.events, data.rows).logged
+    assert not [e for e in merge([event('q', 90_000), tap], [row(4_000_000)]).events if e['t'] == 'complaint']
+
+
+def test_a_complaint_without_its_card_is_dropped(tmp_path):
+    lines = [dict(v=1, id='loose', t='complaint', ts=92_000), event('complaint', 92_500)]
+    (tmp_path / '_brh_cal_a.txt').write_text('\n'.join(map(json.dumps, lines)), encoding='utf-8')
+    assert [e['id'] for e in read_files(tmp_path).events] == ['complaint-92500']
+
+
+def test_check_phone_reports_the_complaints(addon_modules):
+    from review_heatmap.gui.calibration_tab import _sheet_lines
+    first, second = event('complaint', 92_000, side='q'), event('complaint', 92_500, side='a')
+    data = merge([event('q', 90_000), first, event('complaint', 93_000, of=first['id'], reason='early'),
+                  second, event('complaint', 93_500, of=second['id'], withdrawn=True), event('a', 95_000)], [row()])
+    assert _sheet_lines(data)[-1] == 'Complaints about a card shown then: 1, 1 taken back, early 1'

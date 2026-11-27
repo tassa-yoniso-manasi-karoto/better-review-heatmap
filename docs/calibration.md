@@ -152,6 +152,8 @@ Version 1. Every line has `v` (1), `t` (the kind), `ts` (ms) and `run` (a random
 
 **`prompt`**: one per rating dialog, in folders from before the dialogs were retired. They are read for the counts and never fitted. Fields: `kind` (`answer`, `sharpness` or `day`), `wording_v`, `answers`, `rt_ms` and `skipped`; an answer adds `cid`, `rev_id`, `seq`, `ease` and the chances it was sampled with, a day `day_end_ms`, `day_answers` and its `note`. Their answers: `cost` 0 to 10 on ¼ to 8+ routine reviews, `gain` 0 to 6, `grasp` 0 to 10 in tens of percent, `why` 0 to 4, and `sharpness`, `tiring` and `learned` 1 to 7. Wordings before 4 offered every other position of `cost` and `why`.
 
+**`complaint`**: the red button, from `wording_v` 12, a tap with `side` and `sheet`, then events naming it (`of`) for a `reason` or `withdrawn`. See Wording 12.
+
 ## Fit and report
 
 Fit is the machine learning step, in pure Python with no library. It runs in the background, and is enabled from 150 effort ratings and 20 rated days. Nothing is learned until you press Fit, and nothing changes your heatmap until you press Use This Fit on This Profile. DESIGN.md has the formulas. There are two stages:
@@ -402,3 +404,17 @@ From `wording_v` 11, effort is asked in two parts on one view, and richness of e
 - **`effort_recall`**, 1 to 5: how hard it was to search for the word, on the front. **`effort_reading`**, 1 to 5: how much of the back had to be read with attention. Both from None to Hard, with half steps.
 - **`effort`**, which the fit takes as one rating, is read as the larger of the two: the hardest part of the card. A prompt with one part only gives that part. The parts are kept as given, and wording 11's `effort` never reaches 6.
 - **`richness`** is asked of every note until answered, from its first sight, and once more when its card is mature. The prompt's `richness_q` says which: `first` or `mature`.
+
+### Wording 12
+
+From `wording_v` 12, some questions are asked whatever the chance drew, and every sheet says what that chance was.
+
+- **Per sheet:** `p` (the chance the sheet had of being drawn; `answer_p` reads it, and earlier sheets keep their offer's), `drawn`, `always` (questions asked whatever was drawn), `forced`.
+- **`closeness`**, 0–3 with half steps, on the reasons' view. Left unanswered with `purpose`, it is no skip. It is kept with the reasons.
+- **`wrong`** replaces `form` (still read on earlier sheets) with `reading` and `pitch` (pitch or tone), and adds `prompt` and `unfocused`.
+- **`recalled`**, 0 or 1, after a Hard. 0 keeps the reasons, closeness and the word taken as after an Again, with `admitted_failure`. `recalled` is kept only after a Hard.
+- **`confused_alike`, `interfered_alike`:** several classes, the main one first, asked fresh. Up to wording 11, `confused` held one class. They go with `other` and with a word in the way respectively; `strength.confused` goes with `confused_alike`. The report counts each class.
+- **`timing`**, 1–5 with half steps. **`familiar_prompt`**, 0–2. **`grouped`**: `no`, `little`, `yes`, `gave_away`.
+- **`skipped_ms`:** milliseconds on screen for each skipped question.
+- **`complaint` events:** a tap with `side` and `sheet`; later events naming it (`of`) give a `reason` (the newest counts) or `withdrawn`. Each tap is joined to its showing's answer (`cid`, `rev_id`) and counted in Check Phone. Nothing scores them.
+- `confused_from`, `interfered_from` and `grouped_with` are not read yet.
