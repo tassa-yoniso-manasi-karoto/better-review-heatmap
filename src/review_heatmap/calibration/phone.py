@@ -60,9 +60,10 @@ CONFUSIONS = ('homophone', 'similar-sound', 'tone-pair', 'similar-spelling', 'si
 # in the way. Up to wording 11, confused held one class.
 TIERS_WORDING = 12
 ALIKE = ('confused_alike', 'interfered_alike')
-# After a showing back to back with a rival: did it help tell them apart? Or did the first give the
-# second away? Answers by name, no scale.
-GROUPED = ('no', 'little', 'yes', 'gave_away')
+# After a showing back to back with a rival, two answers on one view: did it help tell them apart
+# (grouped), and did the first card give the second away (grouped_gave)? A showing can do both.
+# Answers by name, no scale.
+GROUPED = {'grouped': ('no', 'little', 'yes'), 'grouped_gave': ('no', 'partly', 'yes')}
 # The questions about a failure: kept only when the answer was one.
 FAILURE = ('wrong', 'closeness', 'confused', 'confused_alike')
 # The complaint button's reasons (complaint events, wording 12): why the card should not have been
@@ -180,8 +181,8 @@ def _answers(raw, halves: bool = False) -> dict:
                     classes.append(item)
             if classes:
                 answers[key] = classes
-        elif key == 'grouped':
-            if isinstance(value, str) and value in GROUPED:
+        elif key in GROUPED:
+            if isinstance(value, str) and value in GROUPED[key]:
                 answers[key] = value
         elif key in SCALES:
             number = _number(value, halves)
@@ -216,7 +217,7 @@ def _strength(raw, answers: dict) -> dict:
 
 def _skipped(raw) -> list:
     return [key for key in raw if isinstance(key, str)
-            and (key in SCALES or key in ('wrong', 'confused', 'curve', 'grouped', *ALIKE))] if isinstance(raw, list) else []
+            and (key in SCALES or key in ('wrong', 'confused', 'curve', *GROUPED, *ALIKE))] if isinstance(raw, list) else []
 
 
 def _skip_times(raw, skipped) -> dict:

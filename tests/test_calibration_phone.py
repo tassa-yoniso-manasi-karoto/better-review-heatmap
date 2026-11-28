@@ -640,8 +640,11 @@ def test_wording_12_reads_its_new_answers_and_drops_what_is_off_its_scale():
         'timing': 2.5, 'closeness': 1.5, 'wrong': ['reading', 'pitch', 'prompt', 'unfocused']}
     assert wording_12({'timing': 6, 'closeness': 4, 'familiar_prompt': 3, 'recalled': 2}, ease=2)['answers'] == {}
     assert wording_12({'familiar': 2, 'familiar_prompt': 1.5}, ease=3)['answers'] == {'familiar': 2, 'familiar_prompt': 1.5}
-    assert wording_12({'grouped': 'gave_away'}, ease=3)['answers'] == {'grouped': 'gave_away'}
-    assert wording_12({'grouped': 'maybe'}, ease=3)['answers'] == {}
+    # After a grouped showing, two answers: it can both help and give the second card away.
+    assert wording_12({'grouped': 'yes', 'grouped_gave': 'partly'}, ease=3)['answers'] == {
+        'grouped': 'yes', 'grouped_gave': 'partly'}
+    assert wording_12({'grouped': 'maybe', 'grouped_gave': 'little'}, ease=3)['answers'] == {}
+    assert wording_12({}, ease=3, skipped=['grouped', 'grouped_gave'])['skipped'] == ['grouped', 'grouped_gave']
     # Wording 11's single reason stays readable.
     assert wording_12({'wrong': ['form']}, wording_v=11)['answers'] == {'wrong': ['form']}
 

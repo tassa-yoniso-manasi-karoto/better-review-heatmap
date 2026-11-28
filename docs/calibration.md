@@ -414,7 +414,7 @@ From `wording_v` 12, some questions are asked whatever the chance drew, and ever
 - **`wrong`** replaces `form` (still read on earlier sheets) with `reading` and `pitch` (pitch or tone), and adds `prompt` and `unfocused`.
 - **`recalled`**, 0 or 1, after a Hard. 0 keeps the reasons, closeness and the word taken as after an Again, with `admitted_failure`. `recalled` is kept only after a Hard.
 - **`confused_alike`, `interfered_alike`:** several classes, the main one first, asked fresh. Up to wording 11, `confused` held one class. They go with `other` and with a word in the way respectively; `strength.confused` goes with `confused_alike`. The report counts each class.
-- **`timing`**, 1–5 with half steps. **`familiar_prompt`**, 0–2. **`grouped`**: `no`, `little`, `yes`, `gave_away`.
+- **`timing`**, 1–5 with half steps. **`familiar_prompt`**, 0–2. **`grouped`** (did the showing help): `no`, `little`, `yes`. **`grouped_gave`**, asked on the same view (did the first card give the second away): `no`, `partly`, `yes`.
 - **`skipped_ms`:** milliseconds on screen for each skipped question.
 - **`complaint` events:** a tap with `side` and `sheet`; later events naming it (`of`) give a `reason` (the newest counts) or `withdrawn`. Each tap is joined to its showing's answer (`cid`, `rev_id`) and counted in Check Phone. Nothing scores them.
 - `confused_from`, `interfered_from` and `grouped_with` are not read yet.
