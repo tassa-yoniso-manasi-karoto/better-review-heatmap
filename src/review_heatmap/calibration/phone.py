@@ -26,7 +26,8 @@ SCALES = {
     'sharpness': (1, 7), 'tiring': (1, 7), 'learned': (1, 7),
     'effort': (1, 6), 'familiar': (0, 3), 'know': (0, 100), 'gained': (0, 5), 'fixed': (0, 3),
     'amount': (1, 7), 'strain': (1, 5), 'rest': (1, 5), 'versus': (1, 5), 'pair': (1, 5),
-    'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
+    'work': (1, 5), 'focus': (1, 5), 'deep': (1, 5), 'stop': (1, 5), 'start': (1, 5), 'outlook': (1, 5), 'drift': (1, 5), 'stuck': (1, 5),
+    'survey_load': (1, 5), 'richness': (1, 5), 'fresh': (1, 5),
     'interfered': (0, 1), 'effort_recall': (1, 5), 'effort_reading': (1, 5),
     'timing': (1, 5), 'closeness': (0, 3), 'familiar_prompt': (0, 2), 'recalled': (0, 1),
 }

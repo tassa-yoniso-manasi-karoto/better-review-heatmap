@@ -67,6 +67,10 @@ A card is asked about after its answer, never on it: a control on the card went 
 
 **`work`, 1 to 5.** How much Anki work was that sitting, all in all? Tiny to Huge. *Used for:* stage 2, how answers add up.
 
+**`stop`, 1 to 5.** Did that sitting make you want to stop? Not at all to So much that I stopped. *Used for:* nothing yet. It is recorded to see whether sittings with more failures feel worse.
+
+**How learning feels, each evening, 1 to 5 with half steps.** `start`: how starting the day's reviews felt, Dreaded it to Looked forward to it. `outlook`: the feeling about learning right now, Discouraged to Eager. `drift`: whether that feeling got worse or better over the last week. `stuck`: how much failing the same cards again weighed on the day. `survey_load`: how much the questions themselves weighed on the day. *Used for:* nothing yet.
+
 **`focus`, 1 to 5.** How well could you concentrate during it? *Used for:* a control in stage 1. It never scores.
 
 **`deep`, 1 to 5.** How much of the sitting were you deep in it, with no break in your attention? Count stretches of several minutes on demanding cards. *Used for:* a check of sustained concentration, in the report.
